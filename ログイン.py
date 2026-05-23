@@ -135,16 +135,37 @@ if not auth.is_logged_in():
             font-size: 0.92rem;
             font-weight: 800;
         }}
-        div[data-testid="stForm"] .stTextInput input {{
-            background-color: rgba(255,255,255,0.92) !important;
+        div[data-testid="stForm"] [data-testid="stTextInput"] > div {{
             border: 1.5px solid #d1d5db !important;
-            min-height: 48px;
-            padding-left: 13px !important;
-            color: #111827 !important;
+            border-radius: 10px !important;
+            background: rgba(255,255,255,0.96) !important;
+            min-height: 52px !important;
+            overflow: hidden !important;
+            box-shadow: 0 1px 0 rgba(15, 23, 42, 0.03) !important;
         }}
-        div[data-testid="stForm"] .stTextInput input:focus {{
+        div[data-testid="stForm"] [data-testid="stTextInput"] > div:focus-within {{
             border-color: #6da9dc !important;
             box-shadow: 0 0 0 3px rgba(109, 169, 220, 0.2) !important;
+        }}
+        div[data-testid="stForm"] .stTextInput input {{
+            background-color: transparent !important;
+            border: 0 !important;
+            box-shadow: none !important;
+            min-height: 52px;
+            padding-left: 13px !important;
+            color: #111827 !important;
+            line-height: 52px !important;
+        }}
+        div[data-testid="stForm"] .stTextInput input:focus {{
+            border: 0 !important;
+            box-shadow: none !important;
+            outline: none !important;
+        }}
+        div[data-testid="stForm"] [data-testid="stTextInput"] button {{
+            min-height: 52px !important;
+            border: 0 !important;
+            background: #f8fafc !important;
+            border-radius: 0 !important;
         }}
         div[data-testid="stForm"] .stButton button {{
             width: 100%;
