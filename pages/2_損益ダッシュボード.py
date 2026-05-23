@@ -56,6 +56,13 @@ st.markdown(
     "</p>",
     unsafe_allow_html=True,
 )
+show_import_tools = False
+if _is_admin:
+    show_import_tools = st.toggle(
+        "取込・削除などの管理メニューを表示する",
+        value=False,
+        help="普段の閲覧を軽くするため、必要な時だけ開きます。",
+    )
 
 # =============================================================
 # 取込セクション
@@ -63,7 +70,7 @@ st.markdown(
 existing_yms = db.list_pl_year_months()
 data_exists = len(existing_yms) > 0
 
-if _is_admin:
+if show_import_tools:
   with st.expander(
       "📥 Excel取込" + (" (まだデータがありません)" if not data_exists else f" (取込済: {len(existing_yms)}ヶ月)"),
       expanded=not data_exists,
@@ -177,7 +184,7 @@ if _is_admin:
 # =============================================================
 # 旧形式 CSV取込（試算表：損益計算書）
 # =============================================================
-if _is_admin:
+if show_import_tools:
   with st.expander(
       "📥 旧形式CSV取込 (試算表：損益計算書) — 1ファイル＝1月分", expanded=False,
   ):
@@ -264,7 +271,7 @@ if _is_admin:
 # =============================================================
 # 仕訳帳CSV取込 (分析レポート用の取引明細データ)
 # =============================================================
-if _is_admin:
+if show_import_tools:
   with st.expander("📒 仕訳帳CSV取込 — 分析レポートの取引先明細用", expanded=False):
     st.markdown(
         "freee形式の仕訳帳CSV(`仕訳帳（新）CSV ...csv`)を取り込みます。"
@@ -313,7 +320,7 @@ if _is_admin:
             )
             st.rerun()
 
-if _is_admin:
+if show_import_tools:
     journal_imports_log = db.list_journal_imports(limit=5)
     if journal_imports_log:
         with st.expander(f"📜 仕訳帳 取込履歴 (直近{len(journal_imports_log)}件)"):
@@ -328,7 +335,7 @@ if _is_admin:
 # =============================================================
 # 取込履歴
 # =============================================================
-if _is_admin:
+if show_import_tools:
     imports_log = db.list_pl_imports(limit=10)
     if imports_log:
         with st.expander(f"📜 取込履歴 (直近{len(imports_log)}件)"):

@@ -8,6 +8,8 @@ from pathlib import Path
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "uriage.db"
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 LOCAL_REPLICA_PATH = Path(__file__).resolve().parent.parent / "data" / "cloud_replica.db"
+_CLOUD_CONNECTION = None
+_CLOUD_CONNECTION_KEY = None
 
 
 def _secret_value(key):
@@ -143,6 +145,7 @@ class _CloudConnection:
 
 
 def _connect_cloud():
+    global _CLOUD_CONNECTION, _CLOUD_CONNECTION_KEY
     try:
         import libsql
     except ImportError as exc:
@@ -150,10 +153,18 @@ def _connect_cloud():
             "クラウドDBへ接続するには requirements.txt の libsql が必要です。"
         ) from exc
 
+    database = _secret_value("TURSO_DATABASE_URL")
+    auth_token = _secret_value("TURSO_AUTH_TOKEN")
+    key = (database, auth_token)
+    if _CLOUD_CONNECTION is not None and _CLOUD_CONNECTION_KEY == key:
+        return _CloudConnection(_CLOUD_CONNECTION)
+
     conn = libsql.connect(
-        database=_secret_value("TURSO_DATABASE_URL"),
-        auth_token=_secret_value("TURSO_AUTH_TOKEN"),
+        database=database,
+        auth_token=auth_token,
     )
+    _CLOUD_CONNECTION = conn
+    _CLOUD_CONNECTION_KEY = key
     return _CloudConnection(conn)
 
 
@@ -201,7 +212,8 @@ def get_conn():
         conn.rollback()
         raise
     finally:
-        conn.close()
+        if not _use_cloud_db():
+            conn.close()
 
 
 def init_db():
