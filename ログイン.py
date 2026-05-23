@@ -16,7 +16,10 @@ st.set_page_config(
 )
 
 styling.inject_global_css()
-db.init_db()
+if getattr(db, "_use_cloud_db", lambda: False)():
+    db.init_login_schema()
+else:
+    db.init_db()
 auth.init_session()
 auth.auto_login_for_codex()
 auth.render_sidebar_navigation()

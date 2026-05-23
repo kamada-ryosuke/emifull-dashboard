@@ -26,6 +26,26 @@ def _use_cloud_db():
     return bool(_secret_value("TURSO_DATABASE_URL") and _secret_value("TURSO_AUTH_TOKEN"))
 
 
+def init_login_schema():
+    """Create only the tables needed before the login screen is shown."""
+    with get_conn() as conn:
+        conn.executescript("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            email TEXT UNIQUE NOT NULL,
+            role TEXT NOT NULL CHECK(role IN ('admin', 'user')),
+            name TEXT,
+            password_hash TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        """)
+        user_cols = {
+            r['name'] for r in conn.execute("PRAGMA table_info(users)").fetchall()
+        }
+        if 'password_hash' not in user_cols:
+            conn.execute("ALTER TABLE users ADD COLUMN password_hash TEXT")
+
+
 class _CloudRow:
     def __init__(self, columns, values):
         self._columns = list(columns)
