@@ -1,0 +1,48 @@
+# -*- coding: utf-8 -*-
+"""デモ用: 頂いた4枚のテストレシート分を手動でExcelに書き込み(API不要)。
+本番運用が始まったら削除可。
+"""
+from __future__ import annotations
+import sys
+from datetime import date
+from pathlib import Path
+
+from excel_writer import append_rows
+from master_data import FacilityMaster
+
+BASE = Path(__file__).resolve().parent.parent
+OUTPUT_DIR = BASE / "output"
+
+
+TEST_ROWS_EMI = [
+    {"date": date(2026, 5, 1), "account": "消耗品費",   "tax": "課対仕入10%",
+     "facility_code": "5.1.SORATOてんり", "amount": 1980, "summary": "ダイソー　支援用　教材費"},
+    {"date": date(2026, 5, 1), "account": "食材費",     "tax": "課対仕入8%（軽）",
+     "facility_code": "5.1.SORATOてんり", "amount": 7940, "summary": "イオンビッグ㈱　おやつ代"},
+    {"date": date(2026, 5, 1), "account": "燃料費",     "tax": "課対仕入10%",
+     "facility_code": "16.1.カラダキッズてんり", "amount": 7038, "summary": "㈱吉田石油　ガソリン代（送迎車）"},
+    {"date": date(2026, 5, 1), "account": "食材費",     "tax": "課対仕入8%（軽）",
+     "facility_code": "5.2.UMIEてんり", "amount": 8644, "summary": "イオンビッグ㈱　おやつ代"},
+    {"date": date(2026, 5, 1), "account": "消耗品費",   "tax": "課対仕入10%",
+     "facility_code": "5.2.UMIEてんり", "amount": 1100, "summary": "ダイソー　支援用　教材費"},
+]
+
+TEST_ROWS_NOJI = [
+    {"date": date(2026, 5, 1), "account": "旅費交通費", "tax": "課対仕入10%",
+     "facility_code": "01　のじぎく高砂", "amount": 1400, "summary": "大阪駅前地下駐車場　駐車料金"},
+]
+
+
+def main():
+    sys.stdout.reconfigure(encoding="utf-8")
+    fm = FacilityMaster()
+    emi_path  = OUTPUT_DIR / fm.excel_filename("EMI")
+    noji_path = OUTPUT_DIR / fm.excel_filename("のじ")
+    r1 = append_rows(emi_path, TEST_ROWS_EMI)
+    r2 = append_rows(noji_path, TEST_ROWS_NOJI)
+    print(f"EMI  → {emi_path.name}: {r1}")
+    print(f"のじ → {noji_path.name}: {r2}")
+
+
+if __name__ == "__main__":
+    main()

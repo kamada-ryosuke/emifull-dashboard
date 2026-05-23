@@ -1,0 +1,61 @@
+{
+  "_comment": "支払先(店舗)と勘定科目・税区分・標準摘要のマッピング。partial_match=true の場合は店舗名に含まれていれば一致。新しい店舗が出てきたら配列に追記。",
+  "rules": [
+    {"match": ["ダイソー", "DAISO", "Standard Products", "THREEPPY"], "account": "消耗品費", "tax": "課対仕入10%", "summary_template": "ダイソー　支援用　教材費"},
+    {"match": ["セリア", "Seria"], "account": "消耗品費", "tax": "課対仕入10%", "summary_template": "セリア　支援用　教材費"},
+    {"match": ["キャンドゥ", "CanDo"], "account": "消耗品費", "tax": "課対仕入10%", "summary_template": "キャンドゥ　支援用　教材費"},
+    {"match": ["3COINS", "スリーコインズ", "３COINS"], "account": "消耗品費", "tax": "課対仕入10%", "summary_template": "3COINS　支援用　教材費"},
+    {"match": ["DCM", "ロイヤルホームセンター", "コーナン", "ナフコ", "ジョーシン", "ケーズデンキ", "ニトリ", "ドン・キホーテ", "ドンキホーテ"], "account": "消耗品費", "tax": "課対仕入10%", "summary_template": "{store}　消耗品"},
+    {"match": ["ホワイト急便"], "account": "消耗品費", "tax": "課対仕入10%", "summary_template": "ホワイト急便　クリーニング代"},
+    {"match": ["WAY書店"], "account": "消耗品費", "tax": "課対仕入10%", "summary_template": "WAY書店　書籍代"},
+    {"match": ["MORIS", "ＭＯＲＩＳ"], "account": "消耗品費", "tax": "課対仕入10%", "summary_template": "MORIS　消耗品"},
+
+    {"match": ["イオンビッグ", "AEON", "イオン", "ザ・ビッグ"], "account": "食材費", "tax": "課対仕入8%（軽）", "summary_template": "イオンビッグ㈱　おやつ代"},
+    {"match": ["マックスバリュ"], "account": "食材費", "tax": "課対仕入8%（軽）", "summary_template": "マックスバリュ　食材費"},
+    {"match": ["シャトレーゼ"], "account": "食材費", "tax": "課対仕入8%（軽）", "summary_template": "シャトレーゼ　おやつ代"},
+    {"match": ["フレッシュ石守"], "account": "食材費", "tax": "課対仕入8%（軽）", "summary_template": "フレッシュ石守　食材費"},
+    {"match": ["業務スーパー"], "account": "食材費", "tax": "課対仕入8%（軽）", "summary_template": "業務スーパー　食材費"},
+    {"match": ["万代"], "account": "食材費", "tax": "課対仕入8%（軽）", "summary_template": "万代　食材費"},
+    {"match": ["マルアイ"], "account": "食材費", "tax": "課対仕入8%（軽）", "summary_template": "マルアイ　食材費"},
+    {"match": ["ヒラキ食品館", "ヒラキ"], "account": "食材費", "tax": "課対仕入8%（軽）", "summary_template": "ヒラキ食品館　食材費"},
+    {"match": ["ダイレックス"], "account": "食材費", "tax": "課対仕入8%（軽）", "summary_template": "ダイレックス　食材費"},
+    {"match": ["A-PRICE", "Aプライス"], "account": "食材費", "tax": "課対仕入8%（軽）", "summary_template": "A-PRICE　食材費"},
+    {"match": ["プライスカット"], "account": "食材費", "tax": "課対仕入8%（軽）", "summary_template": "プライスカット　食材費"},
+    {"match": ["オークワ"], "account": "食材費", "tax": "課対仕入8%（軽）", "summary_template": "オークワ　食材費"},
+    {"match": ["ZAGZAG", "ＺＡＧＺＡＧ", "ザグザグ"], "account": "食材費", "tax": "課対仕入8%（軽）", "summary_template": "ZAGZAG　食材費"},
+    {"match": ["クスリのアオキ", "薬のアオキ"], "account": "食材費", "tax": "課対仕入8%（軽）", "summary_template": "クスリのアオキ　食材費"},
+    {"match": ["くすりのレディ", "薬のレディ"], "account": "消耗品費", "tax": "課対仕入10%", "summary_template": "くすりのレディ　消耗品"},
+    {"match": ["くすりのフジタ", "薬のフジタ"], "account": "消耗品費", "tax": "課対仕入10%", "summary_template": "くすりのフジタ　消耗品"},
+    {"match": ["スギ薬局"], "account": "食材費", "tax": "課対仕入8%（軽）", "summary_template": "スギ薬局　食材費"},
+    {"match": ["キリン堂"], "account": "消耗品費", "tax": "課対仕入10%", "summary_template": "キリン堂　消耗品"},
+    {"match": ["ウエルシア"], "account": "消耗品費", "tax": "課対仕入10%", "summary_template": "ウエルシア　消耗品"},
+    {"match": ["ローソン"], "account": "消耗品費", "tax": "課対仕入10%", "summary_template": "ローソン　消耗品"},
+    {"match": ["白十字"], "account": "食材費", "tax": "課対仕入8%（軽）", "summary_template": "白十字　食材費"},
+
+    {"match": ["大阪駅前地下駐車場", "大阪市大阪駅前地下駐車場"], "account": "旅費交通費", "tax": "課対仕入10%", "summary_template": "大阪駅前地下駐車場　駐車料金"},
+    {"match": ["タイムズ", "Times24", "タイムズ24"], "account": "旅費交通費", "tax": "課対仕入10%", "summary_template": "タイムズ　駐車料金"},
+    {"match": ["パラカ"], "account": "旅費交通費", "tax": "課対仕入10%", "summary_template": "パラカ㈱　駐車料金"},
+    {"match": ["三井のリパーク", "三井リパーク", "リパーク"], "account": "旅費交通費", "tax": "課対仕入10%", "summary_template": "三井のリパーク　駐車料金"},
+
+    {"match": ["日本郵便", "郵便局", "ゆうちょ"], "account": "通信費", "tax": "課対仕入10%", "summary_template": "日本郵便㈱　切手代"},
+    {"match": ["収入印紙", "印紙税", "印紙売場"], "account": "租税公課", "tax": "対象外", "summary_template": "収入印紙"},
+    {"match": ["香典", "祝儀", "御祝", "御霊前", "御香典", "御仏前", "弔慰金"], "account": "交際費", "tax": "対象外", "summary_template": "{store}　慶弔費"},
+    {"match": ["自動車税", "軽自動車税", "固定資産税"], "account": "租税公課", "tax": "対象外", "summary_template": "{store}　税金"},
+
+    {"match": ["吉田石油", "SOL'A'TO", "SOLATO", "ソラト石油"], "account": "燃料費", "tax": "課対仕入10%", "summary_template": "㈱吉田石油　ガソリン代（送迎車）"},
+    {"match": ["エネオス", "ENEOS", "ＥＮＥＯＳ"], "account": "燃料費", "tax": "課対仕入10%", "summary_template": "エネオス　ガソリン代（送迎車）"},
+    {"match": ["コスモ石油", "出光", "シェル", "Shell"], "account": "燃料費", "tax": "課対仕入10%", "summary_template": "{store}　ガソリン代（送迎車）"},
+
+    {"match": ["ホンダカーズ", "オートバックス", "イエローハット", "JAオートサービス", "ガリバー"], "account": "車両費", "tax": "課対仕入10%", "summary_template": "{store}　車両費"},
+
+    {"match": ["華神", "魚民", "ニュートーキョー", "天平庵", "割鮮吉在門"], "account": "会議費", "tax": "課対仕入10%", "summary_template": "{store}　会議費"},
+
+    {"match": ["ユニクロ", "UNIQLO", "ワークマンプラス", "ワークマン", "張田耳鼻咽喉科"], "account": "福利厚生費", "tax": "課対仕入10%", "summary_template": "{store}　福利厚生費"}
+  ],
+  "default": {
+    "account": "消耗品費",
+    "tax": "課対仕入10%",
+    "summary_template": "{store}　消耗品",
+    "_note": "未マッチ時のフォールバック。判定に自信がない場合は require_review=true として処理"
+  }
+}

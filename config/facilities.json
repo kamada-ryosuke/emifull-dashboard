@@ -1,0 +1,118 @@
+{
+  "_comment": "施設マスター: 手書きされうる名前(キー) → 法人と経理管理番号付きコード(値)。aliases にひらがな/カタカナ/ローマ字/漢字を網羅。新しい呼び方が出てきたら aliases に追記。",
+  "EMI": {
+    "_corp_name": "医療法人社団EMIFULL",
+    "_excel_filename": "医療法人EMIFULL_デビット.xlsx",
+    "facilities": [
+      {
+        "code": "4.1.SORATOいなみ",
+        "aliases": ["SORATOいなみ", "ソラトいなみ", "そらといなみ", "SORATO稲美", "ソラト稲美", "そらと稲美", "soratoinami", "sorato inami", "ソラト印南", "そらと印南"]
+      },
+      {
+        "code": "4.2.UMIEいなみ",
+        "aliases": ["UMIEいなみ", "ウミエいなみ", "うみえいなみ", "UMIE稲美", "ウミエ稲美", "うみえ稲美", "umieinami", "umie inami", "ウミエ印南"]
+      },
+      {
+        "code": "4.3.UMIEいなみ第二教室",
+        "aliases": ["UMIEいなみ第二教室", "UMIEいなみ第二", "UMIEいなみ2", "UMIE稲美第二", "ウミエいなみ第二", "ウミエ稲美第二", "うみえいなみ第二", "umie inami 2", "umieinami2", "UMIEいなみ②"]
+      },
+      {
+        "code": "4.4.SORATOいなみ第二教室",
+        "aliases": ["SORATOいなみ第二教室", "SORATOいなみ第二", "SORATOいなみ2", "SORATO稲美第二", "ソラトいなみ第二", "ソラト稲美第二", "そらといなみ第二", "sorato inami 2", "soratoinami2", "SORATOいなみ②"]
+      },
+      {
+        "code": "4.5.BLOOMいなみ",
+        "aliases": ["BLOOMいなみ", "ブルームいなみ", "ぶるーむいなみ", "BLOOM稲美", "ブルーム稲美", "ぶるーむ稲美", "bloominami", "bloom inami"]
+      },
+      {
+        "code": "5.1.SORATOてんり",
+        "aliases": ["SORATOてんり", "ソラトてんり", "そらとてんり", "SORATO天理", "ソラト天理", "そらと天理", "soratotenri", "sorato tenri", "SORATO_天理"]
+      },
+      {
+        "code": "5.2.UMIEてんり",
+        "aliases": ["UMIEてんり", "ウミエてんり", "うみえてんり", "UMIE天理", "ウミエ天理", "うみえ天理", "umietenri", "umie tenri", "UMIE_天理"]
+      },
+      {
+        "code": "5.3.BLOOMてんり",
+        "aliases": ["BLOOMてんり", "ブルームてんり", "ぶるーむてんり", "BLOOM天理", "ブルーム天理", "ぶるーむ天理", "bloomtenri", "bloom tenri"]
+      },
+      {
+        "code": "7.1.シェアホーム天理1.2",
+        "aliases": ["シェアホーム天理1.2", "シェアホーム天理1", "シェアホーム天理2", "シェアホーム天理1・2", "シェアホーム天理①", "シェアホーム天理②", "ShareHome天理1.2", "Hinodeシェアホーム天理1", "Hinodeシェアホーム天理2", "Hinodeシェアホーム天理1.2", "ヒノデシェアホーム天理", "ひのでシェアホーム天理", "シェアホームてんり1", "シェアホームてんり2", "share home tenri 1", "share home tenri 2"]
+      },
+      {
+        "code": "7.2.シェアホーム天理3",
+        "aliases": ["シェアホーム天理3", "シェアホーム天理③", "ShareHome天理3", "Hinodeシェアホーム天理3", "ヒノデシェアホーム天理3", "ひのでシェアホーム天理3", "シェアホームてんり3", "share home tenri 3"]
+      },
+      {
+        "code": "9.1.SORATO UMIEきたはま",
+        "aliases": ["SORATO UMIEきたはま", "SORATOきたはま", "UMIEきたはま", "SORATOUMIE北浜", "ソラトウミエ北浜", "そらとうみえ北浜", "きたはま", "北浜", "kitahama", "sorato umie kitahama", "SORATO・UMIE北浜", "SORATO（UMIE）きたはま", "SORATO(UMIE)きたはま"]
+      },
+      {
+        "code": "11.1.ジョブカレッジかこがわ",
+        "aliases": ["ジョブカレッジかこがわ", "ジョブカレッジ加古川", "じょぶかれっじかこがわ", "JobCollege加古川", "JobCollegeかこがわ", "job college kakogawa", "ジョブカレ加古川", "ジョブカレかこがわ"]
+      },
+      {
+        "code": "12.1.カラダキッズかこがわ",
+        "aliases": ["カラダキッズかこがわ", "カラダキッズ加古川", "からだきっずかこがわ", "からだキッズ加古川", "Karada Kids 加古川", "KaradaKids加古川", "karadakids加古川", "カラダ加古川", "カラダ kids 加古川"]
+      },
+      {
+        "code": "14.1.シェアホーム加古川",
+        "aliases": ["シェアホーム加古川", "シェアホームかこがわ", "ShareHome加古川", "Hinodeシェアホーム加古川", "ひのでシェアホーム加古川", "ヒノデシェアホーム加古川", "share home kakogawa", "シェアホームかこがわ"]
+      },
+      {
+        "code": "14.2.NOAH（加古川）",
+        "aliases": ["NOAH", "ノア", "のあ", "NOAH加古川", "ノア加古川", "のあ加古川", "NOAH（加古川）", "NOAH(加古川)", "相談支援NOAH", "相談支援NOAH加古川", "noah", "noah kakogawa", "Noah加古川"]
+      },
+      {
+        "code": "16.1.カラダキッズてんり",
+        "aliases": ["カラダキッズてんり", "カラダキッズ天理", "からだきっずてんり", "からだキッズ天理", "Karada Kids 天理", "KaradaKids天理", "karadakids天理", "karada kids tenri", "カラダ天理", "カラダ kids 天理"]
+      },
+      {
+        "code": "99.本部",
+        "aliases": ["本部", "ホンブ", "ほんぶ", "EMIFULL本部", "エミフル本部", "emifull honbu", "headquarters", "HQ"]
+      }
+    ]
+  },
+  "のじ": {
+    "_corp_name": "NPO法人EMIFULL",
+    "_excel_filename": "NPO法人EMIFULL_デビット.xlsx",
+    "facilities": [
+      {
+        "code": "01　のじぎく高砂",
+        "aliases": ["のじぎく高砂", "ノジギク高砂", "野路菊高砂", "のじぎくたかさご", "ノジギクタカサゴ", "nojigiku takasago", "nojigikutakasago", "のじぎくTAKASAGO"]
+      },
+      {
+        "code": "02　のじぎく稲美",
+        "aliases": ["のじぎく稲美", "のじぎくいなみ", "ノジギク稲美", "野路菊稲美", "ノジギクイナミ", "nojigiku inami", "nojigikuinami", "ルミエール", "ルミエル", "RUMIERU", "Rumieru", "rumieru", "るみえる", "るみえーる", "ルミエ", "Lumiere", "lumiere"]
+      },
+      {
+        "code": "03　こすもす稲美",
+        "aliases": ["こすもす稲美", "こすもすいなみ", "サンスイート", "SunSweet", "Sun Sweet", "sunsweet", "さんすいーと", "サンスィート"]
+      },
+      {
+        "code": "04　だがし屋キューブ",
+        "aliases": ["だがし屋キューブ", "駄菓子屋キューブ", "ダガシヤキューブ", "だがしやきゅーぶ", "キューブ", "Cube", "cube", "Qbe", "ダガシキューブ"]
+      },
+      {
+        "code": "06　大西キッチン",
+        "aliases": ["大西キッチン", "おおにしキッチン", "オオニシキッチン", "おおにしきっちん", "ohnishi kitchen", "ohnishikitchen", "大西きっちん", "OHNISHIキッチン"]
+      },
+      {
+        "code": "07　高砂カフェ",
+        "aliases": ["高砂カフェ", "たかさごカフェ", "タカサゴカフェ", "たかさごかふぇ", "Takasago Cafe", "takasago cafe", "takasagocafe", "高砂cafe", "TAKASAGOカフェ"]
+      },
+      {
+        "code": "08　のじぎく加古川",
+        "aliases": ["のじぎく加古川", "ノジギク加古川", "野路菊加古川", "のじぎくかこがわ", "ノジギクカコガワ", "nojigiku kakogawa", "nojigikukakogawa"]
+      }
+    ]
+  },
+  "_folder_overrides_comment": "Dropboxの施設フォルダ名 → 経理上は別施設として記録するルール。レシートはこのフォルダにアップするが、Excelには to_facility_code として書き込み、摘要末尾に summary_suffix を追記する。",
+  "folder_overrides": {
+    "06　大西キッチン": {
+      "to_facility_code": "02　のじぎく稲美",
+      "summary_suffix": "（大西キッチン用）"
+    }
+  }
+}

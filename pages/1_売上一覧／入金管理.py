@@ -1,0 +1,1424 @@
+"""売上一覧 / 入金管理
+   CSV取込・売上一覧/入金管理・未入金一覧・ダッシュボードを統合"""
+import io
+from collections import defaultdict
+from datetime import date, datetime
+
+import streamlit as st
+import pandas as pd
+
+from lib import db, csv_parser, styling, auth, notification, drive_sync
+
+styling.inject_global_css()
+auth.require_admin()
+auth.render_sidebar_navigation()
+
+st.title("売上一覧 / 入金管理")
+
+year_months = db.list_year_months()
+facilities = db.list_facilities()
+
+_is_admin = auth.is_admin()
+_top_titles = ["📥 CSV取込", "📋 売上一覧 / 入金管理", "🔔 未入金一覧"]
+if _is_admin:
+    _top_titles.append("📊 ダッシュボード")
+_top_tabs = st.tabs(_top_titles)
+
+
+# ============================================================
+# ① CSV取込タブ
+# ============================================================
+def _render_drive_section():
+    """Google Drive から CSV を一括取込するセクション。"""
+    st.markdown("#### ☁ Driveから自動取込")
+
+    # 設定ファイル有無で表示分岐
+    try:
+        cfg = drive_sync.load_config()
+    except drive_sync.DriveConfigError as e:
+        st.info(
+            "Drive自動取込はまだ設定されていません。  \n"
+            "**手順**: `config/drive_config.json.sample` を `drive_config.json` にコピー → "
+            "GCPでサービスアカウント鍵を作成 → `config/drive-service-account.json` に保存 → "
+            "Driveの取込ルートフォルダをそのSAメールに『編集者』権限で共有 → "
+            "`python scripts/setup_drive_folders.py` を一度実行。"
+        )
+        with st.expander("詳細メッセージ"):
+            st.code(str(e))
+        return
+
+    root_url = f"https://drive.google.com/drive/folders/{cfg['root_folder_id']}"
+    cols = st.columns([3, 2])
+    with cols[0]:
+        st.markdown(
+            f"**取込ルート**: [{cfg['root_folder_id']}]({root_url})  \n"
+            f"**処理済**: `{cfg.get('processed_folder_name', '_処理済')}/`  \n"
+            f"**認証**: `{cfg.get('auth_mode', 'service_account')}`"
+        )
+        st.caption(
+            "施設フォルダ（損益ダッシュボードの親基準）にCSVをドラッグ＆ドロップすると、"
+            "ボタン押下で自動取込→処理済フォルダへ移動します。"
+        )
+    with cols[1]:
+        run_clicked = st.button(
+            "☁ Driveから今すぐ取込",
+            type='primary', width='stretch', key='drive_sync_btn',
+            help="Driveのルートフォルダを巡回してCSVを取り込みます。",
+        )
+        ensure_clicked = st.button(
+            "📁 施設フォルダを作成 / 確認",
+            type='secondary', width='stretch', key='drive_ensure_btn',
+            help="損益ダッシュボードの親グループ名でDriveに施設フォルダを保証作成します。",
+        )
+
+    log_box = st.container()
+
+    if ensure_clicked:
+        logs: list[str] = []
+
+        def _log(m: str):
+            logs.append(m)
+
+        try:
+            with st.spinner("Driveに施設フォルダを作成中..."):
+                service = drive_sync.build_service(cfg)
+                root_id = cfg['root_folder_id']
+                existing = {f['name'] for f in drive_sync.list_subfolders(service, root_id)}
+                names = drive_sync.facility_folder_names()
+                created = 0
+                for name in names:
+                    if name not in existing:
+                        drive_sync.ensure_subfolder(service, root_id, name)
+                        _log(f"作成: {name}")
+                        created += 1
+                    else:
+                        _log(f"既存: {name}")
+                drive_sync.ensure_subfolder(
+                    service, root_id, cfg.get('processed_folder_name', '_処理済'),
+                )
+            st.success(f"完了: {len(names)} 施設 / 新規 {created} フォルダ作成")
+        except drive_sync.DriveConfigError as e:
+            st.error(str(e))
+        except Exception as e:
+            st.error(f"フォルダ作成エラー: {e}")
+        with log_box:
+            if logs:
+                with st.expander("作業ログ", expanded=False):
+                    st.text("\n".join(logs))
+
+    if run_clicked:
+        logs: list[str] = []
+
+        def _log(m: str):
+            logs.append(m)
+
+        try:
+            with st.spinner("Driveを巡回してCSVを取込中..."):
+                result = drive_sync.sync(
+                    config=cfg, on_log=_log, create_missing_folders=True,
+                )
+            summary = result.to_dict()
+            n_ok = len(summary['files_processed'])
+            n_skip = len(summary['files_skipped'])
+            n_err = len(summary['files_failed'])
+            if n_ok:
+                st.success(
+                    f"取込完了: {n_ok} ファイル"
+                    + (f" / スキップ {n_skip}" if n_skip else "")
+                    + (f" / エラー {n_err}" if n_err else "")
+                )
+                st.balloons()
+            elif n_skip == 0 and n_err == 0:
+                st.info("対象ファイルはありませんでした（処理済か、まだCSVが置かれていません）")
+            else:
+                st.warning(
+                    f"取込なし: スキップ {n_skip} / エラー {n_err}"
+                )
+
+            if summary['files_processed']:
+                st.markdown("**取込ファイル**")
+                df_ok = pd.DataFrame(summary['files_processed'])[
+                    ['filename', 'src_folder', 'service_year_month',
+                     'facility_name', 'inserted', 'updated', 'row_count']
+                ]
+                df_ok.columns = ['ファイル', 'フォルダ', 'サービス年月',
+                                 '施設', '新規', '更新', '行数']
+                st.dataframe(df_ok, hide_index=True, width='stretch')
+
+            if summary['files_skipped']:
+                with st.expander(f"スキップ {n_skip} 件", expanded=False):
+                    st.dataframe(
+                        pd.DataFrame(summary['files_skipped']),
+                        hide_index=True, width='stretch',
+                    )
+            if summary['files_failed']:
+                with st.expander(f"エラー {n_err} 件", expanded=True):
+                    st.dataframe(
+                        pd.DataFrame(summary['files_failed']),
+                        hide_index=True, width='stretch',
+                    )
+        except drive_sync.DriveConfigError as e:
+            st.error(str(e))
+        except Exception as e:
+            st.error(f"同期エラー: {e}")
+
+        with log_box:
+            if logs:
+                with st.expander("詳細ログ", expanded=False):
+                    st.text("\n".join(logs))
+
+
+def render_csv_import():
+    # ===== ☁ Driveから自動取込セクション =====
+    _render_drive_section()
+
+    st.markdown("---")
+    st.markdown("#### 手動アップロード")
+    st.markdown("""
+給付費CSVファイル（国の標準形式、`SK*.csv`）をアップロードしてください。
+**Shift-JIS / 1施設1ファイル**を想定。
+**K122-01（通所支援）と J121-01（障がい福祉）の両形式**に対応しています。
+""")
+
+    uploaded = st.file_uploader("CSVファイル", type=['csv'], key='csv_uploader')
+
+    if uploaded is None:
+        st.info("CSVファイルをドラッグ＆ドロップ、またはクリックで選択してください")
+        return
+
+    data = uploaded.getvalue()
+    parsed = csv_parser.parse_csv_bytes(data)
+
+    if 'error' in parsed:
+        st.error(f"解析エラー: {parsed['error']}")
+        return
+
+    if not parsed['records']:
+        st.error("K122-01 / J121-01 のレコードが見つかりませんでした。CSVの形式を確認してください。")
+        return
+
+    st.success(f"**{parsed['row_count']}名分** のレコードを検出しました")
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("サービス提供年月", parsed['service_year_month'] or "-")
+    with col2:
+        st.metric("請求年月", parsed['billing_year_month'] or "-")
+    with col3:
+        st.metric("件数", parsed['row_count'])
+
+    codes = parsed['csv_facility_codes']
+    if len(codes) == 0:
+        st.error("事業所番号が検出できませんでした")
+        return
+    if len(codes) > 1:
+        st.warning(f"複数の事業所番号 {codes} が含まれています。最初のコードのみ使用します。")
+    csv_code = codes[0]
+
+    mapped_facility = db.get_facility_by_csv_code(csv_code)
+
+    if mapped_facility:
+        st.info(f"事業所コード `{csv_code}` → **{mapped_facility['short_code']}: {mapped_facility['facility_name']}**")
+        facility_id = mapped_facility['id']
+    else:
+        st.warning(
+            f"事業所コード `{csv_code}` はまだ施設マスタに紐付けられていません。\n\n"
+            f"このCSVがどの施設のものか選んでください："
+        )
+        options = {
+            f"{f['short_code']}: {f['facility_name']}"
+            + (f"  （既に {f['csv_facility_code']} 紐付け済）" if f['csv_facility_code'] else "")
+            : f['id']
+            for f in facilities
+        }
+        selected_label = st.selectbox("施設選択", list(options.keys()), key='csv_fac_pick')
+        selected_id = options[selected_label]
+
+        if st.button(f"この施設に CSVコード `{csv_code}` を紐付ける",
+                     type='secondary', key='csv_link_btn'):
+            db.update_facility_csv_code(selected_id, csv_code)
+            st.success("紐付けました。再度ファイルをアップロードしてください。")
+            st.rerun()
+        return
+
+    st.markdown("### プレビュー")
+    df_preview = pd.DataFrame([
+        {
+            '受給者証番号': r['cert_number'],
+            '利用者氏名': r['child_name'],
+            '保護者氏名': r['guardian_name'],
+            '上限月額': r['fee_limit'],
+            '総費用額': r['total_cost'],
+            '自己負担(請求額)': r['self_charge'],
+            '国保請求(請求額)': r['kokuho_charge'],
+        }
+        for r in parsed['records']
+    ])
+    st.dataframe(df_preview, width='stretch', height=400)
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("自己負担合計", f"{df_preview['自己負担(請求額)'].sum():,} 円")
+    c2.metric("国保請求合計", f"{df_preview['国保請求(請求額)'].sum():,} 円")
+    c3.metric("総費用額合計", f"{df_preview['総費用額'].sum():,} 円")
+
+    existing_records = db.get_existing_records(facility_id, parsed['service_year_month'])
+    if existing_records:
+        st.warning(
+            f"⚠ 既に **{parsed['service_year_month']}** 月の "
+            f"**{mapped_facility['facility_name']}** のデータが **{len(existing_records)}件** 登録されています。\n\n"
+            f"上書き保存すると、請求額・氏名等は新CSVで更新されます。\n"
+            f"**入金情報（入金日・入金額・回収手段・メモ）は保持されます。**"
+        )
+        confirm_label = "上書き保存する"
+    else:
+        confirm_label = "保存する"
+
+    if parsed['errors']:
+        with st.expander(f"解析時の警告 ({len(parsed['errors'])}件)"):
+            for err in parsed['errors']:
+                st.text(err)
+
+    if st.button(confirm_label, type='primary', key='csv_save_btn'):
+        import_id = db.create_import(
+            facility_id=facility_id,
+            service_ym=parsed['service_year_month'],
+            billing_ym=parsed['billing_year_month'],
+            filename=uploaded.name,
+            file_hash=parsed['file_hash'],
+            row_count=parsed['row_count'],
+        )
+
+        inserted = 0
+        updated = 0
+        progress = st.progress(0, text="保存中...")
+        for i, rec in enumerate(parsed['records']):
+            rec_with_facility = dict(rec)
+            rec_with_facility['facility_id'] = facility_id
+            result = db.upsert_monthly_record(rec_with_facility, import_id)
+            if result == 'inserted':
+                inserted += 1
+            else:
+                updated += 1
+            progress.progress((i + 1) / len(parsed['records']),
+                              text=f"保存中... {i+1}/{len(parsed['records'])}")
+        progress.empty()
+
+        st.success(f"保存完了: 新規 {inserted} 件、更新 {updated} 件")
+        st.balloons()
+        st.markdown("「**📋 売上一覧 / 入金管理**」タブで確認できます。")
+
+
+# ============================================================
+# ② 売上一覧 / 入金管理タブ
+# ============================================================
+def _build_split_df(records_list, show_diff_only=False):
+    rows_self = []
+    rows_kokuho = []
+    for r in records_list:
+        base = {
+            'id': r['id'],
+            '利用者氏名': r['child_name'] or '',
+            '受給者証番号': r['cert_number'],
+            '施設': r['facility_name'],
+        }
+        s_charge = r['self_charge'] or 0
+        s_paid = r['self_paid_amount'] or 0
+        s_status = r['self_payment_status'] or ('対象外' if s_charge <= 0 else '未入金')
+        rows_self.append({
+            **base,
+            '請求額': s_charge,
+            '回収額': s_paid,
+            '差': (s_charge - s_paid) if s_charge > 0 else 0,
+            '回収手段': r['self_payment_method'] or '',
+            '入金日': pd.to_datetime(r['self_paid_date']).date() if r['self_paid_date'] else None,
+            'ステータス': s_status,
+            '備考': r.get('self_memo') or '',
+        })
+        k_charge = r['kokuho_charge'] or 0
+        k_paid = r['kokuho_paid_amount'] or 0
+        k_status = r['kokuho_payment_status'] or ('対象外' if k_charge <= 0 else '未入金')
+        rows_kokuho.append({
+            **base,
+            '請求額': k_charge,
+            '回収額': k_paid,
+            '差': (k_charge - k_paid) if k_charge > 0 else 0,
+            '回収手段': r['kokuho_payment_method'] or '',
+            '入金日': pd.to_datetime(r['kokuho_paid_date']).date() if r['kokuho_paid_date'] else None,
+            'ステータス': k_status,
+            '備考': r.get('kokuho_memo') or '',
+        })
+    self_df = pd.DataFrame(rows_self)
+    kokuho_df = pd.DataFrame(rows_kokuho)
+    if show_diff_only:
+        self_df = self_df[self_df['差'] != 0].reset_index(drop=True)
+        kokuho_df = kokuho_df[kokuho_df['差'] != 0].reset_index(drop=True)
+    return self_df, kokuho_df
+
+
+def _detect_changes(edited, original, kbn_key):
+    changes = []
+    for i in range(len(edited)):
+        if i >= len(original):
+            continue
+        orig = original.iloc[i]
+        new = edited.iloc[i]
+        charge_changed = int(orig['請求額'] or 0) != int(new['請求額'] or 0)
+        paid_changed = int(orig['回収額'] or 0) != int(new['回収額'] or 0)
+        method_changed = (orig['回収手段'] or '') != (new['回収手段'] or '')
+        date_changed = orig['入金日'] != new['入金日']
+        memo_changed = (orig.get('備考') or '') != (new.get('備考') or '')
+        if charge_changed or paid_changed or method_changed or date_changed or memo_changed:
+            changes.append({
+                'id': int(orig['id']),
+                'name': orig['利用者氏名'],
+                'kbn': kbn_key,
+                'kbn_label': '自己負担' if kbn_key == 'self' else '国保請求',
+                'old_charge': int(orig['請求額'] or 0),
+                'new_charge': int(new['請求額'] or 0),
+                'old_paid': int(orig['回収額'] or 0),
+                'new_paid': int(new['回収額'] or 0),
+                'paid_date': new['入金日'],
+                'method': new['回収手段'],
+                'old_memo': orig.get('備考') or '',
+                'new_memo': new.get('備考') or '',
+                'memo_changed': memo_changed,
+                'amount_changed': charge_changed or paid_changed,
+                'risky': charge_changed and (int(orig['回収額'] or 0) > 0),
+            })
+    return changes
+
+
+def render_uriage_main():
+    if not year_months:
+        st.info("まだデータがありません。「**📥 CSV取込**」タブから取込んでください。")
+        return
+
+    st.markdown(
+        "<div style='background:#fef9c3; border-left:5px solid #facc15; "
+        "padding:10px 16px; border-radius:6px; margin-bottom:12px; font-size:13px;'>"
+        "✏️ <b>編集可能セル</b>：<b>請求額 / 回収額 / 入金日 / 回収手段</b>　"
+        "（セルをダブルクリック）<br>"
+        "💡 編集後は下の「保存」ボタンで一括反映"
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+    with st.container():
+        st.markdown("#### 絞り込み")
+        col1, col2 = st.columns(2)
+        with col1:
+            selected_ym = st.selectbox("サービス提供年月", year_months,
+                                        index=0, key='uriage_ym')
+        with col2:
+            facility_options = {"（すべて）": None}
+            for f in facilities:
+                if f['csv_facility_code']:
+                    facility_options[f"{f['short_code']}: {f['facility_name']}"] = f['id']
+            selected_facility_label = st.selectbox(
+                "施設", list(facility_options.keys()), key='uriage_fac',
+            )
+            selected_facility_id = facility_options[selected_facility_label]
+
+    records = db.list_records(service_ym=selected_ym, facility_id=selected_facility_id)
+    if not records:
+        st.warning("条件に合うレコードがありません")
+        return
+
+    self_charge_sum = sum(r['self_charge'] or 0 for r in records)
+    self_paid_sum = sum(r['self_paid_amount'] or 0 for r in records)
+    kokuho_charge_sum = sum(r['kokuho_charge'] or 0 for r in records)
+    kokuho_paid_sum = sum(r['kokuho_paid_amount'] or 0 for r in records)
+
+    st.markdown("#### サマリ")
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("対象利用者", f"{len(records)} 名")
+    c2.metric("自己負担 請求", f"{self_charge_sum:,} 円")
+    c3.metric("自己負担 入金", f"{self_paid_sum:,} 円",
+              delta=f"差 {self_charge_sum - self_paid_sum:,}", delta_color="inverse")
+    c4.metric("国保請求 請求", f"{kokuho_charge_sum:,} 円")
+    c5.metric("国保請求 入金", f"{kokuho_paid_sum:,} 円",
+              delta=f"差 {kokuho_charge_sum - kokuho_paid_sum:,}", delta_color="inverse")
+
+    st.markdown("---")
+
+    _tab_titles = ["📋 一覧 / 個別編集", "💳 一括入金登録"]
+    if _is_admin:
+        _tab_titles.append("🗑 一括削除（管理者）")
+    _tabs = st.tabs(_tab_titles)
+    tab_view = _tabs[0]
+    tab_bulk = _tabs[1]
+    tab_delete = _tabs[2] if _is_admin else None
+
+    # ---- 一覧 / 個別編集 ----
+    with tab_view:
+        show_diff_only = st.checkbox("差額ありのみ表示", value=False, key='diff_filter')
+        self_df, kokuho_df = _build_split_df(records, show_diff_only=show_diff_only)
+
+        state_key_self = f"orig_self_{selected_ym}_{selected_facility_id}_{show_diff_only}"
+        state_key_kokuho = f"orig_kokuho_{selected_ym}_{selected_facility_id}_{show_diff_only}"
+        if state_key_self not in st.session_state:
+            st.session_state[state_key_self] = self_df.copy()
+        if state_key_kokuho not in st.session_state:
+            st.session_state[state_key_kokuho] = kokuho_df.copy()
+        original_self = st.session_state[state_key_self]
+        original_kokuho = st.session_state[state_key_kokuho]
+
+        common_columns = {
+            'id': st.column_config.NumberColumn('id', disabled=True, width='small'),
+            '利用者氏名': st.column_config.TextColumn('利用者氏名', disabled=True),
+            '受給者証番号': st.column_config.TextColumn('受給者証番号', disabled=True),
+            '施設': st.column_config.TextColumn('施設', disabled=True),
+            '請求額': st.column_config.NumberColumn(
+                '請求額', format='localized', step=1, min_value=0,
+                help='CSV取込後でも上書き編集可能',
+            ),
+            '回収額': st.column_config.NumberColumn(
+                '回収額', format='localized', step=1, min_value=0,
+                help='手入力で入金額を調整',
+            ),
+            '差': st.column_config.NumberColumn('差', format='localized', disabled=True,
+                                                  help='請求額 − 回収額（請求0円は対象外）'),
+            '入金日': st.column_config.DateColumn('入金日', format='YYYY-MM-DD'),
+            'ステータス': st.column_config.TextColumn('ステータス', disabled=True, width='small'),
+            '備考': st.column_config.TextColumn(
+                '備考', width='medium',
+                help='変更理由など。記入すると保存時にメール通知の本文に含まれます。',
+            ),
+        }
+
+        st.markdown(
+            "<div style='background:#dbeafe; padding:10px 16px; border-radius:6px; "
+            "border-left:5px solid #2563eb; margin-top:8px; margin-bottom:8px;'>"
+            "<span style='color:#1e3a8a; font-weight:700; font-size:18px;'>"
+            "自己負担</span>"
+            "<span style='color:#475569; font-size:13px; margin-left:12px;'>"
+            f"{len(self_df)}行 / 請求 {self_df['請求額'].sum():,}円 / 回収 {self_df['回収額'].sum():,}円"
+            "</span></div>",
+            unsafe_allow_html=True,
+        )
+        self_columns = {
+            **common_columns,
+            '回収手段': st.column_config.SelectboxColumn(
+                '回収手段',
+                options=[''] + db.PAYMENT_METHODS_SELF,
+                required=False, width='small',
+                help='自己負担: SMBC / 振込 / 現金 / その他',
+            ),
+        }
+        edited_self = st.data_editor(
+            styling.style_editor_df(self_df),
+            column_config=self_columns,
+            hide_index=True,
+            width='stretch',
+            height=320,
+            key=f"editor_self_{selected_ym}_{selected_facility_id}_{show_diff_only}",
+        )
+        edited_self['差'] = (edited_self['請求額'].fillna(0).astype(int)
+                             - edited_self['回収額'].fillna(0).astype(int))
+
+        st.markdown(
+            "<div style='background:#fef3c7; padding:10px 16px; border-radius:6px; "
+            "border-left:5px solid #d97706; margin-top:20px; margin-bottom:8px;'>"
+            "<span style='color:#78350f; font-weight:700; font-size:18px;'>"
+            "国保請求</span>"
+            "<span style='color:#475569; font-size:13px; margin-left:12px;'>"
+            f"{len(kokuho_df)}行 / 請求 {kokuho_df['請求額'].sum():,}円 / 回収 {kokuho_df['回収額'].sum():,}円"
+            "</span></div>",
+            unsafe_allow_html=True,
+        )
+        kokuho_columns = {
+            **common_columns,
+            '回収手段': st.column_config.SelectboxColumn(
+                '回収手段',
+                options=[''] + db.PAYMENT_METHODS_KOKUHO,
+                required=False, width='small',
+                help='国保請求: 国保 / 自己',
+            ),
+        }
+        edited_kokuho = st.data_editor(
+            styling.style_editor_df(kokuho_df),
+            column_config=kokuho_columns,
+            hide_index=True,
+            width='stretch',
+            height=320,
+            key=f"editor_kokuho_{selected_ym}_{selected_facility_id}_{show_diff_only}",
+        )
+        edited_kokuho['差'] = (edited_kokuho['請求額'].fillna(0).astype(int)
+                               - edited_kokuho['回収額'].fillna(0).astype(int))
+
+        changes = (
+            _detect_changes(edited_self, original_self, 'self')
+            + _detect_changes(edited_kokuho, original_kokuho, 'kokuho')
+        )
+        risky_changes = [c for c in changes if c['risky']]
+
+        st.markdown("---")
+
+        col_save, col_info = st.columns([1, 5])
+        if changes:
+            with col_info:
+                st.info(f"未保存の編集: **{len(changes)}行**")
+        else:
+            with col_info:
+                st.caption("（編集なし）")
+
+        supervisor_ok = True
+        if risky_changes:
+            st.error(
+                "⚠ **入金登録後の請求額変更が含まれています** — "
+                "保存前に上司の許可が必要です。"
+            )
+            with st.expander(f"対象 {len(risky_changes)}件を確認", expanded=True):
+                for c in risky_changes:
+                    st.markdown(
+                        f"- id={c['id']}　**{c['name']}**　{c['kbn_label']}　"
+                        f"請求 **{c['old_charge']:,}円 → {c['new_charge']:,}円**"
+                        f"（既に {c['old_paid']:,}円 入金済）"
+                    )
+            supervisor_ok = st.checkbox(
+                "上司の許可を得たので、保存する",
+                value=False,
+                key='supervisor_approval',
+            )
+
+        save_disabled = (not changes) or (bool(risky_changes) and not supervisor_ok)
+
+        with col_save:
+            save_clicked = st.button(
+                "保存", type='primary',
+                width='stretch',
+                disabled=save_disabled,
+                help=("変更がありません" if not changes
+                      else "上司許可チェックが必要です" if save_disabled
+                      else None),
+            )
+
+        if save_clicked:
+            success = 0
+            errors = []
+            for c in changes:
+                try:
+                    paid_date_str = c['paid_date'].isoformat() if c['paid_date'] else None
+                    method = c['method'] if c['method'] else None
+                    memo_to_save = c['new_memo'] if c['memo_changed'] else None
+                    db.update_record(
+                        record_id=c['id'],
+                        kbn=c['kbn'],
+                        charge=c['new_charge'],
+                        paid_amount=c['new_paid'],
+                        paid_date=paid_date_str,
+                        method=method,
+                        memo=memo_to_save,
+                    )
+                    success += 1
+                except Exception as e:
+                    errors.append(f"id={c['id']} {c['kbn_label']}: {e}")
+            if success:
+                st.success(f"保存しました: {success}行")
+                st.balloons()
+            if errors:
+                st.error("エラー:\n" + "\n".join(errors))
+
+            notify_targets = [c for c in changes
+                              if c['amount_changed'] or (c['memo_changed'] and c['new_memo'])]
+            if notify_targets:
+                st.session_state['_pending_notification'] = notify_targets
+
+            st.session_state.pop(state_key_self, None)
+            st.session_state.pop(state_key_kokuho, None)
+            st.session_state.pop('supervisor_approval', None)
+            st.rerun()
+
+        pending = st.session_state.get('_pending_notification')
+        if pending:
+            st.markdown("---")
+            current = auth.current_user()
+            recipient = current['email']
+            email_data = notification.build_email(recipient, pending, current.get('name'))
+
+            st.markdown(
+                "<div style='background:#eff6ff; border:2px solid #3b82f6; border-radius:10px; "
+                "padding:16px; margin-bottom:12px;'>"
+                "<div style='font-size:18px; color:#1e40af; font-weight:700; margin-bottom:8px;'>"
+                "📧 メール通知を送信しますか？</div>"
+                f"<div style='color:#475569; font-size:14px;'>"
+                f"宛先: <b>{recipient}</b>　|　件名: <b>{email_data['subject']}</b>"
+                "</div></div>",
+                unsafe_allow_html=True,
+            )
+
+            with st.expander("メール本文プレビュー", expanded=True):
+                st.text(email_data['body'])
+
+            n1, n2, n3 = st.columns([1, 1, 1])
+            with n1:
+                st.link_button(
+                    "📩 メールアプリで開く",
+                    email_data['mailto'],
+                    width='stretch',
+                )
+            with n2:
+                if notification.smtp_available():
+                    if st.button(
+                        "🚀 SMTPで自動送信",
+                        type='primary', width='stretch',
+                        key='smtp_send_btn',
+                    ):
+                        ok, msg = notification.smtp_send(
+                            recipient, email_data['subject'], email_data['body']
+                        )
+                        if ok:
+                            st.success(f"送信成功: {msg}")
+                            st.session_state.pop('_pending_notification', None)
+                            st.rerun()
+                        else:
+                            st.error(msg)
+                else:
+                    st.button("🚀 SMTP送信（未設定）", disabled=True,
+                              width='stretch',
+                              help='.streamlit/secrets.toml に [smtp] を追加すると自動送信できます')
+            with n3:
+                if st.button("通知をスキップ（クリア）",
+                             type='secondary', width='stretch',
+                             key='clear_notif_btn'):
+                    st.session_state.pop('_pending_notification', None)
+                    st.rerun()
+
+        self_part = edited_self.reset_index(drop=True).assign(区分='自己負担')
+        kokuho_part = edited_kokuho.reset_index(drop=True).assign(区分='国保請求')
+        all_diff = pd.concat([self_part, kokuho_part], ignore_index=True)
+        diff_only = all_diff[all_diff['差'] != 0].reset_index(drop=True)
+        if not diff_only.empty:
+            st.markdown("---")
+            st.markdown(f"#### ⚠ 差額あり（{len(diff_only)}行 / 合計 {diff_only['差'].sum():,} 円）")
+            diff_only = diff_only[['id', '利用者氏名', '受給者証番号', '施設', '区分',
+                                    '請求額', '回収額', '差', '回収手段', '入金日', 'ステータス']]
+            diff_only = diff_only.loc[:, ~diff_only.columns.duplicated()].reset_index(drop=True)
+            st.dataframe(
+                styling.style_records_df(diff_only),
+                width='stretch', hide_index=True, height=240,
+            )
+
+    # ---- 一括入金登録 ----
+    with tab_bulk:
+        st.markdown(
+            "**複数行をまとめて入金記録**できます。"
+            "下の **🔵 自己負担 / 🟡 国保請求** タブで切り替え、"
+            "氏名で絞り込み、共通の入金日・回収手段を設定して入金額をまとめて確定します。"
+        )
+
+        st.markdown("#### 共通絞り込み")
+        cf1, cf2 = st.columns([3, 1])
+        with cf1:
+            search_name = st.text_input(
+                "利用者氏名で絞り込み（部分一致）", value="",
+                placeholder="例: カワシマ", key='bulk_search'
+            )
+        with cf2:
+            only_unpaid = st.checkbox(
+                "未入金・一部入金のみ", value=True, key='bulk_unpaid_only',
+            )
+
+        sub_self, sub_kokuho = st.tabs(["🔵 自己負担", "🟡 国保請求"])
+
+        def _render_bulk_section(kbn_key, kbn_label, method_choices, color_bg, color_fg):
+            target_records = []
+            for r in records:
+                name = r['child_name'] or ''
+                if search_name and search_name not in name:
+                    continue
+                if kbn_key == 'self':
+                    charge = r['self_charge'] or 0
+                    status = r['self_payment_status'] or '未入金'
+                    current_paid = r['self_paid_amount'] or 0
+                else:
+                    charge = r['kokuho_charge'] or 0
+                    status = r['kokuho_payment_status'] or '未入金'
+                    current_paid = r['kokuho_paid_amount'] or 0
+                if charge <= 0:
+                    continue
+                if only_unpaid and status == '入金済':
+                    continue
+                target_records.append((r, charge, current_paid, status))
+
+            st.markdown(
+                f"<div style='background:{color_bg}; padding:8px 14px; border-radius:6px; "
+                f"border-left:5px solid {color_fg}; margin:8px 0;'>"
+                f"<span style='color:{color_fg}; font-weight:700; font-size:15px;'>"
+                f"{kbn_label}</span>"
+                f"<span style='color:#475569; font-size:12px; margin-left:10px;'>"
+                f"対象 {len(target_records)}行</span></div>",
+                unsafe_allow_html=True,
+            )
+
+            if not target_records:
+                st.info(
+                    f"{kbn_label}：対象がありません。"
+                    "（既に全件 入金済 / 請求0円 / 検索条件不一致 のいずれか）"
+                )
+                return
+
+            st.markdown("##### 共通設定")
+            cs1, cs2, cs3 = st.columns(3)
+            with cs1:
+                common_date = st.date_input(
+                    "入金日（共通）", value=date.today(),
+                    key=f'bulk_date_{kbn_key}',
+                )
+            with cs2:
+                common_method = st.selectbox(
+                    "回収手段（共通）", method_choices,
+                    key=f'bulk_method_{kbn_key}',
+                    help=f"{kbn_label}用の回収手段: " + " / ".join(method_choices),
+                )
+            with cs3:
+                slide_charge = st.checkbox(
+                    "請求額をそのまま入金額に反映", value=True,
+                    help="ONにすると入金額の初期値を請求額にコピーします（全額入金時の入力省略）。",
+                    key=f'bulk_slide_{kbn_key}',
+                )
+
+            bulk_data = []
+            for r, charge, current_paid, status in target_records:
+                default_paid = charge if slide_charge else current_paid
+                bulk_data.append({
+                    '記録': True,
+                    'id': r['id'],
+                    '利用者氏名': r['child_name'] or '',
+                    '請求額': charge,
+                    '入金額': default_paid,
+                    '現状': status,
+                })
+            bulk_df = pd.DataFrame(bulk_data)
+
+            st.markdown("##### 編集テーブル")
+            editor_key = (
+                f"bulk_editor_{kbn_key}_{selected_ym}_{selected_facility_id}"
+                f"_{search_name}_{only_unpaid}_{slide_charge}"
+            )
+            edited_bulk = st.data_editor(
+                bulk_df,
+                column_config={
+                    '記録': st.column_config.CheckboxColumn(
+                        '記録', help='チェックを外すとこの行はスキップ', width='small',
+                    ),
+                    'id': st.column_config.NumberColumn('id', disabled=True, width='small'),
+                    '利用者氏名': st.column_config.TextColumn('利用者氏名', disabled=True),
+                    '請求額': st.column_config.NumberColumn('請求額', disabled=True, format='localized'),
+                    '入金額': st.column_config.NumberColumn('入金額', format='localized', step=1, min_value=0),
+                    '現状': st.column_config.TextColumn('現状', disabled=True, width='small'),
+                },
+                hide_index=True,
+                width='stretch',
+                height=480,
+                key=editor_key,
+            )
+
+            selected_count = int(edited_bulk['記録'].sum())
+            target_subset = edited_bulk[edited_bulk['記録']]
+            total_to_record = int(target_subset['入金額'].sum()) if len(target_subset) else 0
+
+            m1, m2, _ = st.columns([1, 1, 3])
+            m1.metric("記録対象", f"{selected_count} 行")
+            m2.metric("入金合計", f"{total_to_record:,} 円")
+
+            if st.button(
+                f"📝 {kbn_label} まとめて記録（{selected_count}行）",
+                type='primary',
+                disabled=(selected_count == 0),
+                width='stretch',
+                key=f'bulk_record_btn_{kbn_key}',
+            ):
+                success = 0
+                errors = []
+                for idx in range(len(edited_bulk)):
+                    row = edited_bulk.iloc[idx]
+                    if not row['記録']:
+                        continue
+                    try:
+                        db.update_payment(
+                            record_id=int(row['id']),
+                            kbn=kbn_key,
+                            paid_amount=int(row['入金額']),
+                            paid_date=common_date.isoformat(),
+                            method=common_method,
+                        )
+                        success += 1
+                    except Exception as e:
+                        errors.append(f"id={row['id']}: {e}")
+                if success:
+                    st.success(f"{kbn_label}: {success}行を記録しました")
+                    st.balloons()
+                if errors:
+                    st.error("エラー:\n" + "\n".join(errors))
+                st.rerun()
+
+        with sub_self:
+            _render_bulk_section(
+                'self', '自己負担', db.PAYMENT_METHODS_SELF,
+                color_bg='#dbeafe', color_fg='#1e3a8a',
+            )
+        with sub_kokuho:
+            _render_bulk_section(
+                'kokuho', '国保請求', db.PAYMENT_METHODS_KOKUHO,
+                color_bg='#fef3c7', color_fg='#78350f',
+            )
+
+    # ---- 一括削除（管理者専用） ----
+    if tab_delete is not None:
+        with tab_delete:
+            st.error(
+                "⚠ **一括削除は取り消せません。** 削除前に必ずバックアップ "
+                "（`data/uriage.db` のコピー）を取ってください。"
+            )
+
+            st.markdown("### 🎯 条件指定で削除")
+            st.markdown(
+                "現在の絞り込み条件にマッチするデータを削除します。"
+                "**施設マスタ・ユーザー情報は削除されません**（取込履歴と売上明細のみ）。"
+            )
+
+            del_c1, del_c2 = st.columns(2)
+            with del_c1:
+                del_ym = st.selectbox(
+                    "対象 サービス提供年月",
+                    ['（すべての月）'] + year_months,
+                    index=year_months.index(selected_ym) + 1 if selected_ym in year_months else 0,
+                    key='del_ym_select',
+                )
+            with del_c2:
+                del_facility_options = {"（すべての施設）": None}
+                for f in facilities:
+                    if f['csv_facility_code']:
+                        del_facility_options[
+                            f"{f['short_code']}: {f['facility_name']}"
+                        ] = f['id']
+                del_facility_label = st.selectbox(
+                    "対象 施設",
+                    list(del_facility_options.keys()),
+                    key='del_facility_select',
+                )
+                del_facility_id = del_facility_options[del_facility_label]
+
+            del_ym_param = None if del_ym == '（すべての月）' else del_ym
+            target_count = db.count_records(
+                service_ym=del_ym_param, facility_id=del_facility_id,
+            )
+
+            st.markdown(
+                f"<div style='background:#fef2f2; border:2px solid #fecaca; "
+                f"padding:14px 18px; border-radius:8px; margin:12px 0;'>"
+                f"<div style='font-size:13px; color:#991b1b; font-weight:700;'>削除対象</div>"
+                f"<div style='font-size:24px; color:#7f1d1d; font-weight:700; margin-top:4px;'>"
+                f"{target_count:,} 件</div>"
+                f"<div style='font-size:12px; color:#475569; margin-top:6px;'>"
+                f"年月: {del_ym}　／　施設: {del_facility_label}</div></div>",
+                unsafe_allow_html=True,
+            )
+
+            if target_count == 0:
+                st.info("削除対象がありません")
+            else:
+                confirm_check = st.checkbox(
+                    "上記の件数を削除することに同意します（取り消せません）",
+                    key='del_filter_confirm_check',
+                )
+                confirm_text = st.text_input(
+                    f"確認のため `削除` と入力してください（{target_count:,}件削除）",
+                    key='del_filter_confirm_text',
+                    placeholder="削除",
+                )
+                del_disabled = not (confirm_check and confirm_text.strip() == '削除')
+
+                if st.button(
+                    f"🗑 {target_count:,} 件を削除する",
+                    disabled=del_disabled,
+                    key='del_filter_btn',
+                    width='content',
+                ):
+                    rec_n, imp_n = db.delete_records(
+                        service_ym=del_ym_param, facility_id=del_facility_id,
+                    )
+                    st.success(
+                        f"削除しました: 売上明細 {rec_n:,}件 / 取込履歴 {imp_n:,}件"
+                    )
+                    st.rerun()
+
+            st.markdown("---")
+
+            st.markdown("### 💣 全データ削除")
+            all_count = db.count_records()
+            st.markdown(
+                f"<div style='background:#7f1d1d; color:white; padding:14px 18px; "
+                f"border-radius:8px; margin:12px 0;'>"
+                f"<div style='font-size:13px; font-weight:700;'>全データ</div>"
+                f"<div style='font-size:24px; font-weight:700; margin-top:4px;'>"
+                f"{all_count:,} 件のレコード</div>"
+                f"<div style='font-size:12px; margin-top:6px; opacity:0.9;'>"
+                f"全月・全施設の売上明細＋取込履歴をまるごと削除します"
+                f"（施設マスタ・ユーザー情報は残ります）</div></div>",
+                unsafe_allow_html=True,
+            )
+
+            if all_count == 0:
+                st.info("削除対象がありません")
+            else:
+                confirm_all_check = st.checkbox(
+                    "全データの削除に同意します（取り消せません）",
+                    key='del_all_confirm_check',
+                )
+                confirm_all_text = st.text_input(
+                    "確認のため `全データを削除します` と入力してください",
+                    key='del_all_confirm_text',
+                    placeholder="全データを削除します",
+                )
+                del_all_disabled = not (
+                    confirm_all_check and confirm_all_text.strip() == '全データを削除します'
+                )
+
+                if st.button(
+                    f"💣 全データ（{all_count:,}件）を削除する",
+                    disabled=del_all_disabled,
+                    key='del_all_btn',
+                    type='secondary',
+                ):
+                    rec_n, imp_n = db.delete_all_records()
+                    st.success(
+                        f"全データを削除しました: 売上明細 {rec_n:,}件 / 取込履歴 {imp_n:,}件"
+                    )
+                    st.rerun()
+
+    # ---- Excelエクスポート ----
+    st.markdown("---")
+    buf = io.BytesIO()
+    all_df_self, all_df_kokuho = _build_split_df(records)
+    combined = pd.concat([
+        all_df_self.assign(区分='自己負担'),
+        all_df_kokuho.assign(区分='国保請求'),
+    ], ignore_index=True)
+    combined.to_excel(buf, index=False, engine='openpyxl')
+    st.download_button(
+        label="📥 表示中の一覧をExcelでダウンロード",
+        data=buf.getvalue(),
+        file_name=f"売上一覧_{selected_ym}.xlsx",
+        mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    )
+
+
+# ============================================================
+# ③ 未入金一覧タブ
+# ============================================================
+def render_unpaid():
+    if not year_months:
+        st.info("まだデータがありません。「**📥 CSV取込**」タブから取込んでください。")
+        return
+
+    st.markdown(
+        "未入金・一部入金のレコードを **経過月数** で集計し、督促リスト出力できます。"
+    )
+
+    st.markdown("#### 絞り込み")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        facility_options = {"全施設": None}
+        for f in facilities:
+            if f['csv_facility_code']:
+                facility_options[f"{f['short_code']}: {f['facility_name']}"] = f['id']
+        selected_facility_label = st.selectbox(
+            "施設", list(facility_options.keys()), key='unpaid_fac',
+        )
+        selected_facility_id = facility_options[selected_facility_label]
+    with c2:
+        target_kbn = st.selectbox("区分", ["両方", "自己負担のみ", "国保請求のみ"],
+                                    key='unpaid_kbn')
+    with c3:
+        aging_filter = st.selectbox(
+            "経過月数",
+            ["すべて", "1ヶ月未満", "1〜3ヶ月", "3〜6ヶ月", "6ヶ月以上"],
+            key='unpaid_aging',
+        )
+
+    all_records = db.list_records(facility_id=selected_facility_id)
+
+    today = date.today()
+    rows = []
+    for r in all_records:
+        for kbn in ('self', 'kokuho'):
+            kbn_label = '自己負担' if kbn == 'self' else '国保請求'
+            if target_kbn == '自己負担のみ' and kbn != 'self':
+                continue
+            if target_kbn == '国保請求のみ' and kbn != 'kokuho':
+                continue
+
+            charge = r[f'{kbn}_charge'] or 0
+            paid = r[f'{kbn}_paid_amount'] or 0
+            status = r[f'{kbn}_payment_status'] or '未入金'
+
+            if status in ('入金済', '対象外') or charge <= 0:
+                continue
+            diff = charge - paid
+
+            try:
+                ym = r['service_year_month']
+                ym_date = datetime.strptime(f"{ym}-01", "%Y-%m-%d").date()
+                months = (today.year - ym_date.year) * 12 + (today.month - ym_date.month)
+            except Exception:
+                months = 0
+
+            rows.append({
+                'id': r['id'],
+                'サービス年月': r['service_year_month'],
+                '経過月数': months,
+                '施設': r['facility_name'],
+                '受給者証番号': r['cert_number'],
+                '利用者氏名': r['child_name'] or '',
+                '区分': kbn_label,
+                '請求額': charge,
+                '回収額': paid,
+                '差額（未収）': diff,
+                'ステータス': status,
+                '回収手段': r[f'{kbn}_payment_method'] or '',
+            })
+
+    def aging_bucket(m):
+        if m < 1:
+            return "1ヶ月未満"
+        if m < 3:
+            return "1〜3ヶ月"
+        if m < 6:
+            return "3〜6ヶ月"
+        return "6ヶ月以上"
+
+    if aging_filter != 'すべて':
+        rows = [r for r in rows if aging_bucket(r['経過月数']) == aging_filter]
+
+    if not rows:
+        st.success("該当する未入金レコードはありません")
+        return
+
+    st.markdown("---")
+    st.markdown("#### 経過月数別サマリ")
+
+    agg = {'1ヶ月未満': {'count': 0, 'amount': 0},
+           '1〜3ヶ月': {'count': 0, 'amount': 0},
+           '3〜6ヶ月': {'count': 0, 'amount': 0},
+           '6ヶ月以上': {'count': 0, 'amount': 0}}
+    for r in rows:
+        bucket = aging_bucket(r['経過月数'])
+        agg[bucket]['count'] += 1
+        agg[bucket]['amount'] += r['差額（未収）']
+
+    sc1, sc2, sc3, sc4 = st.columns(4)
+    for col, (bucket, color) in zip(
+        [sc1, sc2, sc3, sc4],
+        [('1ヶ月未満', '#10b981'),
+         ('1〜3ヶ月', '#f59e0b'),
+         ('3〜6ヶ月', '#f97316'),
+         ('6ヶ月以上', '#dc2626')],
+    ):
+        with col:
+            v = agg[bucket]
+            st.markdown(
+                f"<div style='background:white; border:2px solid {color}; border-radius:10px; "
+                f"padding:14px; text-align:center;'>"
+                f"<div style='color:{color}; font-size:13px; font-weight:700;'>{bucket}</div>"
+                f"<div style='font-size:22px; font-weight:700; color:#0f172a; margin-top:4px;'>"
+                f"{v['count']} 件</div>"
+                f"<div style='font-size:14px; color:#475569; margin-top:2px;'>"
+                f"{v['amount']:,} 円</div></div>",
+                unsafe_allow_html=True,
+            )
+
+    total_count = sum(v['count'] for v in agg.values())
+    total_amount = sum(v['amount'] for v in agg.values())
+    st.markdown(
+        f"<div style='background:#fef2f2; border-left:6px solid #dc2626; "
+        f"padding:12px 16px; border-radius:8px; margin-top:16px;'>"
+        f"<span style='font-size:14px; color:#7f1d1d; font-weight:600;'>未入金合計：</span> "
+        f"<span style='font-size:18px; color:#7f1d1d; font-weight:800;'>"
+        f"{total_count} 件 / {total_amount:,} 円</span></div>",
+        unsafe_allow_html=True,
+    )
+
+    st.markdown("---")
+    st.markdown(f"#### 一覧（{len(rows)} 件、古い順）")
+
+    rows.sort(key=lambda r: (-r['経過月数'], r['施設'], r['利用者氏名']))
+
+    df = pd.DataFrame(rows)
+
+    def color_aging(val):
+        if val >= 6:
+            return 'background-color:#fee2e2; color:#991b1b; font-weight:700'
+        if val >= 3:
+            return 'background-color:#ffedd5; color:#9a3412; font-weight:700'
+        if val >= 1:
+            return 'background-color:#fef3c7; color:#92400e; font-weight:700'
+        return 'background-color:#d1fae5; color:#065f46; font-weight:700'
+
+    def color_kbn(val):
+        if val == '自己負担':
+            return 'background-color:#dbeafe; color:#1e3a8a; font-weight:600'
+        if val == '国保請求':
+            return 'background-color:#fef3c7; color:#78350f; font-weight:600'
+        return ''
+
+    def color_diff(val):
+        return 'color:#dc2626; font-weight:700' if val and val != 0 else ''
+
+    styled = (
+        df.style
+        .map(color_aging, subset=['経過月数'])
+        .map(color_kbn, subset=['区分'])
+        .map(color_diff, subset=['差額（未収）'])
+        .format({'請求額': '{:,}', '回収額': '{:,}', '差額（未収）': '{:,}'})
+    )
+    st.dataframe(styled, width='stretch', hide_index=True, height=520)
+
+    st.markdown("---")
+    st.markdown("#### 督促リスト出力")
+    st.caption("表示中の未入金一覧をExcelファイルでダウンロードできます。")
+
+    buf = io.BytesIO()
+    df.to_excel(buf, index=False, engine='openpyxl')
+    st.download_button(
+        label="📥 督促リストをExcelでダウンロード",
+        data=buf.getvalue(),
+        file_name=f"督促リスト_{date.today().isoformat()}.xlsx",
+        mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        type='primary',
+    )
+
+    st.info(
+        "💡 入金確認後の入金登録は **「📋 売上一覧 / 入金管理」タブ → 一括入金登録** から、"
+        "氏名検索＋共通日付指定でまとめて記録できます。"
+    )
+
+
+# ============================================================
+# ④ ダッシュボードタブ（管理者専用）
+# ============================================================
+def render_dashboard():
+    if not year_months:
+        st.info("まだデータがありません。「**📥 CSV取込**」タブから取込んでください。")
+        return
+
+    st.markdown("#### 表示条件")
+    c1, c2, c3 = st.columns([1, 2, 2])
+
+    with c1:
+        period_mode = st.radio(
+            "期間モード",
+            ["単月", "年度（4月-3月）"],
+            key='dash_period_mode',
+        )
+
+    with c2:
+        if period_mode == "単月":
+            selected_ym = st.selectbox("対象月", year_months, index=0, key='dash_month')
+            start_ym = end_ym = selected_ym
+            period_label = selected_ym
+            is_fy_mode = False
+        else:
+            fiscal_years = db.list_fiscal_years()
+            selected_fy = st.selectbox(
+                "対象年度",
+                fiscal_years,
+                format_func=lambda fy: f"{fy}年度（{fy}/4 〜 {fy+1}/3）",
+                key='dash_fy',
+            )
+            start_ym, end_ym = db.fiscal_year_range(selected_fy)
+            period_label = f"{selected_fy}年度"
+            is_fy_mode = True
+
+    with c3:
+        facility_options = {"全施設（合計）": None}
+        for f in facilities:
+            if f['csv_facility_code']:
+                facility_options[f"{f['short_code']}: {f['facility_name']}"] = f['id']
+        selected_facility_label = st.selectbox(
+            "対象施設", list(facility_options.keys()), key='dash_fac',
+        )
+        selected_facility_id = facility_options[selected_facility_label]
+
+    records = db.list_records_in_range(start_ym, end_ym, selected_facility_id)
+
+    if not records:
+        st.warning("対象期間にデータがありません")
+        return
+
+    fac_label = (
+        "全施設" if selected_facility_id is None
+        else selected_facility_label
+    )
+    st.markdown(
+        f"<div style='background:linear-gradient(90deg,#dbeafe 0%,#fef3c7 100%); "
+        f"padding:14px 20px; border-radius:10px; border-left:6px solid #2563eb; "
+        f"margin:16px 0;'>"
+        f"<div style='font-size:13px; color:#475569; font-weight:600;'>表示中</div>"
+        f"<div style='font-size:20px; color:#0f172a; font-weight:700; margin-top:4px;'>"
+        f"{period_label}　／　{fac_label}</div></div>",
+        unsafe_allow_html=True,
+    )
+
+    self_charge = sum(r['self_charge'] or 0 for r in records)
+    self_paid = sum(r['self_paid_amount'] or 0 for r in records)
+    kokuho_charge = sum(r['kokuho_charge'] or 0 for r in records)
+    kokuho_paid = sum(r['kokuho_paid_amount'] or 0 for r in records)
+    total_charge = self_charge + kokuho_charge
+    total_paid = self_paid + kokuho_paid
+
+    sc1, sc2, sc3, sc4 = st.columns(4)
+    sc1.metric("対象件数", f"{len(records)} 件")
+    sc2.metric("請求総額", f"{total_charge:,} 円")
+    sc3.metric("入金額", f"{total_paid:,} 円")
+    sc4.metric("未入金額", f"{total_charge - total_paid:,} 円", delta_color="inverse")
+
+    if total_charge > 0:
+        rate = total_paid / total_charge
+        st.progress(min(rate, 1.0), text=f"入金率 {rate*100:.1f}%")
+
+    st.markdown("---")
+    st.markdown("#### 区分別")
+    df_kbn = pd.DataFrame([
+        {
+            '区分': '自己負担', '請求額': self_charge, '回収額': self_paid,
+            '差': self_charge - self_paid,
+            '入金率': f"{(self_paid / self_charge * 100) if self_charge else 0:.1f}%",
+        },
+        {
+            '区分': '国保請求', '請求額': kokuho_charge, '回収額': kokuho_paid,
+            '差': kokuho_charge - kokuho_paid,
+            '入金率': f"{(kokuho_paid / kokuho_charge * 100) if kokuho_charge else 0:.1f}%",
+        },
+    ])
+    st.dataframe(
+        styling.style_records_df(df_kbn),
+        width='stretch', hide_index=True,
+    )
+
+    if is_fy_mode:
+        st.markdown("---")
+        st.markdown("#### 月別推移")
+        monthly_data = []
+        for ym in db.fiscal_year_months(selected_fy):
+            ym_records = [r for r in records if r['service_year_month'] == ym]
+            s_chg = sum(r['self_charge'] or 0 for r in ym_records)
+            s_paid_m = sum(r['self_paid_amount'] or 0 for r in ym_records)
+            k_chg = sum(r['kokuho_charge'] or 0 for r in ym_records)
+            k_paid_m = sum(r['kokuho_paid_amount'] or 0 for r in ym_records)
+            monthly_data.append({
+                '月': ym,
+                '件数': len(ym_records),
+                '自己負担請求': s_chg,
+                '自己負担回収': s_paid_m,
+                '国保請求': k_chg,
+                '国保回収': k_paid_m,
+                '請求合計': s_chg + k_chg,
+                '入金合計': s_paid_m + k_paid_m,
+                '差': (s_chg + k_chg) - (s_paid_m + k_paid_m),
+            })
+        monthly_df = pd.DataFrame(monthly_data)
+
+        def red_if_diff(val):
+            return 'color:#dc2626; font-weight:700' if val and val != 0 else ''
+        styled_monthly = (
+            monthly_df.style
+            .map(red_if_diff, subset=['差'])
+            .format({
+                '自己負担請求': '{:,}', '自己負担回収': '{:,}',
+                '国保請求': '{:,}', '国保回収': '{:,}',
+                '請求合計': '{:,}', '入金合計': '{:,}', '差': '{:,}',
+            })
+        )
+        st.dataframe(styled_monthly, width='stretch', hide_index=True)
+
+    st.markdown("---")
+    st.markdown("#### 回収手段別")
+    method_agg = defaultdict(lambda: {'count': 0, 'charge': 0, 'paid': 0})
+    for r in records:
+        m = r['self_payment_method'] or '(未設定)'
+        method_agg[('自己負担', m)]['count'] += 1
+        method_agg[('自己負担', m)]['charge'] += r['self_charge'] or 0
+        method_agg[('自己負担', m)]['paid'] += r['self_paid_amount'] or 0
+        m = r['kokuho_payment_method'] or '(未設定)'
+        method_agg[('国保請求', m)]['count'] += 1
+        method_agg[('国保請求', m)]['charge'] += r['kokuho_charge'] or 0
+        method_agg[('国保請求', m)]['paid'] += r['kokuho_paid_amount'] or 0
+
+    df_method = pd.DataFrame([
+        {
+            '区分': k[0],
+            '回収手段': k[1],
+            '件数': v['count'],
+            '請求額': v['charge'],
+            '回収額': v['paid'],
+            '差': v['charge'] - v['paid'],
+        }
+        for k, v in sorted(method_agg.items())
+    ])
+    st.dataframe(
+        styling.style_records_df(df_method),
+        width='stretch', hide_index=True,
+    )
+
+    if selected_facility_id is None:
+        st.markdown("---")
+        st.markdown("#### 事業所別")
+        fac_agg = defaultdict(lambda: {
+            'count': 0,
+            'self_chg': 0, 'self_paid': 0,
+            'kokuho_chg': 0, 'kokuho_paid': 0,
+        })
+        for r in records:
+            key = (r['facility_short_code'], r['facility_name'])
+            fac_agg[key]['count'] += 1
+            fac_agg[key]['self_chg'] += r['self_charge'] or 0
+            fac_agg[key]['self_paid'] += r['self_paid_amount'] or 0
+            fac_agg[key]['kokuho_chg'] += r['kokuho_charge'] or 0
+            fac_agg[key]['kokuho_paid'] += r['kokuho_paid_amount'] or 0
+
+        rows_fac = []
+        for (code, name), v in sorted(fac_agg.items()):
+            total_chg = v['self_chg'] + v['kokuho_chg']
+            total_paid_f = v['self_paid'] + v['kokuho_paid']
+            rows_fac.append({
+                'コード': code,
+                '事業所名': name,
+                '件数': v['count'],
+                '自己負担請求': v['self_chg'],
+                '自己負担回収': v['self_paid'],
+                '国保請求': v['kokuho_chg'],
+                '国保回収': v['kokuho_paid'],
+                '請求合計': total_chg,
+                '入金合計': total_paid_f,
+                '未入金額': total_chg - total_paid_f,
+            })
+        df_fac = pd.DataFrame(rows_fac)
+
+        def red_if_unpaid(val):
+            return 'color:#dc2626; font-weight:700' if val and val != 0 else ''
+        styled_fac = (
+            df_fac.style
+            .map(red_if_unpaid, subset=['未入金額'])
+            .format({
+                '自己負担請求': '{:,}', '自己負担回収': '{:,}',
+                '国保請求': '{:,}', '国保回収': '{:,}',
+                '請求合計': '{:,}', '入金合計': '{:,}', '未入金額': '{:,}',
+            })
+        )
+        st.dataframe(styled_fac, width='stretch', hide_index=True)
+
+
+# ============================================================
+# タブ呼び出し
+# ============================================================
+with _top_tabs[0]:
+    render_csv_import()
+with _top_tabs[1]:
+    render_uriage_main()
+with _top_tabs[2]:
+    render_unpaid()
+if _is_admin:
+    with _top_tabs[3]:
+        render_dashboard()

@@ -1,0 +1,25 @@
+{
+  "_comment": "Google Drive 自動取込設定。実運用では drive_config.json にコピーして値を埋めてください。",
+
+  "root_folder_id": "11qlAL0fMW7j79Ntz5K2W2rI4cNcFp5l9",
+  "_root_folder_id_help": "Driveの取込ルートフォルダID。共有URL https://drive.google.com/drive/folders/<ID> の <ID> 部分。",
+
+  "processed_folder_name": "_処理済",
+  "_processed_folder_name_help": "取込み完了したCSVを移す先のフォルダ名。ルート直下に自動作成されます。",
+
+  "auth_mode": "service_account",
+  "_auth_mode_help": "'service_account' か 'oauth' のいずれか。自動運用は service_account 推奨。",
+
+  "service_account_path": "config/drive-service-account.json",
+  "_service_account_path_help": "GCPで作成したサービスアカウント鍵JSONのパス。Driveの取込ルートをこのSAのメールアドレスに『編集者』権限で共有してください。",
+
+  "oauth_credentials_path": "config/drive-oauth-credentials.json",
+  "oauth_token_path": "config/drive-oauth-token.json",
+  "_oauth_help": "OAuth方式の場合のみ使用。GCPで『デスクトップアプリ』として作成したクライアント鍵JSON。初回は手動でブラウザ認証してトークンを保存。",
+
+  "csv_extensions": [".csv", ".CSV"],
+  "max_file_size_mb": 10,
+
+  "watcher_poll_interval_sec": 300,
+  "_watcher_poll_interval_help": "drive_watcher.py が新ファイルを確認しに行く間隔（秒）。デフォルト5分。"
+}

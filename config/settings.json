@@ -1,0 +1,35 @@
+{
+  "_comment": "システム全体設定。base_dir以下のパスは相対指定。Dropboxレシートルートは絶対パス。",
+  "base_dir": "C:\\売上入金管理ツール",
+  "dropbox_receipts_root": "C:\\Users\\user01\\株式会社ＥＭＩＦＵＬＬ Dropbox\\医療法人社団EMIFULL\\障がい事業部\\00障がい事業部\\デビッドカード",
+  "dropbox_processed_subdir": "_処理済み",
+  "dropbox_failed_subdir": "_要確認",
+  "watch_dirs": {
+    "EMI": "receipts/EMI",
+    "のじ": "receipts/のじ"
+  },
+  "_legacy_local_watch": "watch_dirs はローカル運用用。Dropbox運用ではdropbox_receipts_rootを使用。両方共存可。",
+  "processed_dir": "receipts/_processed",
+  "failed_dir": "receipts/_failed",
+  "output_dir": "C:\\Users\\user01\\株式会社ＥＭＩＦＵＬＬ Dropbox\\医療法人社団EMIFULL\\障がい事業部\\00障がい事業部",
+  "logs_dir": "logs",
+  "processed_log": "logs/processed_files.json",
+  "process_log": "logs/processing.log",
+  "image_extensions": [
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".heic",
+    ".webp"
+  ],
+  "credit_account": "関西みらい銀行",
+  "anthropic_model": "claude-opus-4-7",
+  "anthropic_model_fallback": "claude-sonnet-4-6",
+  "watch_poll_interval_sec": 3,
+  "max_image_long_edge_px": 2000,
+  "ignore_subfolders": [
+    "_処理済み",
+    "_要確認"
+  ],
+  "notion_api_token": ""
+}
