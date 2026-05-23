@@ -203,6 +203,11 @@ def require_admin():
         st.stop()
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def _cached_sidebar_vehicles():
+    return db.list_vehicles(include_scrapped=False)
+
+
 def _render_sidebar_vehicle_alert():
     """サイドバー: 車検満了 1か月以内の車両を簡素表示。
 
@@ -216,7 +221,7 @@ def _render_sidebar_vehicle_alert():
         from lib import vehicle_pdf as vp
         from datetime import date
         ALERT_DAYS_SIDEBAR = 30
-        rows = db.list_vehicles(include_scrapped=False)
+        rows = _cached_sidebar_vehicles()
         today = date.today()
         items = []
         for r in rows:

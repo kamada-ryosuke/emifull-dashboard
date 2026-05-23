@@ -200,6 +200,7 @@ def _detect_corporation_from_filename(filename: str) -> str:
     return ''
 
 
+@st.cache_data(ttl=60, show_spinner=False)
 def _list_dropbox_files() -> list[dict]:
     """格納フォルダ（Drive / 旧Dropbox）上の `*デビット*.xlsx` を返す。"""
     storage = _resolve_storage_dir()
@@ -265,6 +266,7 @@ def _receipt_kind(path: Path) -> str:
 RECEIPT_SUBFOLDER_NAMES = ('01.デビッドカード清算', 'デビッドカード')
 
 
+@st.cache_data(ttl=60, show_spinner=False)
 def _list_receipt_files(storage_dir: Path) -> list[dict]:
     """デビットカード清算レシート（写メ / PDF）のみを再帰列挙。
 

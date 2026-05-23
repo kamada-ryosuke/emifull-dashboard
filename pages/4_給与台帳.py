@@ -101,6 +101,7 @@ def _color_total_amount(val):
     return 'background-color:#f1f5f9; color:#64748b; font-weight:600'
 
 
+@st.cache_data(ttl=60, show_spinner=False)
 def _list_dropbox_files():
     """Dropboxフォルダ配下の給与台帳ファイルを再帰的に収集。
     ファイル名と中身の両方から判定するので、新しい命名規則でも自動取込できる。"""
