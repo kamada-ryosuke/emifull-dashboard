@@ -507,72 +507,86 @@ with tabs[1]:
                     checked_pairs,
                 )
 
-            top_save_col, top_note_col = st.columns([1, 5])
-            with top_save_col:
-                if st.button("💾 保存", type='primary',
-                             use_container_width=True, key='perm_save_top_btn'):
-                    _save_permission_df(st.session_state[matrix_state_key])
-                    st.success("閲覧権限を保存しました。")
-                    st.rerun()
-            with top_note_col:
-                st.caption(
-                    "全選択・全解除は表のチェックを変えるだけです。最後に左の保存を押してください。"
+            with st.form(
+                key=f'perm_form_{perm_ym}_{st.session_state[editor_version_key]}',
+                clear_on_submit=False,
+            ):
+                top_save_col, top_note_col = st.columns([1, 5])
+                with top_save_col:
+                    save_clicked = st.form_submit_button(
+                        "💾 保存", type='primary', use_container_width=True,
+                    )
+                with top_note_col:
+                    st.caption(
+                        "チェック中は保存されません。最後に左の保存を押すと反映します。"
+                    )
+
+                header_cols = st.columns([1.4] + [1] * len(manager_columns))
+                header_cols[0].markdown("**氏名**")
+                for h_col, manager_col in zip(header_cols[1:], manager_columns):
+                    h_col.markdown(f"**{manager_col}**")
+
+                on_clicked = {}
+                on_cols = st.columns([1.4] + [1] * len(manager_columns))
+                on_cols[0].caption("全選択")
+                for btn_col, manager_col in zip(on_cols[1:], manager_columns):
+                    with btn_col:
+                        on_clicked[manager_col] = st.form_submit_button(
+                            f"{manager_col} 全選択",
+                            type='secondary',
+                            use_container_width=True,
+                        )
+
+                off_clicked = {}
+                off_cols = st.columns([1.4] + [1] * len(manager_columns))
+                off_cols[0].caption("全解除")
+                for btn_col, manager_col in zip(off_cols[1:], manager_columns):
+                    with btn_col:
+                        off_clicked[manager_col] = st.form_submit_button(
+                            f"{manager_col} 全解除",
+                            type='secondary',
+                            use_container_width=True,
+                        )
+
+                edited = st.data_editor(
+                    st.session_state[matrix_state_key],
+                    width='stretch',
+                    hide_index=True,
+                    height=min(700, 120 + 36 * len(matrix_df)),
+                    column_config={
+                        'employee_id': None,
+                        '氏名': st.column_config.TextColumn(disabled=True),
+                        **{
+                            col: st.column_config.CheckboxColumn(
+                                label=col,
+                                help=f"{col}さんがこの職員の給与を閲覧できる場合にチェックします。",
+                            )
+                            for col in manager_columns
+                        },
+                    },
+                    key=f'perm_editor_{perm_ym}_{st.session_state[editor_version_key]}',
                 )
 
-            header_cols = st.columns([1.4] + [1] * len(manager_columns))
-            header_cols[0].markdown("**氏名**")
-            for h_col, manager_col in zip(header_cols[1:], manager_columns):
-                h_col.markdown(f"**{manager_col}**")
+            if save_clicked:
+                st.session_state[matrix_state_key] = edited.copy()
+                _save_permission_df(st.session_state[matrix_state_key])
+                st.success("閲覧権限を保存しました。")
+                st.rerun()
 
-            on_cols = st.columns([1.4] + [1] * len(manager_columns))
-            on_cols[0].caption("全選択")
-            for btn_col, manager_col in zip(on_cols[1:], manager_columns):
-                if btn_col.button(
-                    "全選択",
-                    type='secondary',
-                    use_container_width=True,
-                    key=f'perm_col_on_{perm_ym}_{manager_col}',
-                ):
-                    current = st.session_state[matrix_state_key].copy()
+            changed_by_bulk = False
+            current = edited.copy()
+            for manager_col in manager_columns:
+                if on_clicked.get(manager_col):
                     current[manager_col] = True
-                    st.session_state[matrix_state_key] = current
-                    st.session_state[editor_version_key] += 1
-                    st.rerun()
-
-            off_cols = st.columns([1.4] + [1] * len(manager_columns))
-            off_cols[0].caption("全解除")
-            for btn_col, manager_col in zip(off_cols[1:], manager_columns):
-                if btn_col.button(
-                    "全解除",
-                    type='secondary',
-                    use_container_width=True,
-                    key=f'perm_col_off_{perm_ym}_{manager_col}',
-                ):
-                    current = st.session_state[matrix_state_key].copy()
+                    changed_by_bulk = True
+                if off_clicked.get(manager_col):
                     current[manager_col] = False
-                    st.session_state[matrix_state_key] = current
-                    st.session_state[editor_version_key] += 1
-                    st.rerun()
+                    changed_by_bulk = True
 
-            edited = st.data_editor(
-                st.session_state[matrix_state_key],
-                width='stretch',
-                hide_index=True,
-                height=min(700, 120 + 36 * len(matrix_df)),
-                column_config={
-                    'employee_id': None,
-                    '氏名': st.column_config.TextColumn(disabled=True),
-                    **{
-                        col: st.column_config.CheckboxColumn(
-                            label=col,
-                            help=f"{col}さんがこの職員の給与を閲覧できる場合にチェックします。",
-                        )
-                        for col in manager_columns
-                    },
-                },
-                key=f'perm_editor_{perm_ym}_{st.session_state[editor_version_key]}',
-            )
-            st.session_state[matrix_state_key] = edited.copy()
+            st.session_state[matrix_state_key] = current.copy()
+            if changed_by_bulk:
+                st.session_state[editor_version_key] += 1
+                st.rerun()
 
 
 # ============================================================
