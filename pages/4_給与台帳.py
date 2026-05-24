@@ -1,4 +1,4 @@
-"""給与台帳 / Payroll Ledger
+﻿"""給与台帳 / Payroll Ledger
 - 医療法人社団EMIFULL / NPO法人EMIFULL の給与CSVを取り込み
 - 月次・年度（4〜翌3月）・職員別の集計表示
 - 法人別/合算 の年収一覧・基本給の月別推移
@@ -38,6 +38,7 @@ PAYROLL_MANAGER_ORDER = [
     ('kuroda.yusk@emifull-group.or.jp', '黒田'),
 ]
 PAYROLL_PERMISSION_BASE_TARGET_YM = '2026-04'
+PAYROLL_PERMISSION_PAGE_SIZE = 10
 
 st.title("給与台帳")
 st.markdown(
@@ -226,6 +227,30 @@ def _default_payroll_permission(manager_email: str, employee: dict,
     return None
 
 
+@st.cache_data(ttl=60, show_spinner=False)
+def _cached_payroll_corps():
+    return db.list_payroll_corps()
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _cached_payroll_periods(corp_id=None):
+    return db.list_payroll_periods(corp_id=corp_id)
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _cached_target_year_months(corp_id=None):
+    return db.list_payroll_target_year_months(corp_id=corp_id)
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _cached_fiscal_years(corp_id=None):
+    return db.list_payroll_fiscal_years(corp_id=corp_id)
+
+
+def _clear_payroll_page_cache():
+    st.cache_data.clear()
+
+
 def _import_file(path: Path, info: dict) -> dict:
     """1ファイルを取り込んでDBへ書き込む。結果サマリdictを返す"""
     parsed = pp.parse_csv(path)
@@ -325,7 +350,7 @@ def _corp_summary_box(records: list[dict], pay_type_in_label: str = ''):
 def _corp_selector(key, include_combined=True, only_with_data=True):
     """法人セレクタ。戻り値: (corp_id or None, label)
     None = 合算。データの無い法人は除外。"""
-    corps = db.list_payroll_corps()
+    corps = _cached_payroll_corps()
     options = {}
     if include_combined:
         options['🔀 合算（医療法人 + NPO法人）'] = None
@@ -333,7 +358,7 @@ def _corp_selector(key, include_combined=True, only_with_data=True):
         if c['code'] == 'HOUSHIKAI':
             continue
         if only_with_data:
-            if not db.list_payroll_periods(corp_id=c['id']):
+            if not _cached_payroll_periods(corp_id=c['id']):
                 continue
         icon = '🟢' if c['code'] == 'EMIFULL_NPO' else '🔵'
         options[f"{icon} {c['name']}"] = c['id']
@@ -402,6 +427,7 @@ with tabs[0]:
             st.success(f"取込完了: 成功 {ok} / {len(up)}")
             for m in errs:
                 st.error(m)
+            _clear_payroll_page_cache()
             st.rerun()
 
         with st.expander("⚙️ メンテナンス"):
@@ -410,7 +436,7 @@ with tabs[0]:
                 "過去の給与CSVから『基本給の最大値』を集計し、20万円以上を **正社員**、"
                 "それ未満を **パート** に一括更新します。手動で雇用区分を編集していた内容は上書きされます。"
             )
-            corps_for_reclass = db.list_payroll_corps()
+            corps_for_reclass = _cached_payroll_corps()
             for corp in corps_for_reclass:
                 if corp['code'] == 'HOUSHIKAI':
                     continue
@@ -430,6 +456,7 @@ with tabs[0]:
                             f"{corp['name']}: 正社員 {res['正社員']}名 / "
                             f"パート {res['パート']}名 / 判定不可（基本給0） {res['据え置き']}名"
                         )
+                        _clear_payroll_page_cache()
                         st.rerun()
 
             st.markdown("---")
@@ -439,12 +466,13 @@ with tabs[0]:
                           type='secondary', key='wipe_btn'):
                 db.delete_all_payroll()
                 st.success("削除しました")
+                _clear_payroll_page_cache()
                 st.rerun()
 
         # === 取込済み一覧（取込タブの下部に統合） ===
         st.markdown("---")
         st.markdown("### 🗂️ 取込済み一覧")
-        periods = db.list_payroll_periods()
+        periods = _cached_payroll_periods()
         if not periods:
             st.info("取込履歴はまだありません。")
         else:
@@ -477,6 +505,7 @@ with tabs[0]:
                 if st.button("🗑️ 削除", disabled=not confirm_d, key='del_period_btn'):
                     db.delete_payroll_period(opts[target])
                     st.success("削除しました")
+                    _clear_payroll_page_cache()
                     st.rerun()
 
 
@@ -486,14 +515,14 @@ with tabs[0]:
 with tabs[1]:
     if not IS_ADMIN:
         st.warning("給与の閲覧権限設定は管理者のみ利用できます。")
-    elif not db.list_payroll_target_year_months():
+    elif not _cached_target_year_months():
         st.info("まだ給与データがありません。「取込」タブから取込んでください。")
     else:
         st.markdown(
             "対象月ごとに、各管理者が閲覧できる職員を設定します。"
             "通常は 2026-04 の設定を使います。過去分の閲覧も 2026-04 の設定に合わせます。"
         )
-        target_yms = db.list_payroll_target_year_months()
+        target_yms = _cached_target_year_months()
         ym_options = {_ym_label(t): t for t in target_yms}
         default_perm_index = target_yms.index(PAYROLL_PERMISSION_BASE_TARGET_YM) if PAYROLL_PERMISSION_BASE_TARGET_YM in target_yms else 0
         picked_label = st.selectbox(
@@ -626,7 +655,18 @@ with tabs[1]:
                 return rows_for_month
 
             if display_mode == 'past_missing':
+                past_page_key = f'perm_past_missing_page_{perm_ym}'
+                past_page_sig_key = f'perm_past_missing_sig_{perm_ym}'
+                past_page_sig = dept_pick
+                if st.session_state.get(past_page_sig_key) != past_page_sig:
+                    st.session_state[past_page_key] = 0
+                    st.session_state[past_page_sig_key] = past_page_sig
+                st.session_state.setdefault(past_page_key, 0)
+                past_page = max(0, int(st.session_state[past_page_key]))
+                offset = past_page * PAYROLL_PERMISSION_PAGE_SIZE
                 rows = []
+                matched_count = 0
+                has_next_page = False
                 target_past_yms = [
                     ym for ym in target_yms
                     if ym < PAYROLL_PERMISSION_BASE_TARGET_YM
@@ -639,8 +679,33 @@ with tabs[1]:
                             e for e in month_employees
                             if ((e.get('department') or '(部署未設定)').strip() == dept_pick)
                         ]
-                    rows.extend(
-                        _rows_for_month(target_ym, month_employees, month_perm_map, True)
+                    for row in _rows_for_month(target_ym, month_employees, month_perm_map, True):
+                        if matched_count < offset:
+                            matched_count += 1
+                            continue
+                        if len(rows) < PAYROLL_PERMISSION_PAGE_SIZE:
+                            rows.append(row)
+                            matched_count += 1
+                            continue
+                        has_next_page = True
+                        break
+                    if has_next_page:
+                        break
+
+                pc1, pc2, pc3, pc4 = st.columns([1, 1, 2, 4])
+                with pc1:
+                    if st.button("前の10件", disabled=past_page <= 0,
+                                 use_container_width=True, key=f'perm_past_prev_{perm_ym}'):
+                        st.session_state[past_page_key] = max(0, past_page - 1)
+                        st.rerun()
+                with pc2:
+                    if st.button("次の10件", disabled=not has_next_page,
+                                 use_container_width=True, key=f'perm_past_next_{perm_ym}'):
+                        st.session_state[past_page_key] = past_page + 1
+                        st.rerun()
+                with pc3:
+                    st.caption(
+                        f"{past_page + 1}ページ目 / 最大{PAYROLL_PERMISSION_PAGE_SIZE}件表示"
                     )
             else:
                 rows = _rows_for_month(
@@ -651,9 +716,22 @@ with tabs[1]:
                 )
 
             if display_mode == 'past_missing':
-                st.caption(f"過去月の未設定行: {len(rows)}件")
+                st.caption(f"このページの未設定行: {len(rows)}件")
+
+            if not rows:
+                if display_mode == 'past_missing':
+                    st.info("この条件で表示する過去月の未設定者はいません。")
+                elif display_mode == 'month_missing':
+                    st.info("この条件で表示する未設定者はいません。")
+                else:
+                    st.info("表示する職員がいません。")
 
             matrix_df = pd.DataFrame(rows)
+            if matrix_df.empty:
+                matrix_df = pd.DataFrame(
+                    columns=['target_ym', 'employee_id', '対象月', '部署', '氏名']
+                    + manager_columns
+                )
             manager_emails = list(manager_email_by_col.values())
             matrix_state_key = f'perm_matrix_state_{perm_ym}_{display_mode}'
             matrix_sig_key = f'perm_matrix_sig_{perm_ym}_{display_mode}'
@@ -757,6 +835,7 @@ with tabs[1]:
                 st.session_state[matrix_state_key] = edited.copy()
                 saved = _save_permission_df(st.session_state[matrix_state_key])
                 st.success(f"閲覧権限を保存しました（{saved}件）。")
+                _clear_payroll_page_cache()
                 st.rerun()
 
             changed_by_bulk = False
@@ -779,14 +858,14 @@ with tabs[1]:
 # ③ 月次サマリ
 # ============================================================
 with tabs[2]:
-    if not db.list_payroll_target_year_months():
+    if not _cached_target_year_months():
         st.info("まだ給与データがありません。「取込」タブから取込んでください。")
     else:
         c1, c2, c3 = st.columns([1.5, 1.7, 1])
         with c1:
             corp_id, corp_label = _corp_selector('m_corp')
         with c2:
-            target_yms = db.list_payroll_target_year_months(corp_id=corp_id)
+            target_yms = _cached_target_year_months(corp_id=corp_id)
             if not target_yms:
                 st.warning("該当法人にデータがありません")
                 target_ym = None
@@ -1050,14 +1129,14 @@ with tabs[2]:
 # ④ 年度サマリ（4月始まり、対象月ベース）
 # ============================================================
 with tabs[3]:
-    if not db.list_payroll_fiscal_years():
+    if not _cached_fiscal_years():
         st.info("まだ給与データがありません。")
     else:
         c1, c2, c3 = st.columns([1.5, 1.5, 1])
         with c1:
             corp_id, corp_label = _corp_selector('y_corp')
         with c2:
-            fys = db.list_payroll_fiscal_years(corp_id=corp_id)
+            fys = _cached_fiscal_years(corp_id=corp_id)
             if not fys:
                 st.warning("該当法人にデータがありません")
                 fy = None
@@ -1168,14 +1247,14 @@ with tabs[3]:
 # ⑤ 職員一覧（年収）
 # ============================================================
 with tabs[4]:
-    if not db.list_payroll_fiscal_years():
+    if not _cached_fiscal_years():
         st.info("まだ給与データがありません。")
     else:
         c1, c2, c3 = st.columns([1.5, 1.5, 1])
         with c1:
             corp_id, corp_label = _corp_selector('e_corp')
         with c2:
-            fys = db.list_payroll_fiscal_years(corp_id=corp_id)
+            fys = _cached_fiscal_years(corp_id=corp_id)
             if not fys:
                 st.warning("該当法人にデータがありません")
                 fy = None
@@ -1246,7 +1325,7 @@ with tabs[4]:
 
             # 法人別サマリ（必ず2法人並べる）
             st.markdown("##### 法人別サマリ")
-            corps = db.list_payroll_corps()
+            corps = _cached_payroll_corps()
             cards = st.columns(2)
             for col, corp_target_code in zip(cards, ['EMIFULL_MED', 'EMIFULL_NPO']):
                 cm = next((c for c in corps if c['code'] == corp_target_code), None)
@@ -1374,6 +1453,7 @@ with tabs[4]:
                             )
                             n += 1
                     st.success(f"{n}名分を更新しました")
+                    _clear_payroll_page_cache()
                     st.rerun()
 
 
@@ -1513,7 +1593,7 @@ with tabs[6]:
             "- 最低賃金は適用開始日に応じて自動切替（毎年10月頃に新賃金を登録すれば過去データも含めて再計算）"
         )
 
-        if not db.list_payroll_fiscal_years():
+        if not _cached_fiscal_years():
             st.info("給与データがまだありません。")
         else:
             # === 最低賃金マスタ（折りたたみ） ===
@@ -1559,6 +1639,7 @@ with tabs[6]:
                             st.success(
                                 f"{add_pref} {add_eff} {add_wage}円 を登録しました"
                             )
+                            _clear_payroll_page_cache()
                             st.rerun()
 
                 st.markdown("##### 削除")
@@ -1572,6 +1653,7 @@ with tabs[6]:
                     if st.button("🗑️ 削除", key='mw_del_btn'):
                         db.delete_minimum_wage(del_opts[del_label])
                         st.success("削除しました")
+                        _clear_payroll_page_cache()
                         st.rerun()
 
             # === 計算条件 ===
@@ -1580,7 +1662,7 @@ with tabs[6]:
             with c1:
                 corp_id, corp_label = _corp_selector('sk_corp')
             with c2:
-                fys = db.list_payroll_fiscal_years(corp_id=corp_id)
+                fys = _cached_fiscal_years(corp_id=corp_id)
                 if not fys:
                     st.warning("該当法人にデータがありません")
                     fy = None
@@ -1836,14 +1918,14 @@ with tabs[7]:
         "- 時間は `HH:MM` を時間（小数）に変換して集計"
     )
 
-    if not db.list_payroll_fiscal_years():
+    if not _cached_fiscal_years():
         st.info("給与データがまだありません。")
     else:
         c1, c2, c3 = st.columns([1.5, 1.5, 1])
         with c1:
             corp_id_o, corp_label_o = _corp_selector('ot_corp')
         with c2:
-            fys_o = db.list_payroll_fiscal_years(corp_id=corp_id_o)
+            fys_o = _cached_fiscal_years(corp_id=corp_id_o)
             if not fys_o:
                 st.warning("該当法人にデータがありません")
                 fy_o = None
