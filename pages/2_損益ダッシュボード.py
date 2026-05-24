@@ -1039,9 +1039,16 @@ def _reports_csv_bytes(rows):
 # =============================================================
 # タブ
 # =============================================================
-tab_summary, tab_ratio, tab_yoy, tab_meeting, tab_report, tab_sga_trend = st.tabs([
-    "📊 サマリ", "🔍 構成比", "📅 比較", "🏛️ 業績会議", "📝 報告書提出", "📈 販管費推移",
-])
+if _is_admin:
+    tab_summary, tab_ratio, tab_yoy, tab_meeting, tab_report, tab_sga_trend = st.tabs([
+        "📊 サマリ", "🔍 構成比", "📅 比較", "🏛️ 業績会議", "📝 報告書提出", "📈 販管費推移",
+    ])
+else:
+    tab_summary, tab_ratio, tab_yoy, tab_sga_trend = st.tabs([
+        "📊 サマリ", "🔍 構成比", "📅 比較", "📈 販管費推移",
+    ])
+    tab_meeting = None
+    tab_report = None
 
 
 def _ym_minus(ym: str, n: int) -> str:
@@ -2562,7 +2569,8 @@ with tab_yoy:
 # =============================================================
 # TAB: 報告書提出
 # =============================================================
-with tab_report:
+if _is_admin and tab_report is not None:
+  with tab_report:
     st.markdown("##### 報告書提出 — 収支の振り返り・対策")
     current = auth.current_user() or {}
     current_email = current.get('email') or ''
@@ -2935,7 +2943,8 @@ with tab_report:
 #                                  EXCLUDED_ROWS / NPO_REPORT_STRUCTURE / subs_by_excel
 
 
-with tab_meeting:
+if _is_admin and tab_meeting is not None:
+  with tab_meeting:
     st.markdown("##### 業績会議 — 単月 / 千円(切捨)")
 
     sel_meeting_ym = st.selectbox(
