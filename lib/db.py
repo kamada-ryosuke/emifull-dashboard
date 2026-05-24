@@ -3314,6 +3314,46 @@ def upsert_receipt_processed(record: dict) -> None:
     file_path 必須。既存レコードがあれば status / 結果を上書き。"""
     if not record.get('file_path'):
         raise ValueError("file_path is required")
+
+    def _text_or_none(v):
+        if v is None:
+            return None
+        try:
+            if v != v:  # NaN
+                return None
+        except Exception:
+            pass
+        return str(v)
+
+    def _int_or_none(v):
+        if v is None or v == "":
+            return None
+        try:
+            if v != v:  # NaN
+                return None
+        except Exception:
+            pass
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            try:
+                return int(float(v))
+            except (TypeError, ValueError):
+                return None
+
+    def _float_or_none(v):
+        if v is None or v == "":
+            return None
+        try:
+            if v != v:  # NaN
+                return None
+        except Exception:
+            pass
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+
     cols = [
         'file_path', 'file_name', 'file_size', 'file_mtime',
         'facility', 'corporation', 'status',
@@ -3323,7 +3363,7 @@ def upsert_receipt_processed(record: dict) -> None:
         'ocr_input_tokens', 'ocr_output_tokens',
         'ocr_result_json', 'error_message',
     ]
-    placeholders = ', '.join(f':{c}' for c in cols)
+    placeholders = ', '.join('?' for _ in cols)
     update_cols = ', '.join(f'{c}=excluded.{c}' for c in cols if c != 'file_path')
     sql = (
         f"INSERT INTO receipt_processed ({', '.join(cols)}, processed_at) "
@@ -3331,10 +3371,31 @@ def upsert_receipt_processed(record: dict) -> None:
         f"ON CONFLICT(file_path) DO UPDATE SET "
         f"{update_cols}, processed_at=CURRENT_TIMESTAMP"
     )
-    payload = {c: record.get(c) for c in cols}
-    payload['file_path'] = str(payload['file_path'])
+    payload = {
+        'file_path': str(record.get('file_path')),
+        'file_name': _text_or_none(record.get('file_name')),
+        'file_size': _int_or_none(record.get('file_size')),
+        'file_mtime': _float_or_none(record.get('file_mtime')),
+        'facility': _text_or_none(record.get('facility')),
+        'corporation': _text_or_none(record.get('corporation')),
+        'status': _text_or_none(record.get('status')),
+        'transaction_date': _text_or_none(record.get('transaction_date')),
+        'amount': _int_or_none(record.get('amount')),
+        'debit_account': _text_or_none(record.get('debit_account')),
+        'vendor': _text_or_none(record.get('vendor')),
+        'excel_path': _text_or_none(record.get('excel_path')),
+        'excel_sheet': _text_or_none(record.get('excel_sheet')),
+        'excel_row': _int_or_none(record.get('excel_row')),
+        'ocr_confidence': _text_or_none(record.get('ocr_confidence')),
+        'ocr_model': _text_or_none(record.get('ocr_model')),
+        'ocr_input_tokens': _int_or_none(record.get('ocr_input_tokens')),
+        'ocr_output_tokens': _int_or_none(record.get('ocr_output_tokens')),
+        'ocr_result_json': _text_or_none(record.get('ocr_result_json')),
+        'error_message': _text_or_none(record.get('error_message')),
+    }
+    params = tuple(payload[c] for c in cols)
     with get_conn() as conn:
-        conn.execute(sql, payload)
+        conn.execute(sql, params)
 
 
 def delete_receipt_processed(file_path: str) -> None:
