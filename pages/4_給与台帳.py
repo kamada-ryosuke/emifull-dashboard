@@ -506,32 +506,6 @@ with tabs[1]:
         managers = _ordered_payroll_managers(managers)
         all_employees = _manageable_payroll_employees(employees)
 
-        def _build_missing_rule_pairs(target_ym: str):
-            raw_managers, target_employees, target_perm_map = db.list_payroll_permission_matrix(target_ym)
-            target_employees = _manageable_payroll_employees(target_employees)
-            if target_ym == PAYROLL_PERMISSION_BASE_TARGET_YM:
-                target_base_perm_map = target_perm_map
-            else:
-                _, _, target_base_perm_map = db.list_payroll_permission_matrix(
-                    PAYROLL_PERMISSION_BASE_TARGET_YM,
-                )
-            ordered_managers = _ordered_payroll_managers(raw_managers)
-            pairs = []
-            unknown = set()
-            for emp in target_employees:
-                for manager in ordered_managers:
-                    email = (manager.get('email') or '').strip().lower()
-                    if not email or (email, emp['id']) in target_perm_map:
-                        continue
-                    default_value = _default_payroll_permission(
-                        email, emp, target_base_perm_map,
-                    )
-                    if default_value is None:
-                        unknown.add(emp['name'])
-                        continue
-                    pairs.append((email, emp['id'], default_value))
-            return pairs, sorted(unknown)
-
         dept_values = sorted({
             (e.get('department') or '(部署未設定)').strip()
             for e in all_employees
@@ -559,33 +533,52 @@ with tabs[1]:
             (m.get('email') or '').strip().lower()
             for m in managers
         ]
+        def _is_unconfigured_employee(emp: dict, month_perm_map: dict) -> bool:
+            return not all(
+                (email, emp['id']) in month_perm_map
+                for email in manager_emails_for_alert
+            )
+
         unconfigured = [
             emp for emp in employees
-            if not all((email, emp['id']) in perm_map for email in manager_emails_for_alert)
+            if _is_unconfigured_employee(emp, perm_map)
         ]
 
-        show_missing_key = f'perm_show_missing_only_{perm_ym}'
-        st.session_state.setdefault(show_missing_key, False)
-        mc1, mc2, mc3 = st.columns([1.2, 1.2, 4])
+        display_mode_key = f'perm_display_mode_{perm_ym}'
+        st.session_state.setdefault(display_mode_key, 'month_all')
+        mc1, mc2, mc3, mc4 = st.columns([1.2, 1.5, 1.2, 3.5])
         with mc1:
-            if st.button("未設定者だけ表示", use_container_width=True,
+            if st.button("対象月の未設定者", use_container_width=True,
                          key=f'perm_missing_only_btn_{perm_ym}'):
-                st.session_state[show_missing_key] = True
+                st.session_state[display_mode_key] = 'month_missing'
         with mc2:
-            if st.button("全員表示に戻す", use_container_width=True,
-                         key=f'perm_all_rows_btn_{perm_ym}'):
-                st.session_state[show_missing_key] = False
+            if st.button("過去月すべての未設定者", use_container_width=True,
+                         key=f'perm_missing_past_all_btn_{perm_ym}'):
+                st.session_state[display_mode_key] = 'past_missing'
         with mc3:
-            st.caption("未設定者だけ表示すると、深谷〜黒田の未設定行だけに絞って保存できます。")
+            if st.button("全員表示", use_container_width=True,
+                         key=f'perm_all_rows_btn_{perm_ym}'):
+                st.session_state[display_mode_key] = 'month_all'
+        with mc4:
+            st.caption("未設定者ボタンは、深谷〜黒田の権限が未登録の職員だけを抽出します。")
 
-        if st.session_state[show_missing_key]:
+        display_mode = st.session_state[display_mode_key]
+        if display_mode == 'month_missing':
             employees = unconfigured
+        elif display_mode == 'past_missing':
+            employees = []
 
-        st.caption(
-            f"表示中: {len(employees)}名 / 全{len(all_employees)}名"
-            + (f"（{dept_pick}）" if dept_pick != 'すべて' else "")
-            + (" / 未設定者のみ" if st.session_state[show_missing_key] else "")
-        )
+        if display_mode == 'past_missing':
+            st.caption(
+                "表示モード: 過去月すべての未設定者"
+                + (f"（{dept_pick}）" if dept_pick != 'すべて' else "")
+            )
+        else:
+            st.caption(
+                f"表示中: {len(employees)}名 / 全{len(all_employees)}名"
+                + (f"（{dept_pick}）" if dept_pick != 'すべて' else "")
+                + (" / 対象月の未設定者のみ" if display_mode == 'month_missing' else "")
+            )
 
         if unconfigured:
             names = "、".join(
@@ -597,53 +590,10 @@ with tabs[1]:
         else:
             st.success("この対象月の職員は全員、権限設定済みです。")
 
-        with st.expander("基本ルールで未登録者を補完"):
-            st.caption(
-                "既存の設定は上書きせず、未登録の組み合わせだけ追加します。"
-                "鎌田・森田は固定ルールのため対象外です。"
-                "桶谷・黒田は2026-04の設定がある職員だけ補完します。"
-            )
-            rc1, rc2 = st.columns(2)
-            with rc1:
-                if st.button("表示月の未登録を補完", type='secondary',
-                             use_container_width=True, key=f'perm_rule_fill_one_{perm_ym}'):
-                    pairs, unknown = _build_missing_rule_pairs(perm_ym)
-                    count = db.upsert_payroll_permission_pairs(perm_ym, pairs)
-                    st.success(f"{perm_ym}: {count}件を補完しました。")
-                    if unknown:
-                        st.warning(
-                            "未確定として残した職員: "
-                            + "、".join(unknown[:10])
-                            + (f" ほか{len(unknown) - 10}名" if len(unknown) > 10 else "")
-                        )
-                    st.rerun()
-            with rc2:
-                if st.button("過去月すべての未登録を補完", type='secondary',
-                             use_container_width=True, key='perm_rule_fill_past_all'):
-                    total_count = 0
-                    unknown_all = set()
-                    target_past_yms = [
-                        ym for ym in target_yms
-                        if ym < PAYROLL_PERMISSION_BASE_TARGET_YM
-                    ]
-                    for target_ym in target_past_yms:
-                        pairs, unknown = _build_missing_rule_pairs(target_ym)
-                        total_count += db.upsert_payroll_permission_pairs(target_ym, pairs)
-                        unknown_all.update(unknown)
-                    st.success(f"過去月 {len(target_past_yms)}か月分、{total_count}件を補完しました。")
-                    if unknown_all:
-                        unknown_names = sorted(unknown_all)
-                        st.warning(
-                            "未確定として残した職員: "
-                            + "、".join(unknown_names[:10])
-                            + (f" ほか{len(unknown_names) - 10}名" if len(unknown_names) > 10 else "")
-                        )
-                    st.rerun()
-
         if not managers:
             st.warning("ユーザーが登録されていません。先に施設マスタ／設定でユーザーを登録してください。")
-        elif not employees:
-            if st.session_state[show_missing_key]:
+        elif not employees and display_mode != 'past_missing':
+            if display_mode == 'month_missing':
                 st.info("この条件で表示する未設定者はいません。")
             else:
                 st.warning("この対象月の給与職員データがありません。")
@@ -656,26 +606,62 @@ with tabs[1]:
                 manager_columns.append(col)
                 manager_email_by_col[col] = email
 
-            rows = []
-            for emp in employees:
-                row = {
-                    'employee_id': emp['id'],
-                    '氏名': emp['name'],
-                }
-                for col in manager_columns:
-                    email = manager_email_by_col[col]
-                    row[col] = bool(perm_map.get((email, emp['id']), False))
-                rows.append(row)
+            def _rows_for_month(target_ym: str, month_employees: list[dict],
+                                month_perm_map: dict, only_missing: bool) -> list[dict]:
+                rows_for_month = []
+                for emp in month_employees:
+                    if only_missing and not _is_unconfigured_employee(emp, month_perm_map):
+                        continue
+                    row = {
+                        'target_ym': target_ym,
+                        'employee_id': emp['id'],
+                        '対象月': _ym_label(target_ym),
+                        '部署': emp.get('department') or '',
+                        '氏名': emp['name'],
+                    }
+                    for col in manager_columns:
+                        email = manager_email_by_col[col]
+                        row[col] = bool(month_perm_map.get((email, emp['id']), False))
+                    rows_for_month.append(row)
+                return rows_for_month
+
+            if display_mode == 'past_missing':
+                rows = []
+                target_past_yms = [
+                    ym for ym in target_yms
+                    if ym < PAYROLL_PERMISSION_BASE_TARGET_YM
+                ]
+                for target_ym in target_past_yms:
+                    _, month_employees, month_perm_map = db.list_payroll_permission_matrix(target_ym)
+                    month_employees = _manageable_payroll_employees(month_employees)
+                    if dept_pick != 'すべて':
+                        month_employees = [
+                            e for e in month_employees
+                            if ((e.get('department') or '(部署未設定)').strip() == dept_pick)
+                        ]
+                    rows.extend(
+                        _rows_for_month(target_ym, month_employees, month_perm_map, True)
+                    )
+            else:
+                rows = _rows_for_month(
+                    perm_ym,
+                    employees,
+                    perm_map,
+                    display_mode == 'month_missing',
+                )
+
+            if display_mode == 'past_missing':
+                st.caption(f"過去月の未設定行: {len(rows)}件")
 
             matrix_df = pd.DataFrame(rows)
             manager_emails = list(manager_email_by_col.values())
-            employee_ids = [e['id'] for e in employees]
-            matrix_state_key = f'perm_matrix_state_{perm_ym}'
-            matrix_sig_key = f'perm_matrix_sig_{perm_ym}'
-            editor_version_key = f'perm_editor_version_{perm_ym}'
+            matrix_state_key = f'perm_matrix_state_{perm_ym}_{display_mode}'
+            matrix_sig_key = f'perm_matrix_sig_{perm_ym}_{display_mode}'
+            editor_version_key = f'perm_editor_version_{perm_ym}_{display_mode}'
             matrix_signature = (
+                display_mode,
                 dept_pick,
-                tuple(employee_ids),
+                tuple((r['target_ym'], r['employee_id']) for r in rows),
                 tuple(manager_columns),
             )
 
@@ -688,21 +674,21 @@ with tabs[1]:
                 st.session_state[editor_version_key] = 0
 
             def _save_permission_df(base_df):
-                checked_pairs = []
+                pairs_by_month = defaultdict(list)
                 for _, row in base_df.iterrows():
+                    target_ym = str(row['target_ym'])
                     employee_id = int(row['employee_id'])
                     for col in manager_columns:
-                        if bool(row[col]):
-                            checked_pairs.append((manager_email_by_col[col], employee_id))
-                db.save_payroll_permission_matrix(
-                    perm_ym,
-                    manager_emails,
-                    [int(eid) for eid in employee_ids],
-                    checked_pairs,
-                )
+                        pairs_by_month[target_ym].append(
+                            (manager_email_by_col[col], employee_id, bool(row[col]))
+                        )
+                saved = 0
+                for target_ym, pairs in pairs_by_month.items():
+                    saved += db.upsert_payroll_permission_pairs(target_ym, pairs)
+                return saved
 
             with st.form(
-                key=f'perm_form_{perm_ym}_{st.session_state[editor_version_key]}',
+                key=f'perm_form_{perm_ym}_{display_mode}_{st.session_state[editor_version_key]}',
                 clear_on_submit=False,
             ):
                 top_save_col, top_note_col = st.columns([1, 5])
@@ -712,16 +698,16 @@ with tabs[1]:
                     )
                 with top_note_col:
                     st.caption(
-                        "チェック中は保存されません。最後に左の保存を押すと、表示中の部署だけ反映します。"
+                        "チェック中は保存されません。最後に左の保存を押すと、表示中の行だけ反映します。"
                     )
 
-                header_cols = st.columns([1.4] + [1] * len(manager_columns))
+                header_cols = st.columns([1.8] + [1] * len(manager_columns))
                 header_cols[0].markdown("**氏名**")
                 for h_col, manager_col in zip(header_cols[1:], manager_columns):
                     h_col.markdown(f"**{manager_col}**")
 
                 on_clicked = {}
-                on_cols = st.columns([1.4] + [1] * len(manager_columns))
+                on_cols = st.columns([1.8] + [1] * len(manager_columns))
                 on_cols[0].caption("全選択")
                 for btn_col, manager_col in zip(on_cols[1:], manager_columns):
                     with btn_col:
@@ -732,7 +718,7 @@ with tabs[1]:
                         )
 
                 off_clicked = {}
-                off_cols = st.columns([1.4] + [1] * len(manager_columns))
+                off_cols = st.columns([1.8] + [1] * len(manager_columns))
                 off_cols[0].caption("全解除")
                 for btn_col, manager_col in zip(off_cols[1:], manager_columns):
                     with btn_col:
@@ -748,7 +734,13 @@ with tabs[1]:
                     hide_index=True,
                     height=min(700, 120 + 36 * len(matrix_df)),
                     column_config={
+                        'target_ym': None,
                         'employee_id': None,
+                        '対象月': (
+                            st.column_config.TextColumn(disabled=True)
+                            if display_mode == 'past_missing' else None
+                        ),
+                        '部署': st.column_config.TextColumn(disabled=True),
                         '氏名': st.column_config.TextColumn(disabled=True),
                         **{
                             col: st.column_config.CheckboxColumn(
@@ -758,13 +750,13 @@ with tabs[1]:
                             for col in manager_columns
                         },
                     },
-                    key=f'perm_editor_{perm_ym}_{st.session_state[editor_version_key]}',
+                    key=f'perm_editor_{perm_ym}_{display_mode}_{st.session_state[editor_version_key]}',
                 )
 
             if save_clicked:
                 st.session_state[matrix_state_key] = edited.copy()
-                _save_permission_df(st.session_state[matrix_state_key])
-                st.success("閲覧権限を保存しました。")
+                saved = _save_permission_df(st.session_state[matrix_state_key])
+                st.success(f"閲覧権限を保存しました（{saved}件）。")
                 st.rerun()
 
             changed_by_bulk = False
