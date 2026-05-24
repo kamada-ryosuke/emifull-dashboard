@@ -1039,16 +1039,9 @@ def _reports_csv_bytes(rows):
 # =============================================================
 # タブ
 # =============================================================
-if _is_admin:
-    tab_summary, tab_ratio, tab_yoy, tab_meeting, tab_report, tab_sga_trend = st.tabs([
-        "📊 サマリ", "🔍 構成比", "📅 比較", "🏛️ 業績会議", "📝 報告書提出", "📈 販管費推移",
-    ])
-else:
-    tab_summary, tab_ratio, tab_yoy, tab_sga_trend = st.tabs([
-        "📊 サマリ", "🔍 構成比", "📅 比較", "📈 販管費推移",
-    ])
-    tab_meeting = None
-    tab_report = None
+tab_summary, tab_ratio, tab_yoy, tab_meeting, tab_report, tab_sga_trend = st.tabs([
+    "📊 サマリ", "🔍 構成比", "📅 比較", "🏛️ 業績会議", "📝 報告書提出", "📈 販管費推移",
+])
 
 
 def _ym_minus(ym: str, n: int) -> str:
@@ -2569,8 +2562,7 @@ with tab_yoy:
 # =============================================================
 # TAB: 報告書提出
 # =============================================================
-if _is_admin and tab_report is not None:
-  with tab_report:
+with tab_report:
     st.markdown("##### 報告書提出 — 収支の振り返り・対策")
     current = auth.current_user() or {}
     current_email = current.get('email') or ''
@@ -2850,7 +2842,10 @@ if _is_admin and tab_report is not None:
                 with bc1:
                     edit_submit = st.form_submit_button("修正を保存", type='primary')
                 with bc2:
-                    delete_submit = st.form_submit_button("この報告書を削除")
+                    delete_submit = st.form_submit_button(
+                        "この報告書を削除",
+                        disabled=not _is_admin,
+                    )
             if edit_submit:
                 old_month = edit_r['target_month']
                 old_facility = edit_r['facility_name']
@@ -2872,6 +2867,9 @@ if _is_admin and tab_report is not None:
                 st.success("修正を保存しました。")
                 st.rerun()
             if delete_submit:
+                if not _is_admin:
+                    st.warning("報告書の削除は管理者のみ実行できます。修正保存をご利用ください。")
+                    st.stop()
                 if not delete_confirm:
                     st.warning("削除する場合は確認チェックを入れてください。")
                 else:
@@ -2943,8 +2941,7 @@ if _is_admin and tab_report is not None:
 #                                  EXCLUDED_ROWS / NPO_REPORT_STRUCTURE / subs_by_excel
 
 
-if _is_admin and tab_meeting is not None:
-  with tab_meeting:
+with tab_meeting:
     st.markdown("##### 業績会議 — 単月 / 千円(切捨)")
 
     sel_meeting_ym = st.selectbox(
@@ -3341,14 +3338,15 @@ if _is_admin and tab_meeting is not None:
             wb.save(output)
             return output.getvalue()
 
-        excel_data = _build_meeting_excel()
-        st.download_button(
-            f"📥 この表をExcelダウンロード ({dl_suffix})",
-            data=excel_data,
-            file_name=f"業績会議_{dl_suffix}_{sel_meeting_ym}.xlsx",
-            mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-            key=f'pl_meeting_dl_{dl_suffix}',
-        )
+        if _is_admin:
+            excel_data = _build_meeting_excel()
+            st.download_button(
+                f"📥 この表をExcelダウンロード ({dl_suffix})",
+                data=excel_data,
+                file_name=f"業績会議_{dl_suffix}_{sel_meeting_ym}.xlsx",
+                mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                key=f'pl_meeting_dl_{dl_suffix}',
+            )
 
         st.markdown("##### 報告書プレビュー")
         with st.container(border=True):
