@@ -503,6 +503,59 @@ def _current_receipts_for_import(storage_dir: Path) -> list[dict]:
     return _list_drive_api_receipt_files(folder_id)
 
 
+def _dominant_receipt_scan_month(receipts: list[dict]) -> str | None:
+    """今回取り込むレシート群のスキャン年月を推定する。"""
+    counts: dict[str, int] = {}
+    for r in receipts:
+        mtime = r.get('mtime')
+        if mtime in (None, ''):
+            continue
+        try:
+            ym = datetime.fromtimestamp(float(mtime)).strftime('%Y-%m')
+        except (TypeError, ValueError, OSError):
+            continue
+        counts[ym] = counts.get(ym, 0) + 1
+    if not counts:
+        return None
+    return sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[0][0]
+
+
+def _normalize_debit_rows_to_scan_month(
+    rows: list[dict],
+    scan_year_month: str | None,
+) -> dict:
+    """OCR誤読でExcelに入った年月を、Drive上のスキャン年月に合わせる。
+
+    例: Drive更新月が2026-05で、Excel行が2020-05-14なら2026-05-14に補正。
+    月日が一致している「年だけの誤読」に限定し、対象外の月は触らない。
+    """
+    if not scan_year_month:
+        return {'changed': 0, 'old_year_months': []}
+
+    scan_year, scan_month = scan_year_month.split('-')
+    changed = 0
+    old_yms: set[str] = set()
+    for row in rows:
+        date_text = str(row.get('transaction_date') or '').strip()
+        try:
+            parsed = datetime.strptime(date_text, '%Y-%m-%d')
+        except ValueError:
+            continue
+        if parsed.strftime('%m') != scan_month:
+            continue
+        if parsed.strftime('%Y') == scan_year:
+            continue
+
+        old_ym = str(row.get('year_month') or date_text[:7])
+        old_yms.add(old_ym)
+        row['transaction_date'] = f"{scan_year}-{scan_month}-{parsed.day:02d}"
+        row['year_month'] = scan_year_month
+        row['_date_normalized_from'] = date_text
+        changed += 1
+
+    return {'changed': changed, 'old_year_months': sorted(old_yms)}
+
+
 def _upload_all_drive_api_workbooks(files: list[dict]) -> None:
     uploaded_ids = set()
     for f in files:
@@ -1361,6 +1414,7 @@ with tab_import:
                     # ----- Phase 0: 過去に処理済みなのに移動されていないレシートを整理 -----
                     receipts_storage = _resolve_storage_dir()
                     all_receipts = _current_receipts_for_import(receipts_storage)
+                    receipt_scan_month = _dominant_receipt_scan_month(all_receipts)
                     if all_receipts and receipts_storage.exists():
                         with st.spinner("処理済みレシートを整理中..."):
                             recon = receipt_processor.reconcile_processed_locations(
@@ -1420,7 +1474,10 @@ with tab_import:
                     # ----- Phase 2: デビットExcel → DB 取込 -----
                     total_inserted = 0
                     total_skipped = 0
+                    total_date_fixed = 0
+                    total_old_deleted = 0
                     all_yms = set()
+                    fixed_old_yms: set[str] = set()
                     with st.spinner("デビットExcel取込中..."):
                         # レシート追記後の最新Excelを再読込するため files を取り直す
                         latest_files = _list_dropbox_files()
@@ -1433,6 +1490,17 @@ with tab_import:
                                 result = debit_parser.parse_debit_workbook(
                                     fp, corporation=corp, subunit_lookup=sub_lookup,
                                 )
+                            fixed = _normalize_debit_rows_to_scan_month(
+                                result['rows'], receipt_scan_month,
+                            )
+                            total_date_fixed += int(fixed.get('changed') or 0)
+                            fixed_old_yms.update(fixed.get('old_year_months') or [])
+                            for row in result['rows']:
+                                old_date = row.get('_date_normalized_from')
+                                if old_date:
+                                    total_old_deleted += db.delete_debit_entry_exact(
+                                        row, old_transaction_date=str(old_date),
+                                    )
                             if overwrite:
                                 yms_in_file = sorted({
                                     r['year_month'] for r in result['rows']
@@ -1472,6 +1540,16 @@ with tab_import:
                             f"✅ 取込完了 — 新規 {total_inserted} / "
                             f"スキップ {total_skipped} / 対象月 {sorted(all_yms)}"
                         )
+                    if total_date_fixed:
+                        st.info(
+                            f"🗓️ レシート日付の年誤読を {total_date_fixed} 件補正しました。"
+                            f"旧月 {sorted(fixed_old_yms)} → {receipt_scan_month}"
+                            f"（旧日付の同一明細削除 {total_old_deleted} 件）"
+                        )
+                    try:
+                        st.cache_data.clear()
+                    except Exception:
+                        pass
 
                     # 確認画面用に session_state に保存 (rerun せず下で表示)
                     if receipt_summary and (

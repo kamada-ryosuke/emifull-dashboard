@@ -25,6 +25,45 @@ from typing import Callable, Iterable
 from lib import db, debit_parser, excel_writer, receipt_ocr
 
 
+def _receipt_scan_year_month(r: dict) -> str | None:
+    """Drive/PC上の更新日時から、スキャンされた可能性が高い年月を返す。"""
+    mtime = r.get('mtime')
+    if mtime in (None, ''):
+        return None
+    try:
+        return datetime.fromtimestamp(float(mtime)).strftime('%Y-%m')
+    except (TypeError, ValueError, OSError):
+        return None
+
+
+def _normalize_receipt_dates(receipts: list[dict], r: dict) -> list[dict]:
+    """OCRの日付年だけがずれた場合、Drive上のスキャン年月に合わせる。
+
+    レシートOCRは古い印字や薄い文字で 2020/2025 と誤読することがある。
+    ただし、月日まで勝手に変えると危険なので「月が同じで年だけ違う」場合に限定する。
+    """
+    scan_ym = _receipt_scan_year_month(r)
+    if not scan_ym:
+        return receipts
+
+    scan_year, scan_month = scan_ym.split('-')
+    normalized: list[dict] = []
+    for sub in receipts:
+        item = dict(sub)
+        date_text = str(item.get('date') or '').strip()
+        try:
+            parsed = datetime.strptime(date_text, '%Y-%m-%d')
+        except ValueError:
+            normalized.append(item)
+            continue
+
+        if parsed.strftime('%m') == scan_month and parsed.strftime('%Y') != scan_year:
+            item['_date_normalized_from'] = date_text
+            item['date'] = f"{scan_year}-{scan_month}-{parsed.day:02d}"
+        normalized.append(item)
+    return normalized
+
+
 # レシート格納サブフォルダ (1階層目: 'デビッドカード清算' 等)
 _RECEIPT_SUBFOLDERS = ('01.デビッドカード清算', 'デビッドカード')
 
@@ -272,7 +311,10 @@ def auto_process_one(r: dict, gdrive_dir: Path) -> dict:
         return {'status': 'failed', 'reason': ocr_result.get('error')}
 
     data = ocr_result['data']
-    receipts_list = data.get('receipts') or []
+    receipts_list = _normalize_receipt_dates(data.get('receipts') or [], r)
+    if receipts_list is not data.get('receipts'):
+        data = dict(data)
+        data['receipts'] = receipts_list
     facility = r.get('facility') or ''
     corp = guess_corporation(facility)
 

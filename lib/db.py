@@ -3518,6 +3518,31 @@ def delete_debit_by_year_month(year_month: str,
         return cur.rowcount
 
 
+def delete_debit_entry_exact(row: dict, old_transaction_date: str) -> int:
+    """OCR日付補正時に、補正前の日付で入っていた同一明細だけを削除する。"""
+    with get_conn() as conn:
+        cur = conn.execute(
+            """
+            DELETE FROM debit_entries
+            WHERE corporation = ?
+              AND transaction_date = ?
+              AND debit_account = ?
+              AND department_raw = ?
+              AND amount = ?
+              AND description = ?
+            """,
+            [
+                row.get('corporation') or '',
+                old_transaction_date,
+                row.get('debit_account') or '',
+                row.get('department_raw') or '',
+                int(row.get('amount') or 0),
+                row.get('description') or '',
+            ],
+        )
+        return cur.rowcount
+
+
 # ============================================================
 # 現金立替清算スキーマ (cash_advance_*)
 # ============================================================
