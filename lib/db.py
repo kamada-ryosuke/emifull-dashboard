@@ -2936,6 +2936,34 @@ def save_payroll_permission_matrix(target_ym, manager_emails, employee_ids, chec
                 """, (target_ym, email, employee_id, can_view, now))
 
 
+def upsert_payroll_permission_pairs(target_ym, permission_pairs):
+    """指定された権限ペアだけを登録/更新する。未指定の権限は触らない。"""
+    if not permission_pairs:
+        return 0
+    ensure_payroll_permission_schema()
+    now = datetime.now().isoformat(sep=' ', timespec='seconds')
+    with get_conn() as conn:
+        count = 0
+        for email, employee_id, can_view in permission_pairs:
+            conn.execute("""
+                INSERT INTO payroll_view_permissions
+                (target_year_month, manager_email, employee_id, can_view, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(target_year_month, manager_email, employee_id)
+                DO UPDATE SET
+                    can_view = excluded.can_view,
+                    updated_at = excluded.updated_at
+            """, (
+                target_ym,
+                str(email).strip().lower(),
+                int(employee_id),
+                1 if can_view else 0,
+                now,
+            ))
+            count += 1
+    return count
+
+
 def list_payroll_unconfigured_employees(target_ym):
     managers, employees, perm_map = list_payroll_permission_matrix(target_ym)
     if not managers:
@@ -2943,7 +2971,7 @@ def list_payroll_unconfigured_employees(target_ym):
     manager_emails = [(m.get("email") or "").strip().lower() for m in managers]
     return [
         emp for emp in employees
-        if not any((email, emp["id"]) in perm_map for email in manager_emails)
+        if not all((email, emp["id"]) in perm_map for email in manager_emails)
     ]
 
 

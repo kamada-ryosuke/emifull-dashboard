@@ -153,6 +153,51 @@ def _ordered_payroll_managers(managers: list[dict]) -> list[dict]:
     return ordered
 
 
+def _dept_text(employee: dict) -> str:
+    return (employee.get('department') or '').replace('　', ' ').strip()
+
+
+def _name_text(employee: dict) -> str:
+    return (employee.get('name') or '').replace('　', ' ').replace(' ', '').strip()
+
+
+def _dept_has(employee: dict, *keywords: str) -> bool:
+    dept = _dept_text(employee)
+    return any(keyword in dept for keyword in keywords)
+
+
+def _default_payroll_permission(manager_email: str, employee: dict,
+                                base_perm_map: dict) -> bool | None:
+    """過去月の未登録者に使う基本ルール。Noneは未確定として触らない。"""
+    email = manager_email.strip().lower()
+    name = _name_text(employee)
+    employee_id = employee.get('id')
+
+    if email == 'kamada.rusk@emifull-group.or.jp':
+        return True
+    if email == 'morita.yshr@emifull-group.or.jp':
+        return '鎌田' not in name
+    if email == 'fukaya.kkr@emifull-group.or.jp':
+        return _dept_has(employee, 'てんり障がい', 'てんり障害')
+    if email == 'nishitsuji.msys@emifull-group.or.jp':
+        return _dept_has(employee, 'シェアホーム天理')
+    if email == 'kanbe.tkhr@emifull-group.or.jp':
+        return _dept_has(
+            employee,
+            'カラダキッズかこがわ',
+            'ジョブカレッジかこがわ',
+            'シェアホーム天理',
+            'いなみ障がい',
+            'いなみ障害',
+        )
+    if email in ('oketani.msm@emifull-group.or.jp', 'kuroda.yusk@emifull-group.or.jp'):
+        key = (email, employee_id)
+        if key in base_perm_map:
+            return bool(base_perm_map[key])
+        return None
+    return None
+
+
 def _import_file(path: Path, info: dict) -> dict:
     """1ファイルを取り込んでDBへ書き込む。結果サマリdictを返す"""
     parsed = pp.parse_csv(path)
@@ -433,6 +478,31 @@ with tabs[1]:
         managers = _ordered_payroll_managers(managers)
         all_employees = employees
 
+        def _build_missing_rule_pairs(target_ym: str):
+            raw_managers, target_employees, target_perm_map = db.list_payroll_permission_matrix(target_ym)
+            if target_ym == PAYROLL_PERMISSION_BASE_TARGET_YM:
+                target_base_perm_map = target_perm_map
+            else:
+                _, _, target_base_perm_map = db.list_payroll_permission_matrix(
+                    PAYROLL_PERMISSION_BASE_TARGET_YM,
+                )
+            ordered_managers = _ordered_payroll_managers(raw_managers)
+            pairs = []
+            unknown = set()
+            for emp in target_employees:
+                for manager in ordered_managers:
+                    email = (manager.get('email') or '').strip().lower()
+                    if not email or (email, emp['id']) in target_perm_map:
+                        continue
+                    default_value = _default_payroll_permission(
+                        email, emp, target_base_perm_map,
+                    )
+                    if default_value is None:
+                        unknown.add(emp['name'])
+                        continue
+                    pairs.append((email, emp['id'], default_value))
+            return pairs, sorted(unknown)
+
         dept_values = sorted({
             (e.get('department') or '(部署未設定)').strip()
             for e in all_employees
@@ -467,7 +537,7 @@ with tabs[1]:
         ]
         unconfigured = [
             emp for emp in employees
-            if not any((email, emp['id']) in perm_map for email in manager_emails_for_alert)
+            if not all((email, emp['id']) in perm_map for email in manager_emails_for_alert)
         ]
 
         if unconfigured:
@@ -479,6 +549,48 @@ with tabs[1]:
             st.warning(f"表示中の部署に権限未設定の職員が {len(unconfigured)}名います: {names}{more}")
         else:
             st.success("この対象月の職員は全員、権限設定済みです。")
+
+        with st.expander("基本ルールで未登録者を補完"):
+            st.caption(
+                "既存の設定は上書きせず、未登録の組み合わせだけ追加します。"
+                "桶谷・黒田は2026-04の設定がある職員だけ補完します。"
+            )
+            rc1, rc2 = st.columns(2)
+            with rc1:
+                if st.button("表示月の未登録を補完", type='secondary',
+                             use_container_width=True, key=f'perm_rule_fill_one_{perm_ym}'):
+                    pairs, unknown = _build_missing_rule_pairs(perm_ym)
+                    count = db.upsert_payroll_permission_pairs(perm_ym, pairs)
+                    st.success(f"{perm_ym}: {count}件を補完しました。")
+                    if unknown:
+                        st.warning(
+                            "未確定として残した職員: "
+                            + "、".join(unknown[:10])
+                            + (f" ほか{len(unknown) - 10}名" if len(unknown) > 10 else "")
+                        )
+                    st.rerun()
+            with rc2:
+                if st.button("過去月すべての未登録を補完", type='secondary',
+                             use_container_width=True, key='perm_rule_fill_past_all'):
+                    total_count = 0
+                    unknown_all = set()
+                    target_past_yms = [
+                        ym for ym in target_yms
+                        if ym < PAYROLL_PERMISSION_BASE_TARGET_YM
+                    ]
+                    for target_ym in target_past_yms:
+                        pairs, unknown = _build_missing_rule_pairs(target_ym)
+                        total_count += db.upsert_payroll_permission_pairs(target_ym, pairs)
+                        unknown_all.update(unknown)
+                    st.success(f"過去月 {len(target_past_yms)}か月分、{total_count}件を補完しました。")
+                    if unknown_all:
+                        unknown_names = sorted(unknown_all)
+                        st.warning(
+                            "未確定として残した職員: "
+                            + "、".join(unknown_names[:10])
+                            + (f" ほか{len(unknown_names) - 10}名" if len(unknown_names) > 10 else "")
+                        )
+                    st.rerun()
 
         if not managers:
             st.warning("ユーザーが登録されていません。先に施設マスタ／設定でユーザーを登録してください。")
