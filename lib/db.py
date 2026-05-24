@@ -1297,6 +1297,95 @@ def list_journal_imports(limit=10):
         ).fetchall()]
 
 
+def export_journal_entries(year_months: list[str] | None = None,
+                           subunit_ids: list[int] | None = None) -> list[dict]:
+    """CSV出力用に、指定月・指定サブ部門の仕訳帳明細を読み取る。"""
+    init_journal_schema()
+    columns = [
+        'transaction_date',
+        'journal_id',
+        'journal_no',
+        'record_no',
+        'transaction_content',
+        'debit_account',
+        'debit_amount',
+        'debit_department',
+        'debit_dept_clean',
+        'debit_subunit_id',
+        'debit_vendor',
+        'debit_memo',
+        'debit_item',
+        'credit_account',
+        'credit_amount',
+        'credit_department',
+        'credit_dept_clean',
+        'credit_subunit_id',
+        'credit_vendor',
+        'credit_memo',
+        'credit_item',
+        'imported_at',
+    ]
+    where = ["1=1"]
+    params: list = []
+
+    if year_months:
+        yms = [ym for ym in year_months if ym]
+        if yms:
+            placeholders = ','.join('?' * len(yms))
+            where.append(f"strftime('%Y-%m', transaction_date) IN ({placeholders})")
+            params.extend(yms)
+
+    if subunit_ids:
+        ids = [int(sid) for sid in subunit_ids if sid is not None]
+        if ids:
+            placeholders = ','.join('?' * len(ids))
+            where.append(
+                f"(debit_subunit_id IN ({placeholders}) "
+                f"OR credit_subunit_id IN ({placeholders}))"
+            )
+            params.extend(ids)
+            params.extend(ids)
+
+    sql = f"""
+        SELECT
+            transaction_date,
+            journal_id,
+            journal_no,
+            record_no,
+            transaction_content,
+            debit_account,
+            debit_amount,
+            debit_department,
+            debit_dept_clean,
+            debit_subunit_id,
+            debit_vendor,
+            debit_memo,
+            debit_item,
+            credit_account,
+            credit_amount,
+            credit_department,
+            credit_dept_clean,
+            credit_subunit_id,
+            credit_vendor,
+            credit_memo,
+            credit_item,
+            imported_at
+        FROM journal_entries
+        WHERE {' AND '.join(where)}
+        ORDER BY transaction_date, id
+    """
+    with get_conn() as conn:
+        rows = conn.execute(sql, params).fetchall()
+
+    results = []
+    for row in rows:
+        if hasattr(row, 'keys'):
+            results.append({key: row[key] for key in row.keys()})
+        else:
+            results.append(dict(zip(columns, row)))
+    return results
+
+
 def search_journal_for_account(account_name: str, year_month: str,
                                subunit_ids: list[int] | None = None,
                                side: str = 'debit',

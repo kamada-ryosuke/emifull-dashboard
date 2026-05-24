@@ -44,6 +44,155 @@ def _build_pdfs_zip(items, period_tag: str, prefix: str) -> bytes:
             zf.writestr(fname, pdf_bytes)
     return buf.getvalue()
 
+
+def _unique_yms(*ym_groups) -> list[str]:
+    """CSV出力対象月を重複なしで並べる。"""
+    seen = set()
+    out = []
+    for group in ym_groups:
+        for ym in (group or []):
+            if ym and ym not in seen:
+                seen.add(ym)
+                out.append(ym)
+    return out
+
+
+def _scope_subunit_ids(group_id: int | None = None,
+                       subunit_id: int | None = None,
+                       subunit_ids: list[int] | None = None) -> list[int] | None:
+    """仕訳帳CSV用に、現在の対象範囲に含まれるサブ部門IDをそろえる。"""
+    if subunit_ids:
+        return list(subunit_ids)
+    if subunit_id:
+        return [subunit_id]
+    if group_id:
+        return [s['id'] for s in db.list_pl_subunits(group_id=group_id)]
+    return None
+
+
+def _csv_bytes_from_df(df: pd.DataFrame) -> bytes:
+    return df.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
+
+
+def _pl_csv_bytes(scope_label: str, year_months: list[str],
+                  group_id: int | None = None,
+                  subunit_id: int | None = None,
+                  subunit_ids: list[int] | None = None) -> bytes:
+    fetch_kwargs = {}
+    if subunit_ids:
+        fetch_kwargs['subunit_ids'] = list(subunit_ids)
+    elif subunit_id:
+        fetch_kwargs['subunit_ids'] = [subunit_id]
+    elif group_id:
+        fetch_kwargs['group_ids'] = [group_id]
+
+    rows = db.fetch_pl_entries(year_months=year_months, **fetch_kwargs) if year_months else []
+    df = pd.DataFrame(rows)
+    if df.empty:
+        df = pd.DataFrame(columns=[
+            '対象', '年月', '親グループ', 'サブ部門', '科目区分',
+            '科目', '金額', '集計行',
+        ])
+    else:
+        df = df.assign(対象=scope_label)
+        df = df.rename(columns={
+            'year_month': '年月',
+            'group_name': '親グループ',
+            'subunit_name': 'サブ部門',
+            'category': '科目区分',
+            'account_name': '科目',
+            'amount': '金額',
+            'is_total': '集計行',
+        })
+        keep_cols = ['対象', '年月', '親グループ', 'サブ部門', '科目区分', '科目', '金額', '集計行']
+        df = df[[c for c in keep_cols if c in df.columns]]
+    return _csv_bytes_from_df(df)
+
+
+def _journal_csv_bytes(scope_label: str, year_months: list[str],
+                       group_id: int | None = None,
+                       subunit_id: int | None = None,
+                       subunit_ids: list[int] | None = None) -> bytes:
+    target_subunit_ids = _scope_subunit_ids(
+        group_id=group_id, subunit_id=subunit_id, subunit_ids=subunit_ids
+    )
+    rows = db.export_journal_entries(
+        year_months=year_months,
+        subunit_ids=target_subunit_ids,
+    ) if year_months else []
+    df = pd.DataFrame(rows)
+    if df.empty:
+        df = pd.DataFrame(columns=[
+            '対象', '取引日', '仕訳ID', '仕訳番号', '行番号', '取引内容',
+            '借方科目', '借方金額', '借方部門', '借方サブ部門ID', '借方取引先', '借方摘要', '借方品目',
+            '貸方科目', '貸方金額', '貸方部門', '貸方サブ部門ID', '貸方取引先', '貸方摘要', '貸方品目',
+            '取込日時',
+        ])
+    else:
+        df = df.assign(対象=scope_label)
+        df = df.rename(columns={
+            'transaction_date': '取引日',
+            'journal_id': '仕訳ID',
+            'journal_no': '仕訳番号',
+            'record_no': '行番号',
+            'transaction_content': '取引内容',
+            'debit_account': '借方科目',
+            'debit_amount': '借方金額',
+            'debit_dept_clean': '借方部門',
+            'debit_subunit_id': '借方サブ部門ID',
+            'debit_vendor': '借方取引先',
+            'debit_memo': '借方摘要',
+            'debit_item': '借方品目',
+            'credit_account': '貸方科目',
+            'credit_amount': '貸方金額',
+            'credit_dept_clean': '貸方部門',
+            'credit_subunit_id': '貸方サブ部門ID',
+            'credit_vendor': '貸方取引先',
+            'credit_memo': '貸方摘要',
+            'credit_item': '貸方品目',
+            'imported_at': '取込日時',
+        })
+        keep_cols = [
+            '対象', '取引日', '仕訳ID', '仕訳番号', '行番号', '取引内容',
+            '借方科目', '借方金額', '借方部門', '借方サブ部門ID', '借方取引先', '借方摘要', '借方品目',
+            '貸方科目', '貸方金額', '貸方部門', '貸方サブ部門ID', '貸方取引先', '貸方摘要', '貸方品目',
+            '取込日時',
+        ]
+        df = df[[c for c in keep_cols if c in df.columns]]
+    return _csv_bytes_from_df(df)
+
+
+def _build_scope_csv_zip(items, period_tag: str, prefix: str,
+                         include_journal: bool = True) -> bytes:
+    """施設ごとの損益CSVと、あれば仕訳帳CSVをZIPにまとめる。"""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
+        seen = {}
+        for item in items:
+            label = item['label']
+            base = _safe_filename(f"{prefix}_{label}_{period_tag}")
+            n = seen.get(base, 0)
+            seen[base] = n + 1
+            suffix = '' if n == 0 else f"_{n+1}"
+
+            pl_bytes = _pl_csv_bytes(
+                label, item.get('year_months') or [],
+                group_id=item.get('group_id'),
+                subunit_id=item.get('subunit_id'),
+                subunit_ids=item.get('subunit_ids'),
+            )
+            zf.writestr(f"{base}{suffix}_損益.csv", pl_bytes)
+
+            if include_journal:
+                journal_bytes = _journal_csv_bytes(
+                    label, item.get('year_months') or [],
+                    group_id=item.get('group_id'),
+                    subunit_id=item.get('subunit_id'),
+                    subunit_ids=item.get('subunit_ids'),
+                )
+                zf.writestr(f"{base}{suffix}_仕訳帳.csv", journal_bytes)
+    return buf.getvalue()
+
 styling.inject_global_css()
 auth.require_login()
 auth.render_sidebar_navigation()
@@ -1445,6 +1594,90 @@ with tab_ratio:
                     key='ratio_pdf_subs_dl',
                 )
 
+        st.markdown("### 📊 CSV出力")
+        st.caption(
+            "損益計算書CSVは、選択中の期間・施設範囲だけを切り出します。"
+            "仕訳帳を取り込んでいる場合は、同じ範囲の仕訳帳CSVも出力できます。"
+        )
+        has_journal_csv = bool(db.list_journal_imports(limit=1))
+        c_csv1, c_csv2, c_csv3 = st.columns(3)
+        with c_csv1:
+            st.download_button(
+                "⬇ この施設の損益CSV",
+                data=_pl_csv_bytes(
+                    sel_display, ratio_yms,
+                    group_id=sel_group_id, subunit_id=sel_subunit_id,
+                ),
+                file_name=f"構成比_{_safe_filename(sel_display)}_{_safe_filename(ratio_label)}_損益.csv",
+                mime='text/csv',
+                key='ratio_csv_single_pl_dl',
+            )
+            if has_journal_csv:
+                st.download_button(
+                    "⬇ この施設の仕訳帳CSV",
+                    data=_journal_csv_bytes(
+                        sel_display, ratio_yms,
+                        group_id=sel_group_id, subunit_id=sel_subunit_id,
+                    ),
+                    file_name=f"構成比_{_safe_filename(sel_display)}_{_safe_filename(ratio_label)}_仕訳帳.csv",
+                    mime='text/csv',
+                    key='ratio_csv_single_journal_dl',
+                )
+        with c_csv2:
+            if st.button("📁 全親グループ 個別CSV (ZIP)", key='ratio_csv_groups_btn'):
+                items = []
+                for g in db.list_pl_groups():
+                    label = f"{g['code']}.{g['name']}"
+                    if g.get('note'):
+                        label += f"（{g['note']}）"
+                    items.append({
+                        'label': label,
+                        'year_months': ratio_yms,
+                        'group_id': g['id'],
+                    })
+                st.session_state['ratio_csv_groups'] = (
+                    _build_scope_csv_zip(
+                        items, period_tag=ratio_label, prefix='構成比',
+                        include_journal=has_journal_csv,
+                    ),
+                    len(items),
+                )
+            if 'ratio_csv_groups' in st.session_state:
+                zip_b, n = st.session_state['ratio_csv_groups']
+                st.download_button(
+                    f"⬇ 親グループ個別CSV×{n} (ZIP)",
+                    data=zip_b,
+                    file_name=f"構成比_全親グループ_CSV_{_safe_filename(ratio_label)}.zip",
+                    mime='application/zip',
+                    key='ratio_csv_groups_dl',
+                )
+        with c_csv3:
+            if st.button("📂 全子サブ部門 個別CSV (ZIP)", key='ratio_csv_subs_btn'):
+                items = [
+                    {
+                        'label': s['display_name'],
+                        'year_months': ratio_yms,
+                        'subunit_id': s['id'],
+                    }
+                    for s in db.list_pl_subunits()
+                ]
+                st.session_state['ratio_csv_subs'] = (
+                    _build_scope_csv_zip(
+                        items, period_tag=ratio_label, prefix='構成比',
+                        include_journal=has_journal_csv,
+                    ),
+                    len(items),
+                )
+            if 'ratio_csv_subs' in st.session_state:
+                zip_b, n = st.session_state['ratio_csv_subs']
+                st.download_button(
+                    f"⬇ 子サブ部門個別CSV×{n} (ZIP)",
+                    data=zip_b,
+                    file_name=f"構成比_全子サブ部門_CSV_{_safe_filename(ratio_label)}.zip",
+                    mime='application/zip',
+                    key='ratio_csv_subs_dl',
+                )
+
 # =============================================================
 # TAB 4: 比較 (当月 / 前月 / 前年 単月比較)
 # =============================================================
@@ -2028,6 +2261,114 @@ with tab_yoy:
                 " ZIPを展開すると施設ごとの 1ページPDFが得られるので、施設管理者にそのまま配布できます。"
             )
 
+            st.markdown("### 📊 CSV出力")
+            st.caption(
+                "比較CSVは、当月・前月・前年の損益データをまとめて出力します。"
+                "仕訳帳を取り込んでいる場合は、同じ月・同じ施設範囲の仕訳帳CSVも出力できます。"
+            )
+            compare_csv_yms = _unique_yms(curr_yms, prev_month_yms, prev_yms)
+            has_journal_csv = bool(db.list_journal_imports(limit=1))
+            c_csv1, c_csv2, c_csv3 = st.columns(3)
+            with c_csv1:
+                st.download_button(
+                    "⬇ この施設の損益CSV",
+                    data=_pl_csv_bytes(
+                        sel_display, compare_csv_yms,
+                        group_id=sel_group_id, subunit_id=sel_subunit_id,
+                    ),
+                    file_name=f"比較_{_safe_filename(sel_display)}_{curr_end}_損益.csv",
+                    mime='text/csv',
+                    key='pl_csv_single_pl_dl',
+                )
+                if has_journal_csv:
+                    st.download_button(
+                        "⬇ この施設の仕訳帳CSV",
+                        data=_journal_csv_bytes(
+                            sel_display, compare_csv_yms,
+                            group_id=sel_group_id, subunit_id=sel_subunit_id,
+                        ),
+                        file_name=f"比較_{_safe_filename(sel_display)}_{curr_end}_仕訳帳.csv",
+                        mime='text/csv',
+                        key='pl_csv_single_journal_dl',
+                    )
+            with c_csv2:
+                if st.button("📁 全親グループ 個別CSV (ZIP)", key='pl_csv_all_btn'):
+                    items = []
+                    for g in db.list_pl_groups():
+                        label = f"{g['code']}.{g['name']}"
+                        if g.get('note'):
+                            label += f"（{g['note']}）"
+                        items.append({
+                            'label': label,
+                            'year_months': compare_csv_yms,
+                            'group_id': g['id'],
+                        })
+                    st.session_state['pl_csv_all'] = (
+                        _build_scope_csv_zip(
+                            items, period_tag=curr_end, prefix='比較',
+                            include_journal=has_journal_csv,
+                        ),
+                        len(items),
+                    )
+                if 'pl_csv_all' in st.session_state:
+                    zip_b, n = st.session_state['pl_csv_all']
+                    st.download_button(
+                        f"⬇ 親グループ個別CSV×{n} (ZIP)",
+                        data=zip_b,
+                        file_name=f"比較_全親グループ_CSV_{curr_end}.zip",
+                        mime='application/zip',
+                        key='pl_csv_all_dl',
+                    )
+            with c_csv3:
+                if st.button("📂 全子サブ部門 個別CSV (ZIP)", key='pl_csv_sub_btn'):
+                    items = []
+                    for region, subrows in REPORT_STRUCTURE:
+                        for label, excel_names in subrows:
+                            sub_ids = [subs_by_excel[n] for n in excel_names if n in subs_by_excel]
+                            if not sub_ids:
+                                continue
+                            items.append({
+                                'label': f"[EMIFULL_{region}] {label}",
+                                'year_months': compare_csv_yms,
+                                'subunit_ids': sub_ids,
+                            })
+                    for label, excel_names in EXCLUDED_ROWS:
+                        sub_ids = [subs_by_excel[n] for n in excel_names if n in subs_by_excel]
+                        if not sub_ids:
+                            continue
+                        items.append({
+                            'label': f"[EMIFULL_別枠] {label}",
+                            'year_months': compare_csv_yms,
+                            'subunit_ids': sub_ids,
+                        })
+                    for region, subrows in NPO_REPORT_STRUCTURE:
+                        for label, excel_names in subrows:
+                            sub_ids = [subs_by_excel[n] for n in excel_names if n in subs_by_excel]
+                            if not sub_ids:
+                                continue
+                            items.append({
+                                'label': f"[NPO_{region}] {label}",
+                                'year_months': compare_csv_yms,
+                                'subunit_ids': sub_ids,
+                            })
+                    if items:
+                        st.session_state['pl_csv_sub'] = (
+                            _build_scope_csv_zip(
+                                items, period_tag=curr_end, prefix='比較',
+                                include_journal=has_journal_csv,
+                            ),
+                            len(items),
+                        )
+                if 'pl_csv_sub' in st.session_state:
+                    zip_b, n = st.session_state['pl_csv_sub']
+                    st.download_button(
+                        f"⬇ 子サブ部門個別CSV×{n} (ZIP)",
+                        data=zip_b,
+                        file_name=f"比較_全子サブ部門_CSV_{curr_end}.zip",
+                        mime='application/zip',
+                        key='pl_csv_sub_dl',
+                    )
+
             # ===== HTML版 (任意) =====
             def _fmt_int(v):
                 try:
@@ -2388,7 +2729,6 @@ with tab_report:
                 created_by_user=current_email,
                 report_id=report_id,
             )
-            _refresh_facility_month_summary(report_month, facility_name)
             st.success("一緒に人生咲かそう")
 
     st.markdown("---")
@@ -2521,9 +2861,6 @@ with tab_report:
                     created_by_user=edit_r.get('created_by_user'),
                     report_id=edit_r['id'],
                 )
-                _refresh_facility_month_summary(emonth, efacility_name)
-                if old_month != emonth or old_facility != efacility_name:
-                    _refresh_facility_month_summary(old_month, old_facility)
                 st.success("修正を保存しました。")
                 st.rerun()
             if delete_submit:
@@ -2533,7 +2870,6 @@ with tab_report:
                     old_month = edit_r['target_month']
                     old_facility = edit_r['facility_name']
                     deleted = db.delete_profit_report(edit_r['id'])
-                    _refresh_facility_month_summary(old_month, old_facility)
                     if deleted:
                         st.success("報告書を削除しました。")
                         st.rerun()
