@@ -83,23 +83,77 @@ def build_service(config: dict):
 
     if auth_mode == "service_account":
         sa_path = base_dir / config["service_account_path"]
-        if not sa_path.exists():
-            raise DriveConfigError(
-                f"サービスアカウント鍵が見つかりません: {sa_path}\n"
-                "GCPでサービスアカウントを作成→鍵JSONをDL→このパスに保存し、"
-                f"Driveのルートフォルダ(ID={config['root_folder_id']})を"
-                "そのSAメールに『編集者』権限で共有してください。"
-            )
         from google.oauth2 import service_account
-        creds = service_account.Credentials.from_service_account_file(
-            str(sa_path), scopes=[DRIVE_SCOPE],
-        )
+        if sa_path.exists():
+            creds = service_account.Credentials.from_service_account_file(
+                str(sa_path), scopes=[DRIVE_SCOPE],
+            )
+        else:
+            sa_info = _load_service_account_from_streamlit_secrets()
+            if not sa_info:
+                raise DriveConfigError(
+                    f"サービスアカウント鍵が見つかりません: {sa_path}\n"
+                    "GCPでサービスアカウントを作成→鍵JSONをDL→このパスに保存、"
+                    "またはStreamlit Secretsに GOOGLE_SERVICE_ACCOUNT_JSON を設定し、"
+                    f"Driveのルートフォルダ(ID={config['root_folder_id']})を"
+                    "そのSAメールに『閲覧者』以上で共有してください。"
+                )
+            creds = service_account.Credentials.from_service_account_info(
+                sa_info, scopes=[DRIVE_SCOPE],
+            )
     elif auth_mode == "oauth":
         creds = _get_oauth_credentials(config, base_dir)
     else:
         raise DriveConfigError(f"未対応の auth_mode: {auth_mode}")
 
     return build("drive", "v3", credentials=creds, cache_discovery=False)
+
+
+def _load_service_account_from_streamlit_secrets() -> dict | None:
+    """Streamlit Cloud用にSecretsからサービスアカウントJSONを読む。
+
+    値はチャットやログに出さず、Drive認証オブジェクト作成にだけ使う。
+    """
+    try:
+        import streamlit as st
+    except Exception:
+        return None
+
+    try:
+        secrets = st.secrets
+    except Exception:
+        return None
+
+    # 1) JSON文字列として登録する方式
+    for key in (
+        "GOOGLE_SERVICE_ACCOUNT_JSON",
+        "GCP_SERVICE_ACCOUNT_JSON",
+        "DRIVE_SERVICE_ACCOUNT_JSON",
+    ):
+        try:
+            raw = secrets.get(key)
+        except Exception:
+            raw = None
+        if not raw:
+            continue
+        if isinstance(raw, dict):
+            return dict(raw)
+        try:
+            return json.loads(str(raw))
+        except Exception as e:
+            raise DriveConfigError(
+                f"Streamlit Secrets の {key} をJSONとして読めません。"
+            ) from e
+
+    # 2) [gcp_service_account] セクションとして登録する方式
+    try:
+        section = secrets.get("gcp_service_account")
+    except Exception:
+        section = None
+    if section:
+        return dict(section)
+
+    return None
 
 
 def _get_oauth_credentials(config: dict, base_dir: Path):

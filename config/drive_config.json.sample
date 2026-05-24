@@ -21,5 +21,13 @@
   "max_file_size_mb": 10,
 
   "watcher_poll_interval_sec": 300,
-  "_watcher_poll_interval_help": "drive_watcher.py が新ファイルを確認しに行く間隔（秒）。デフォルト5分。"
+  "_watcher_poll_interval_help": "drive_watcher.py が新ファイルを確認しに行く間隔（秒）。デフォルト5分。",
+
+  "_debit_folder_help": "デビットカード清算フォルダの参照情報。公開環境ではdebit_storage_folder_idをGoogle Drive APIで読み取りに使います。",
+  "debit_receipt_folder_id": "your-receipt-folder-id",
+  "debit_receipt_folder_url": "https://drive.google.com/drive/folders/your-receipt-folder-id",
+  "debit_receipt_folder_name": "01.デビッドカード清算",
+  "debit_storage_folder_id": "your-storage-folder-id",
+  "debit_storage_folder_url": "https://drive.google.com/drive/folders/your-storage-folder-id",
+  "debit_local_storage_dir": "G:/マイドライブ/管理者提出物/01.経費処理フォルダ"
 }

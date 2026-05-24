@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import io
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -19,7 +20,7 @@ import streamlit as st
 
 from lib import (
     db, styling, auth, debit_parser, receipt_ocr, excel_writer,
-    receipt_processor, cash_advance_parser, expense_form,
+    receipt_processor, cash_advance_parser, expense_form, drive_sync,
 )
 
 # HEIC/HEIF を Pillow で開けるようにする（iPhone 写真対応）
@@ -74,12 +75,27 @@ parent_debit, parent_cash = st.tabs([
 #                                  └ 01.デビッドカード清算\  (レシート)
 GDRIVE_PARENT = Path(r"G:\マイドライブ\管理者提出物")
 RECEIPT_FOLDER_PATTERN = "デビッドカード清算"
+DEFAULT_DEBIT_RECEIPT_FOLDER_ID = "1p_SKPwE30n7Hy5KyCZA6M-TdLdugovDw"
+DEFAULT_DEBIT_RECEIPT_FOLDER_URL = (
+    f"https://drive.google.com/drive/folders/{DEFAULT_DEBIT_RECEIPT_FOLDER_ID}"
+)
+DEFAULT_DEBIT_STORAGE_FOLDER_ID = "1FToAeulgwYV58yNMlTeMJ2eekoBlUfnL"
+DEFAULT_DEBIT_STORAGE_FOLDER_URL = (
+    f"https://drive.google.com/drive/folders/{DEFAULT_DEBIT_STORAGE_FOLDER_ID}"
+)
 
 
 def _load_debit_folder_config() -> dict:
     """drive_config.json からデビットフォルダ参照情報を読み込む。"""
     cfg_path = Path(__file__).resolve().parent.parent / 'config' / 'drive_config.json'
-    out = {'url': None, 'id': None, 'name': None}
+    out = {
+        'url': DEFAULT_DEBIT_RECEIPT_FOLDER_URL,
+        'id': DEFAULT_DEBIT_RECEIPT_FOLDER_ID,
+        'name': '01.デビッドカード清算',
+        'storage_folder_id': DEFAULT_DEBIT_STORAGE_FOLDER_ID,
+        'storage_folder_url': DEFAULT_DEBIT_STORAGE_FOLDER_URL,
+        'local_storage_dir': None,
+    }
     if cfg_path.exists():
         try:
             import json
@@ -87,6 +103,9 @@ def _load_debit_folder_config() -> dict:
             out['url'] = cfg.get('debit_receipt_folder_url')
             out['id'] = cfg.get('debit_receipt_folder_id')
             out['name'] = cfg.get('debit_receipt_folder_name')
+            out['storage_folder_id'] = cfg.get('debit_storage_folder_id')
+            out['storage_folder_url'] = cfg.get('debit_storage_folder_url')
+            out['local_storage_dir'] = cfg.get('debit_local_storage_dir')
         except Exception:
             pass
     return out
@@ -108,6 +127,12 @@ def _find_gdrive_dir() -> Path | None:
       1. 直下に `*デビット*.xlsx` があるフォルダを優先 (新: `01.経費処理フォルダ`)
       2. その他の場合は `*デビッドカード清算*` フォルダを使用 (旧構造)
     検索は最大2階層まで。"""
+    configured_dir = DEBIT_FOLDER_REF.get('local_storage_dir')
+    if configured_dir:
+        configured_path = Path(configured_dir)
+        if configured_path.exists():
+            return configured_path
+
     if not GDRIVE_PARENT.exists():
         return None
 
@@ -205,7 +230,7 @@ def _list_dropbox_files() -> list[dict]:
     """格納フォルダ（Drive / 旧Dropbox）上の `*デビット*.xlsx` を返す。"""
     storage = _resolve_storage_dir()
     if not storage.exists():
-        return []
+        return _list_drive_api_debit_files()
     out = []
     for p in storage.iterdir():
         if not p.is_file():
@@ -221,9 +246,104 @@ def _list_dropbox_files() -> list[dict]:
             'corporation': _detect_corporation_from_filename(p.name),
             'size': stat.st_size,
             'mtime': stat.st_mtime,
+            'source': 'local',
         })
     out.sort(key=lambda x: x['name'])
     return out
+
+
+def _extract_drive_folder_id(url_or_id: str | None) -> str | None:
+    """Google DriveのURLまたはIDからフォルダIDを取り出す。"""
+    if not url_or_id:
+        return None
+    value = str(url_or_id).strip()
+    m = re.search(r'/folders/([a-zA-Z0-9_-]+)', value)
+    if m:
+        return m.group(1)
+    if re.fullmatch(r'[a-zA-Z0-9_-]{20,}', value):
+        return value
+    return None
+
+
+def _drive_ts(modified_time: str | None) -> float:
+    if not modified_time:
+        return 0.0
+    try:
+        return datetime.fromisoformat(
+            modified_time.replace('Z', '+00:00')
+        ).timestamp()
+    except Exception:
+        return 0.0
+
+
+def _list_drive_api_debit_files() -> list[dict]:
+    """Streamlit Cloud向け: Drive APIでデビットExcelを一時取得する。
+
+    ローカルのGドライブが見えない環境でも、サービスアカウントが設定済みなら
+    Excelの読み取りだけ行う。Drive上のファイルは変更しない。
+    """
+    try:
+        try:
+            cfg = drive_sync.load_config()
+        except drive_sync.DriveConfigError:
+            import json
+            cfg_path = (
+                Path(__file__).resolve().parent.parent
+                / 'config' / 'drive_config.json.sample'
+            )
+            cfg = json.loads(cfg_path.read_text(encoding='utf-8'))
+
+        folder_id = (
+            DEBIT_FOLDER_REF.get('storage_folder_id')
+            or _extract_drive_folder_id(DEBIT_FOLDER_REF.get('storage_folder_url'))
+        )
+        if not folder_id:
+            return []
+
+        service = drive_sync.build_service(cfg)
+        q = (
+            f"'{folder_id}' in parents and trashed=false and "
+            "mimeType!='application/vnd.google-apps.folder'"
+        )
+        res = service.files().list(
+            q=q,
+            fields="files(id,name,size,modifiedTime)",
+            pageSize=50,
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True,
+        ).execute()
+        items = []
+        cache_dir = (
+            Path(__file__).resolve().parent.parent
+            / 'data' / '_drive_cache' / 'debit'
+        )
+        cache_dir.mkdir(parents=True, exist_ok=True)
+
+        for item in res.get('files', []):
+            name = item.get('name') or ''
+            if Path(name).suffix.lower() != '.xlsx':
+                continue
+            if 'デビット' not in name and 'デビッド' not in name:
+                continue
+
+            data = drive_sync.download_file_bytes(service, item['id'])
+            local_path = cache_dir / name
+            local_path.write_bytes(data)
+            items.append({
+                'path': local_path,
+                'name': name,
+                'corporation': _detect_corporation_from_filename(name),
+                'size': int(item.get('size') or len(data)),
+                'mtime': _drive_ts(item.get('modifiedTime')),
+                'source': 'drive_api',
+            })
+
+        items.sort(key=lambda x: x['name'])
+        st.session_state['debit_drive_api_error'] = ''
+        return items
+    except Exception as e:
+        st.session_state['debit_drive_api_error'] = str(e)
+        return []
 
 
 def _corp_badge(corp: str) -> str:
@@ -670,6 +790,10 @@ with tab_import:
 
     storage_dir = _resolve_storage_dir()
     is_gdrive = str(storage_dir).startswith(str(GDRIVE_PARENT))
+    files = _list_dropbox_files()
+    has_drive_api_files = any(
+        f.get('source') == 'drive_api' for f in files
+    )
 
     # ---- ① レシート格納先 (Drive ソース) -----------------------------
     src_url = DEBIT_FOLDER_REF.get('url') or ''
@@ -679,13 +803,23 @@ with tab_import:
         f"style='color:#1e40af; font-weight:600;'>{src_name}</a>"
         if src_url else f"<b>{src_name}</b>"
     )
-    if storage_dir.exists():
+    if storage_dir.exists() or has_drive_api_files:
+        source_label = (
+            "Google Drive API（一時取得）"
+            if has_drive_api_files and not storage_dir.exists()
+            else "Google Drive"
+        )
+        local_label = (
+            "Drive APIからExcelを一時取得済み"
+            if has_drive_api_files and not storage_dir.exists()
+            else f"ローカル: <code>{storage_dir}</code>"
+        )
         st.markdown(
             f"<div style='background:#f0f9ff; border-left:4px solid #3b82f6; "
             f"padding:10px 16px; border-radius:6px; margin:0 0 16px;'>"
-            f"📁 <b>レシート格納先 (Google Drive)</b>: {name_html}"
+            f"📁 <b>レシート格納先 ({source_label})</b>: {name_html}"
             f"<br><span style='color:#475569; font-size:12px;'>"
-            f"📂 ローカル: <code>{storage_dir}</code>"
+            f"📂 {local_label}"
             f"</span></div>",
             unsafe_allow_html=True,
         )
@@ -717,13 +851,15 @@ with tab_import:
 
         if not gp_exists:
             st.info(
-                "📌 **Google Drive for Desktop の状態を確認してください**\n\n"
-                "1. タスクトレイの Drive アイコンが緑/同期中か\n"
-                "2. サインイン中アカウントに `01.経費処理フォルダ` または "
-                "`01.デビッドカード清算` が同期されているか\n"
-                "3. 起動直後で同期が完了していない場合は数秒待つ\n\n"
+                "📌 **公開URLではPC内のGドライブを直接読めません**\n\n"
+                "Streamlit Cloud上では `G:\\マイドライブ` やDropboxのローカルフォルダは"
+                "存在しないため、Google Drive APIの設定が必要です。"
+                "ローカルPCで起動している場合は、タスクトレイのDrive同期状態も確認してください。\n\n"
                 f"ブラウザで Drive を開いて確認: {src_url}"
             )
+            api_error = st.session_state.get('debit_drive_api_error')
+            if api_error:
+                st.caption(f"Drive API確認結果: {api_error}")
         else:
             # 親はあるが子フォルダで検出できないケース
             try:
@@ -755,7 +891,6 @@ with tab_import:
                 st.rerun()
 
     # ---- ② 取込実行ボタン (主要アクション) ---------------------------
-    files = _list_dropbox_files() if storage_dir.exists() else []
     target_idx = list(range(len(files)))  # デフォルト: 全ファイル
 
     run_col, opt_col = st.columns([3, 1])
@@ -773,8 +908,15 @@ with tab_import:
             key='debit_dropbox_overwrite',
         )
 
-    if storage_dir.exists() and not files:
-        st.info(f"デビット xlsx が見つかりません: `{storage_dir}`")
+    if not files:
+        if storage_dir.exists():
+            st.info(f"デビット xlsx が見つかりません: `{storage_dir}`")
+        else:
+            st.info(
+                "デビットExcelを取得できませんでした。公開URLで使う場合は、"
+                "Streamlit SecretsにGoogle Driveのサービスアカウント情報を設定し、"
+                "`01.経費処理フォルダ` をそのサービスアカウントに共有してください。"
+            )
 
     # ---- ③ 詳細・オプション (折りたたみ) ----------------------------
     if files:
@@ -866,62 +1008,68 @@ with tab_import:
 
             # ---- 既存データの日付降順並び替え ----
             st.markdown("##### 🔃 既存シートを日付降順に並び替え")
-            st.caption(
-                "各 `YYMM【デビット】` シート内の行を日付の新しい順 (上から) に "
-                "並び替えます。A〜K列のみ移動し、L列(検証)は触りません。"
-            )
-            if st.button(
-                "🔃 全デビットExcelを日付降順にソート",
-                key='debit_sort_all_btn',
-                width='stretch',
-            ):
-                sort_summary = []
-                with st.spinner("デビットExcelを並び替え中..."):
-                    for f in files:
-                        try:
-                            res = excel_writer.sort_debit_xlsx_by_date_desc(
-                                Path(f['path'])
+            if has_drive_api_files:
+                st.caption(
+                    "公開環境ではDrive上のExcelを一時取得しているため、"
+                    "並び替えは表示していません。元Excelは変更されません。"
+                )
+            else:
+                st.caption(
+                    "各 `YYMM【デビット】` シート内の行を日付の新しい順 (上から) に "
+                    "並び替えます。A〜K列のみ移動し、L列(検証)は触りません。"
+                )
+                if st.button(
+                    "🔃 全デビットExcelを日付降順にソート",
+                    key='debit_sort_all_btn',
+                    width='stretch',
+                ):
+                    sort_summary = []
+                    with st.spinner("デビットExcelを並び替え中..."):
+                        for f in files:
+                            try:
+                                res = excel_writer.sort_debit_xlsx_by_date_desc(
+                                    Path(f['path'])
+                                )
+                                sort_summary.append({
+                                    'corporation': f['corporation'] or '(未判定)',
+                                    'name': f['name'],
+                                    'ok': res.get('ok', False),
+                                    'total': res.get('total_sorted', 0),
+                                    'sheets': res.get('sheets', []),
+                                    'error': res.get('error'),
+                                })
+                            except Exception as e:
+                                sort_summary.append({
+                                    'corporation': f['corporation'] or '(未判定)',
+                                    'name': f['name'],
+                                    'ok': False,
+                                    'error': str(e),
+                                })
+                    for s in sort_summary:
+                        if not s['ok']:
+                            st.error(
+                                f"❌ {s['corporation']} / `{s['name']}`: "
+                                f"{s.get('error')}"
                             )
-                            sort_summary.append({
-                                'corporation': f['corporation'] or '(未判定)',
-                                'name': f['name'],
-                                'ok': res.get('ok', False),
-                                'total': res.get('total_sorted', 0),
-                                'sheets': res.get('sheets', []),
-                                'error': res.get('error'),
-                            })
-                        except Exception as e:
-                            sort_summary.append({
-                                'corporation': f['corporation'] or '(未判定)',
-                                'name': f['name'],
-                                'ok': False,
-                                'error': str(e),
-                            })
-                for s in sort_summary:
-                    if not s['ok']:
-                        st.error(
-                            f"❌ {s['corporation']} / `{s['name']}`: "
-                            f"{s.get('error')}"
-                        )
-                        continue
-                    if s['total'] == 0:
-                        st.info(
-                            f"✓ {s['corporation']} / `{s['name']}`: "
-                            "既に降順 (変更なし)"
-                        )
-                    else:
-                        st.success(
-                            f"✅ {s['corporation']} / `{s['name']}`: "
-                            f"計 {s['total']} 行を並び替え"
-                        )
-                        with st.expander("シート別の詳細", expanded=False):
-                            for sh in s['sheets']:
-                                if sh.get('sorted', 0) > 0:
-                                    st.write(
-                                        f"- `{sh['name']}`: {sh['sorted']} 行"
-                                    )
-                                elif sh.get('already_sorted'):
-                                    st.write(f"- `{sh['name']}`: 既に降順")
+                            continue
+                        if s['total'] == 0:
+                            st.info(
+                                f"✓ {s['corporation']} / `{s['name']}`: "
+                                "既に降順 (変更なし)"
+                            )
+                        else:
+                            st.success(
+                                f"✅ {s['corporation']} / `{s['name']}`: "
+                                f"計 {s['total']} 行を並び替え"
+                            )
+                            with st.expander("シート別の詳細", expanded=False):
+                                for sh in s['sheets']:
+                                    if sh.get('sorted', 0) > 0:
+                                        st.write(
+                                            f"- `{sh['name']}`: {sh['sorted']} 行"
+                                        )
+                                    elif sh.get('already_sorted'):
+                                        st.write(f"- `{sh['name']}`: 既に降順")
 
     # ---- 取込実行ロジック ---------------------------------------------
     if files:
