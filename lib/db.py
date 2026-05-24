@@ -737,7 +737,12 @@ def record_login_event(user):
             now,
         ))
         row = conn.execute("SELECT last_insert_rowid() AS id").fetchone()
-        return row['id'] if row else None
+        if not row:
+            return None
+        try:
+            return row['id']
+        except (KeyError, TypeError, IndexError):
+            return row[0]
 
 
 def touch_login_event(event_id):
@@ -766,15 +771,27 @@ def record_logout_event(event_id, reason='手動ログアウト'):
 
 def list_login_events(limit=300):
     limit = max(1, min(int(limit or 300), 2000))
+    columns = [
+        'id', 'user_id', 'email', 'name', 'role',
+        'login_at', 'last_seen_at', 'logout_at', 'logout_reason',
+    ]
     with get_conn() as conn:
-        return [dict(r) for r in conn.execute("""
+        rows = conn.execute("""
             SELECT
                 id, user_id, email, name, role,
                 login_at, last_seen_at, logout_at, logout_reason
             FROM login_events
             ORDER BY login_at DESC, id DESC
             LIMIT ?
-        """, (limit,)).fetchall()]
+        """, (limit,)).fetchall()
+
+    results = []
+    for row in rows:
+        if hasattr(row, 'keys'):
+            results.append({key: row[key] for key in row.keys()})
+        else:
+            results.append(dict(zip(columns, row)))
+    return results
 
 
 def get_user_by_email(email):
