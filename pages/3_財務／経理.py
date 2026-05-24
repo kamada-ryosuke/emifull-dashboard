@@ -75,7 +75,7 @@ parent_debit, parent_cash = st.tabs([
 #                                  └ 01.デビッドカード清算\  (レシート)
 GDRIVE_PARENT = Path(r"G:\マイドライブ\管理者提出物")
 RECEIPT_FOLDER_PATTERN = "デビッドカード清算"
-DEFAULT_DEBIT_RECEIPT_FOLDER_ID = "1p_SKPwE30n7Hy5KyCZA6M-TdLdugovDw"
+DEFAULT_DEBIT_RECEIPT_FOLDER_ID = "1wSmOBCJ95wqKtmPh6J9T_1D3kKouORum"
 DEFAULT_DEBIT_RECEIPT_FOLDER_URL = (
     f"https://drive.google.com/drive/folders/{DEFAULT_DEBIT_RECEIPT_FOLDER_ID}"
 )
@@ -346,6 +346,120 @@ def _list_drive_api_debit_files() -> list[dict]:
         return []
 
 
+def _drive_api_config() -> dict:
+    try:
+        return drive_sync.load_config()
+    except drive_sync.DriveConfigError:
+        import json
+        cfg_path = (
+            Path(__file__).resolve().parent.parent
+            / 'config' / 'drive_config.json.sample'
+        )
+        return json.loads(cfg_path.read_text(encoding='utf-8'))
+
+
+def _drive_list_children(service, folder_id: str) -> list[dict]:
+    q = f"'{folder_id}' in parents and trashed=false"
+    items, page_token = [], None
+    while True:
+        res = service.files().list(
+            q=q,
+            fields=(
+                "nextPageToken, "
+                "files(id,name,mimeType,size,modifiedTime,parents)"
+            ),
+            pageSize=100,
+            pageToken=page_token,
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True,
+        ).execute()
+        items.extend(res.get('files', []))
+        page_token = res.get('nextPageToken')
+        if not page_token:
+            break
+    return items
+
+
+def _receipt_meta_from_parts(parts: tuple[str, ...]) -> tuple[str, str, str]:
+    facility = ''
+    status_label = ''
+    year_month_label = ''
+    if len(parts) >= 2 and parts[0] in ('_処理済み', '_要確認'):
+        status_label = parts[0].lstrip('_')
+        if parts[0] == '_処理済み' and len(parts) >= 4:
+            year_month_label = parts[1]
+            facility = parts[2]
+        elif parts[0] == '_要確認' and len(parts) >= 3:
+            facility = parts[1]
+        else:
+            facility = parts[1] if len(parts) >= 2 else ''
+    elif len(parts) >= 2:
+        facility = parts[0]
+    else:
+        facility = '(未分類)'
+    return facility, status_label, year_month_label
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _list_drive_api_receipt_files(folder_id: str) -> list[dict]:
+    """公開環境向け: Drive APIでレシート画像/PDFを再帰取得する。"""
+    if not folder_id:
+        return []
+    try:
+        cfg = _drive_api_config()
+        service = drive_sync.build_service(cfg)
+        cache_dir = (
+            Path(__file__).resolve().parent.parent
+            / 'data' / '_drive_cache' / 'debit_receipts'
+        )
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        folder_mime = drive_sync.DRIVE_FOLDER_MIME
+        out: list[dict] = []
+
+        def walk(current_id: str, rel_parts: tuple[str, ...]) -> None:
+            for item in _drive_list_children(service, current_id):
+                name = item.get('name') or ''
+                if item.get('mimeType') == folder_mime:
+                    walk(item['id'], (*rel_parts, name))
+                    continue
+
+                suffix = Path(name).suffix.lower()
+                if suffix not in RECEIPT_ALL_EXTS:
+                    continue
+
+                data = drive_sync.download_file_bytes(service, item['id'])
+                safe_name = re.sub(r'[<>:"/\\\\|?*]+', '_', name)
+                local_path = cache_dir / f"{item['id']}_{safe_name}"
+                local_path.write_bytes(data)
+
+                parts = (*rel_parts, name)
+                facility, status_label, year_month_label = (
+                    _receipt_meta_from_parts(parts)
+                )
+                out.append({
+                    'path': local_path,
+                    'name': name,
+                    'rel': '/'.join(parts),
+                    'facility': facility,
+                    'status': status_label,
+                    'year_month_folder': year_month_label,
+                    'kind': _receipt_kind(local_path),
+                    'ext': suffix,
+                    'size': int(item.get('size') or len(data)),
+                    'mtime': _drive_ts(item.get('modifiedTime')),
+                    'source': 'drive_api',
+                    'drive_file_id': item['id'],
+                })
+
+        walk(folder_id, ())
+        out.sort(key=lambda x: (x['facility'], -x['mtime']))
+        st.session_state['debit_receipt_drive_api_error'] = ''
+        return out
+    except Exception as e:
+        st.session_state['debit_receipt_drive_api_error'] = str(e)
+        return []
+
+
 def _corp_badge(corp: str) -> str:
     bg, fg = CORP_COLORS.get(corp, ("#f1f5f9", "#475569"))
     return (f"<span style='background:{bg}; color:{fg}; padding:3px 10px; "
@@ -434,26 +548,9 @@ def _list_receipt_files(storage_dir: Path) -> list[dict]:
             except ValueError:
                 continue
             parts = rel_to_root.parts
-            # parts パターン:
-            #   {施設}/file
-            #   _処理済み/{月}/{施設}/file
-            #   _要確認/{施設}/file
-            facility = ''
-            status_label = ''
-            year_month_label = ''
-            if len(parts) >= 2 and parts[0] in ('_処理済み', '_要確認'):
-                status_label = parts[0].lstrip('_')
-                if parts[0] == '_処理済み' and len(parts) >= 4:
-                    year_month_label = parts[1]
-                    facility = parts[2]
-                elif parts[0] == '_要確認' and len(parts) >= 3:
-                    facility = parts[1]
-                else:
-                    facility = parts[1] if len(parts) >= 2 else ''
-            elif len(parts) >= 2:
-                facility = parts[0]
-            else:
-                facility = '(未分類)'
+            facility, status_label, year_month_label = (
+                _receipt_meta_from_parts(parts)
+            )
 
             # 表示用 rel パス (storage_dir からのパス)
             try:
@@ -4097,18 +4194,29 @@ with tab_receipts:
         )
 
     storage_root = _resolve_storage_dir()
-    if not storage_root.exists():
-        st.warning(f"格納フォルダが見つかりません: {storage_root}")
+    receipt_folder_id = (
+        DEBIT_FOLDER_REF.get('id')
+        or _extract_drive_folder_id(DEBIT_FOLDER_REF.get('url'))
+        or DEFAULT_DEBIT_RECEIPT_FOLDER_ID
+    )
+    use_drive_api_receipts = not storage_root.exists()
+
+    if use_drive_api_receipts:
+        with st.spinner("レシート読込中..."):
+            receipts = _list_drive_api_receipt_files(receipt_folder_id)
+        api_error = st.session_state.get('debit_receipt_drive_api_error')
+        if api_error:
+            st.warning(f"Drive APIでレシートを読めませんでした: {api_error}")
     else:
         with st.spinner("レシート読込中..."):
             receipts = _list_receipt_files(storage_root)
 
-        if not receipts:
-            st.info(
-                "レシートファイルが見つかりません。\n"
-                "対応形式: " + ", ".join(sorted(RECEIPT_ALL_EXTS))
-            )
-        else:
+    if not receipts:
+        st.info(
+            "レシートファイルが見つかりません。\n"
+            "対応形式: " + ", ".join(sorted(RECEIPT_ALL_EXTS))
+        )
+    else:
             # ---- KPI ----
             n_total = len(receipts)
             n_img = sum(1 for r in receipts if r['kind'] == 'image')
