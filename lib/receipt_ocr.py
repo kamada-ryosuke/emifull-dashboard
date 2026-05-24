@@ -155,13 +155,22 @@ def _normalize_image(image_bytes: bytes, ext: str) -> tuple[bytes, str]:
 
     - HEIC/HEIF: JPEG に変換
     - PNG/JPG/WEBP/BMP/TIFF: 必要なら縮小して JPEG 化
-    - PDF: 未対応 (None を返す → 呼び出し側でエラー表示)
+    - PDF: 先頭ページを画像化してJPEG化
     """
     e = ext.lower()
     if e in (".heic", ".heif"):
         return _heic_to_jpeg(image_bytes), "image/jpeg"
     if e in (".pdf",):
-        raise NotImplementedError("PDF レシートの OCR は未対応です")
+        try:
+            import fitz  # PyMuPDF
+            doc = fitz.open(stream=image_bytes, filetype="pdf")
+            if doc.page_count == 0:
+                raise ValueError("PDFにページがありません")
+            page = doc.load_page(0)
+            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+            return _generic_to_jpeg(pix.tobytes("png")), "image/jpeg"
+        except Exception as exc:
+            raise NotImplementedError(f"PDF レシートの画像化に失敗しました: {exc}") from exc
     # 標準画像
     return _generic_to_jpeg(image_bytes), "image/jpeg"
 

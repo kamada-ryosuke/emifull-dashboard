@@ -423,6 +423,33 @@ def _drive_file_info_for_path(path: Path) -> dict | None:
     return None
 
 
+def _current_debit_work_dir(files: list[dict]) -> Path:
+    for f in files:
+        if f.get('source') == 'drive_api' and f.get('path'):
+            return Path(f['path']).parent
+    return GDRIVE_DIR
+
+
+def _current_receipts_for_import(storage_dir: Path) -> list[dict]:
+    if storage_dir.exists():
+        return _list_receipt_files(storage_dir)
+    folder_id = (
+        DEBIT_FOLDER_REF.get('id')
+        or _extract_drive_folder_id(DEBIT_FOLDER_REF.get('url'))
+        or DEFAULT_DEBIT_RECEIPT_FOLDER_ID
+    )
+    return _list_drive_api_receipt_files(folder_id)
+
+
+def _upload_all_drive_api_workbooks(files: list[dict]) -> None:
+    uploaded_ids = set()
+    for f in files:
+        fid = f.get('drive_file_id')
+        if f.get('source') == 'drive_api' and fid and fid not in uploaded_ids:
+            _upload_drive_api_xlsx_if_needed(f)
+            uploaded_ids.add(fid)
+
+
 def _drive_api_config() -> dict:
     try:
         return drive_sync.load_config()
@@ -720,8 +747,8 @@ _OCR_TAX_OPTIONS = [
 
 def _render_ocr_popover(r: dict, file_bytes: bytes, idx: int) -> None:
     """レシートカード末尾に出すOCR + Excel追記用ポップオーバー。"""
-    # 画像のみ対応 (PDFは未対応)
-    if r['kind'] != 'image':
+    # 画像/PDFに対応
+    if r['kind'] not in ('image', 'pdf'):
         return
 
     key_prefix = f"ocrf_{idx}"
@@ -1262,17 +1289,15 @@ with tab_import:
                         sub_lookup[s['excel_name']] = s['id']
                         if s.get('display_name'):
                             sub_lookup[s['display_name']] = s['id']
+                    debit_work_dir = _current_debit_work_dir(files)
 
                     # ----- Phase 0: 過去に処理済みなのに移動されていないレシートを整理 -----
                     receipts_storage = _resolve_storage_dir()
-                    all_receipts = (
-                        _list_receipt_files(receipts_storage)
-                        if receipts_storage.exists() else []
-                    )
-                    if all_receipts:
+                    all_receipts = _current_receipts_for_import(receipts_storage)
+                    if all_receipts and receipts_storage.exists():
                         with st.spinner("処理済みレシートを整理中..."):
                             recon = receipt_processor.reconcile_processed_locations(
-                                all_receipts, GDRIVE_DIR,
+                                all_receipts, debit_work_dir,
                             )
                         if recon['moved'] > 0:
                             st.info(
@@ -1301,9 +1326,14 @@ with tab_import:
                             )
 
                         receipt_summary = receipt_processor.auto_process_batch(
-                            unprocessed, GDRIVE_DIR, on_progress=_on_progress,
+                            unprocessed, debit_work_dir, on_progress=_on_progress,
                         )
                         progress_bar.empty()
+                        try:
+                            _upload_all_drive_api_workbooks(files)
+                        except Exception as e:
+                            st.error(f"DriveへのExcel書き戻しに失敗: {e}")
+                            st.stop()
                     elif unprocessed and not receipt_ocr.is_available():
                         st.warning(
                             f"未処理レシート {len(unprocessed)} 件ありますが、"

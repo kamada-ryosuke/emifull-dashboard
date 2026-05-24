@@ -177,18 +177,12 @@ def detect_unprocessed(receipts: list[dict]) -> list[dict]:
     """`_list_receipt_files` の結果から、自動処理対象だけを返す。
 
     除外条件:
-      - 画像以外 (PDFは未対応)
-      - フォルダ status = '処理済み' (既にデビットExcelに転記済みとみなす)
+      - 画像/PDF以外
       - DB receipt_processed に success として登録済み
     """
     out = []
     for r in receipts:
-        if r.get('kind') != 'image':
-            continue
-        if r.get('ext') in ('.pdf',):
-            continue
-        # `_処理済み/` フォルダ配下は既に手動転記済 → 重複防止のためスキップ
-        if r.get('status') == '処理済み':
+        if r.get('kind') not in ('image', 'pdf'):
             continue
         if db.is_receipt_processed(str(r['path'])):
             continue
