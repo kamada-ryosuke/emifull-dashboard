@@ -4,6 +4,7 @@ import sqlite3
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 DB_PATH = Path(__file__).resolve().parent.parent / "data" / "uriage.db"
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -40,12 +41,34 @@ def init_login_schema():
             password_hash TEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
+
+        CREATE TABLE IF NOT EXISTS login_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            email TEXT NOT NULL,
+            name TEXT,
+            role TEXT,
+            login_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            logout_at TEXT,
+            logout_reason TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
         """)
         user_cols = {
             r['name'] for r in conn.execute("PRAGMA table_info(users)").fetchall()
         }
         if 'password_hash' not in user_cols:
             conn.execute("ALTER TABLE users ADD COLUMN password_hash TEXT")
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_login_events_login_at "
+            "ON login_events(login_at)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_login_events_email "
+            "ON login_events(email)"
+        )
 
 
 class _CloudRow:
@@ -293,6 +316,19 @@ def init_db():
             password_hash TEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
+
+        CREATE TABLE IF NOT EXISTS login_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            email TEXT NOT NULL,
+            name TEXT,
+            role TEXT,
+            login_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            logout_at TEXT,
+            logout_reason TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
         """)
 
         # === マイグレーション: 既存DBに password_hash 列を追加 ===
@@ -301,6 +337,15 @@ def init_db():
         }
         if 'password_hash' not in user_cols:
             conn.execute("ALTER TABLE users ADD COLUMN password_hash TEXT")
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_login_events_login_at "
+            "ON login_events(login_at)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_login_events_email "
+            "ON login_events(email)"
+        )
 
         # 初期管理者(kamada)を投入。emifull123 を pbkdf2_sha256 でハッシュ化したもの。
         # 平文を残さないよう、初期投入時のみ事前計算済みハッシュを使う。
@@ -667,6 +712,70 @@ def list_fiscal_years():
 
 
 # === ユーザー管理 ===
+
+def _now_jst_str():
+    return datetime.now(ZoneInfo("Asia/Tokyo")).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def record_login_event(user):
+    """ログイン成功を記録し、作成した履歴IDを返す。"""
+    if not user:
+        return None
+    now = _now_jst_str()
+    with get_conn() as conn:
+        conn.execute("""
+            INSERT INTO login_events (
+                user_id, email, name, role, login_at, last_seen_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (
+            user.get('id'),
+            (user.get('email') or '').strip().lower(),
+            user.get('name'),
+            user.get('role'),
+            now,
+            now,
+        ))
+        row = conn.execute("SELECT last_insert_rowid() AS id").fetchone()
+        return row['id'] if row else None
+
+
+def touch_login_event(event_id):
+    """ログイン中セッションの最終操作時刻を更新する。"""
+    if not event_id:
+        return
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE login_events SET last_seen_at = ? WHERE id = ? AND logout_at IS NULL",
+            (_now_jst_str(), event_id),
+        )
+
+
+def record_logout_event(event_id, reason='手動ログアウト'):
+    """ログアウト時刻を記録する。"""
+    if not event_id:
+        return
+    now = _now_jst_str()
+    with get_conn() as conn:
+        conn.execute("""
+            UPDATE login_events
+            SET logout_at = ?, last_seen_at = ?, logout_reason = ?
+            WHERE id = ? AND logout_at IS NULL
+        """, (now, now, reason, event_id))
+
+
+def list_login_events(limit=300):
+    limit = max(1, min(int(limit or 300), 2000))
+    with get_conn() as conn:
+        return [dict(r) for r in conn.execute("""
+            SELECT
+                id, user_id, email, name, role,
+                login_at, last_seen_at, logout_at, logout_reason
+            FROM login_events
+            ORDER BY login_at DESC, id DESC
+            LIMIT ?
+        """, (limit,)).fetchall()]
+
 
 def get_user_by_email(email):
     if not email:

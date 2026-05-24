@@ -9,12 +9,13 @@ auth.render_sidebar_navigation()
 
 st.title("施設マスタ / 設定")
 
-tab_facility, tab_users, tab_mypw, tab_notion, tab_about = st.tabs([
+tab_facility, tab_users, tab_mypw, tab_notion, tab_about, tab_login_history = st.tabs([
     "🏢 施設マスタ",
     "👥 ユーザー管理",
     "🔑 自分のパスワード変更",
     "🔗 Notion連携",
     "ℹ️ アプリ情報",
+    "🛡️ ログイン履歴",
 ])
 
 # ============================================================
@@ -474,3 +475,85 @@ DB は `./data/uriage.db` の単一ファイルです。
 - ブラウザを閉じる/リロードするとログアウトされます
 - 同時編集の排他制御はありません（後続編集が上書き）
 """)
+
+
+# ============================================================
+# ログイン履歴
+# ============================================================
+with tab_login_history:
+    st.markdown("#### ログイン履歴")
+    st.caption(
+        "ログイン成功時刻、最終操作時刻、ログアウト時刻を確認できます。"
+        "ブラウザを閉じた場合や通信切断時は正確なログアウト時刻が取れないため、"
+        "最終操作時刻を目安に確認してください。"
+    )
+
+    limit = st.selectbox(
+        "表示件数",
+        [100, 300, 500, 1000],
+        index=1,
+        key="login_history_limit",
+    )
+    events = db.list_login_events(limit=limit)
+
+    if not events:
+        st.info("まだログイン履歴はありません。次回ログインから記録されます。")
+    else:
+        df_history = pd.DataFrame([
+            {
+                "ログイン日時": e.get("login_at") or "",
+                "メールアドレス": e.get("email") or "",
+                "名前": e.get("name") or "",
+                "権限": "管理者" if e.get("role") == "admin" else "一般",
+                "ログアウト日時": e.get("logout_at") or "未記録",
+                "最終操作日時": e.get("last_seen_at") or "",
+                "状態": (
+                    "ログアウト済"
+                    if e.get("logout_at")
+                    else "利用中またはブラウザ終了"
+                ),
+                "ログアウト理由": e.get("logout_reason") or "",
+            }
+            for e in events
+        ])
+
+        c1, c2, c3 = st.columns([1.3, 1.3, 1])
+        with c1:
+            email_options = ["すべて"] + sorted(df_history["メールアドレス"].dropna().unique().tolist())
+            selected_email = st.selectbox(
+                "メールアドレスで絞り込み",
+                email_options,
+                key="login_history_email_filter",
+            )
+        with c2:
+            status_options = ["すべて"] + sorted(df_history["状態"].dropna().unique().tolist())
+            selected_status = st.selectbox(
+                "状態で絞り込み",
+                status_options,
+                key="login_history_status_filter",
+            )
+        with c3:
+            show_active_only = st.checkbox(
+                "未ログアウトのみ",
+                value=False,
+                key="login_history_active_only",
+            )
+
+        filtered = df_history.copy()
+        if selected_email != "すべて":
+            filtered = filtered[filtered["メールアドレス"] == selected_email]
+        if selected_status != "すべて":
+            filtered = filtered[filtered["状態"] == selected_status]
+        if show_active_only:
+            filtered = filtered[filtered["ログアウト日時"] == "未記録"]
+
+        st.dataframe(filtered, width='stretch', hide_index=True)
+
+        csv = filtered.to_csv(index=False).encode("utf-8-sig")
+        st.download_button(
+            "CSVでダウンロード",
+            data=csv,
+            file_name="login_history.csv",
+            mime="text/csv",
+            width='stretch',
+        )

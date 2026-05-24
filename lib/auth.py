@@ -13,6 +13,7 @@ import hashlib
 import os
 import secrets
 import sys
+import time
 import streamlit as st
 from lib import db
 
@@ -56,6 +57,9 @@ def init_session():
         st.session_state.user_email = None
         st.session_state.user_role = None
         st.session_state.user_name = None
+        st.session_state.login_event_id = None
+    if 'login_event_id' not in st.session_state:
+        st.session_state.login_event_id = None
 
 
 def is_logged_in():
@@ -165,14 +169,37 @@ def login(email: str, password: str) -> tuple[bool, str]:
     st.session_state.user_email = user['email']
     st.session_state.user_role = user['role']
     st.session_state.user_name = user['name'] if 'name' in user.keys() else None
+    try:
+        st.session_state.login_event_id = db.record_login_event(user)
+    except Exception:
+        st.session_state.login_event_id = None
     st.session_state.disable_auto_login = False
     return True, "ログインしました"
 
 
-def logout():
+def touch_login_history():
+    if is_logged_in():
+        now = time.time()
+        last_touch = st.session_state.get("_login_history_touched_at", 0)
+        if now - last_touch < 60:
+            return
+        try:
+            db.touch_login_event(st.session_state.get("login_event_id"))
+            st.session_state._login_history_touched_at = now
+        except Exception:
+            pass
+
+
+def logout(reason="手動ログアウト"):
+    try:
+        db.record_logout_event(st.session_state.get("login_event_id"), reason)
+    except Exception:
+        pass
     st.session_state.user_email = None
     st.session_state.user_role = None
     st.session_state.user_name = None
+    st.session_state.login_event_id = None
+    st.session_state._login_history_touched_at = 0
     st.session_state.disable_auto_login = True
 
 
@@ -354,6 +381,7 @@ def _render_role_navigation():
 
 def render_sidebar_navigation():
     """Prepare the sidebar menu before page content is rendered."""
+    touch_login_history()
     _inject_sidebar_permissions_css()
     _render_role_navigation()
 
@@ -361,6 +389,7 @@ def render_sidebar_navigation():
 def render_sidebar_user_box():
     """サイドバーにユーザ情報＋ログアウトボタンを表示"""
     _inject_sidebar_permissions_css()
+    touch_login_history()
     _render_sidebar_vehicle_alert()
     with st.sidebar:
         st.markdown("---")
