@@ -28,6 +28,16 @@ IS_ADMIN = auth.is_admin()
 CURRENT_USER = auth.current_user() or {}
 CURRENT_EMAIL = (CURRENT_USER.get('email') or '').strip().lower()
 
+PAYROLL_MANAGER_ORDER = [
+    ('kamada.rusk@emifull-group.or.jp', '鎌田'),
+    ('morita.yshr@emifull-group.or.jp', '森田'),
+    ('fukaya.kkr@emifull-group.or.jp', '深谷'),
+    ('nishitsuji.msys@emifull-group.or.jp', '西辻'),
+    ('oketani.msm@emifull-group.or.jp', '桶谷'),
+    ('kanbe.tkhr@emifull-group.or.jp', '神戸'),
+    ('kuroda.yusk@emifull-group.or.jp', '黒田'),
+]
+
 st.title("給与台帳")
 st.markdown(
     "<p style='color:#64748b; font-size:14px;'>"
@@ -132,6 +142,25 @@ def _filter_allowed_employees(employees: list[dict]) -> list[dict]:
         return employees
     allowed = db.list_payroll_allowed_employee_ids(CURRENT_EMAIL)
     return [e for e in employees if e.get('id') in allowed]
+
+
+def _ordered_payroll_managers(managers: list[dict]) -> list[dict]:
+    """管理マスタに表示する役職者を固定順に整える。"""
+    by_email = {
+        (m.get('email') or '').strip().lower(): m
+        for m in managers
+    }
+    ordered = []
+    for email, display_name in PAYROLL_MANAGER_ORDER:
+        m = by_email.get(email)
+        if not m:
+            continue
+        ordered.append({
+            **m,
+            'email': email,
+            'display_name': display_name,
+        })
+    return ordered
 
 
 def _import_file(path: Path, info: dict) -> dict:
@@ -409,11 +438,19 @@ with tabs[1]:
         perm_ym = ym_options[picked_label]
 
         managers, employees, perm_map = db.list_payroll_permission_matrix(perm_ym)
-        unconfigured = db.list_payroll_unconfigured_employees(perm_ym)
+        managers = _ordered_payroll_managers(managers)
+        manager_emails_for_alert = [
+            (m.get('email') or '').strip().lower()
+            for m in managers
+        ]
+        unconfigured = [
+            emp for emp in employees
+            if not any((email, emp['id']) in perm_map for email in manager_emails_for_alert)
+        ]
 
         if unconfigured:
             names = "、".join(
-                f"{e['name']}（{e['corp_name']} / {e['emp_code']}）"
+                e['name']
                 for e in unconfigured[:8]
             )
             more = f" ほか{len(unconfigured) - 8}名" if len(unconfigured) > 8 else ""
@@ -426,40 +463,66 @@ with tabs[1]:
         elif not employees:
             st.warning("この対象月の給与職員データがありません。")
         else:
-            rows = []
-            emp_columns = []
-            emp_id_by_col = {}
-            for emp in employees:
-                col = f"{emp['name']}\n{emp['corp_name']}\n{emp['emp_code']}"
-                emp_columns.append(col)
-                emp_id_by_col[col] = emp['id']
-
+            manager_columns = []
+            manager_email_by_col = {}
             for manager in managers:
                 email = (manager.get('email') or '').strip().lower()
-                display_name = manager.get('name') or manager.get('email')
+                col = manager.get('display_name') or manager.get('name') or email
+                manager_columns.append(col)
+                manager_email_by_col[col] = email
+
+            rows = []
+            for emp in employees:
                 row = {
-                    '氏名': display_name,
-                    'メール': email,
+                    'employee_id': emp['id'],
+                    '氏名': emp['name'],
                 }
-                for col in emp_columns:
-                    row[col] = bool(perm_map.get((email, emp_id_by_col[col]), False))
+                for col in manager_columns:
+                    email = manager_email_by_col[col]
+                    row[col] = bool(perm_map.get((email, emp['id']), False))
                 rows.append(row)
 
             matrix_df = pd.DataFrame(rows)
+
+            cc1, cc2, cc3 = st.columns([1, 1, 4])
+            manager_emails = list(manager_email_by_col.values())
+            employee_ids = [e['id'] for e in employees]
+            with cc1:
+                if st.button("✅ 全選択して保存", type='secondary',
+                             use_container_width=True, key='perm_all_on_btn'):
+                    checked_pairs = [
+                        (email, employee_id)
+                        for email in manager_emails
+                        for employee_id in employee_ids
+                    ]
+                    db.save_payroll_permission_matrix(
+                        perm_ym, manager_emails, employee_ids, checked_pairs,
+                    )
+                    st.success("全員閲覧可として保存しました。")
+                    st.rerun()
+            with cc2:
+                if st.button("⬜ 全解除して保存", type='secondary',
+                             use_container_width=True, key='perm_all_off_btn'):
+                    db.save_payroll_permission_matrix(
+                        perm_ym, manager_emails, employee_ids, [],
+                    )
+                    st.success("全員閲覧不可として保存しました。")
+                    st.rerun()
+
             edited = st.data_editor(
                 matrix_df,
                 width='stretch',
                 hide_index=True,
-                height=min(640, 120 + 36 * len(matrix_df)),
+                height=min(700, 120 + 36 * len(matrix_df)),
                 column_config={
+                    'employee_id': None,
                     '氏名': st.column_config.TextColumn(disabled=True),
-                    'メール': st.column_config.TextColumn(disabled=True),
                     **{
                         col: st.column_config.CheckboxColumn(
                             label=col,
-                            help="チェックした管理者だけ、この職員の給与を閲覧できます。",
+                            help=f"{col}さんがこの職員の給与を閲覧できる場合にチェックします。",
                         )
-                        for col in emp_columns
+                        for col in manager_columns
                     },
                 },
                 key=f'perm_editor_{perm_ym}',
@@ -467,14 +530,13 @@ with tabs[1]:
 
             if st.button("💾 権限を保存", type='primary', key='perm_save_btn'):
                 checked_pairs = []
-                manager_emails = []
-                employee_ids = list(emp_id_by_col.values())
+                manager_emails = list(manager_email_by_col.values())
+                employee_ids = [int(e['id']) for e in employees]
                 for _, row in edited.iterrows():
-                    email = str(row['メール']).strip().lower()
-                    manager_emails.append(email)
-                    for col in emp_columns:
+                    employee_id = int(row['employee_id'])
+                    for col in manager_columns:
                         if bool(row[col]):
-                            checked_pairs.append((email, emp_id_by_col[col]))
+                            checked_pairs.append((manager_email_by_col[col], employee_id))
                 db.save_payroll_permission_matrix(
                     perm_ym, manager_emails, employee_ids, checked_pairs,
                 )
