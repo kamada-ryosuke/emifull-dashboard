@@ -349,6 +349,26 @@ def _inject_sidebar_permissions_css():
         section[data-testid="stSidebar"] div[data-testid="stSidebarNav"] {
             display: none !important;
         }
+        section[data-testid="stSidebar"] .stButton button {
+            border: 2px solid #dc2626 !important;
+            color: #ffffff !important;
+            background: linear-gradient(135deg, #dc2626, #b91c1c) !important;
+            font-weight: 800 !important;
+            box-shadow: 0 6px 14px rgba(220, 38, 38, 0.22) !important;
+        }
+        section[data-testid="stSidebar"] .stButton button:hover {
+            background: linear-gradient(135deg, #b91c1c, #991b1b) !important;
+            border-color: #991b1b !important;
+        }
+        .emifull-sidebar-spacer {
+            height: clamp(32px, 16vh, 140px);
+        }
+        .emifull-sidebar-logout-note {
+            color: #991b1b;
+            font-size: 11px;
+            font-weight: 700;
+            margin: 2px 0 8px;
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -388,19 +408,24 @@ def _render_role_navigation():
 
 def render_sidebar_navigation():
     """Prepare the sidebar menu before page content is rendered."""
+    st.session_state._sidebar_user_box_rendered = False
     touch_login_history()
     _inject_sidebar_permissions_css()
     _render_role_navigation()
+    render_sidebar_user_box()
 
 
 def render_sidebar_user_box():
     """サイドバーにユーザ情報＋ログアウトボタンを表示"""
+    if st.session_state.get("_sidebar_user_box_rendered"):
+        return
+    st.session_state._sidebar_user_box_rendered = True
     _inject_sidebar_permissions_css()
     touch_login_history()
     _render_sidebar_vehicle_alert()
     with st.sidebar:
-        st.markdown("---")
         if is_logged_in():
+            st.markdown("<div class='emifull-sidebar-spacer'></div>", unsafe_allow_html=True)
             role_badge = (
                 "<span style='background:#dbeafe; color:#1e3a8a; padding:2px 10px; "
                 "border-radius:6px; font-size:11px; font-weight:700;'>管理者</span>"
@@ -417,8 +442,14 @@ def render_sidebar_user_box():
                 f"{role_badge}</div>",
                 unsafe_allow_html=True,
             )
-            if st.button("ログアウト", width='stretch', key='_logout_btn'):
+            st.markdown(
+                "<div class='emifull-sidebar-logout-note'>終了時はここからログアウト</div>",
+                unsafe_allow_html=True,
+            )
+            st.markdown("<div class='emifull-sidebar-logout-anchor'></div>", unsafe_allow_html=True)
+            if st.button("🚪 ログアウト", width='stretch', key='_logout_btn'):
                 logout()
-                st.rerun()
+                go_to_login()
+                st.stop()
         else:
             st.warning("未ログイン")
