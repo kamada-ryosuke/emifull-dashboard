@@ -1,0 +1,21 @@
+name: Keep Streamlit App Awake
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Streamlit health endpoint
+        run: |
+          curl --location --silent --show-error --max-time 30 \
+            "https://emifull-dashboard-ztnc6s7xiappzqxlljdw48e.streamlit.app/_stcore/health" \
+            || true
+      - name: Ping app root
+        run: |
+          curl --location --silent --show-error --max-time 30 \
+            "https://emifull-dashboard-ztnc6s7xiappzqxlljdw48e.streamlit.app/" \
+            || true

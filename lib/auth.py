@@ -182,14 +182,40 @@ def _entrypoint_page() -> str:
         name = os.path.basename(str(arg))
         if name in ("streamlit_app.py", "ログイン.py"):
             return name
+    if os.getenv("STREAMLIT_SHARING_MODE") or _running_on_streamlit_cloud():
+        return "streamlit_app.py"
     return "ログイン.py"
+
+
+def _running_on_streamlit_cloud() -> bool:
+    """Best-effort check for Streamlit Community Cloud."""
+    return any(
+        os.getenv(key)
+        for key in (
+            "STREAMLIT_SERVER_HEADLESS",
+            "STREAMLIT_RUNTIME_ENV",
+            "STREAMLIT_SHARING_MODE",
+        )
+    )
+
+
+def go_to_login():
+    """Send the user back to the login entrypoint, with a safe fallback."""
+    try:
+        st.switch_page(_entrypoint_page())
+    except Exception:
+        st.markdown(
+            "ログイン画面へ移動します。自動で切り替わらない場合は、"
+            "[こちらを開いてください](./)。"
+        )
+        st.stop()
 
 
 # ---------- ガード ----------
 
 def require_login():
     if not is_logged_in():
-        st.switch_page(_entrypoint_page())
+        go_to_login()
         st.stop()
 
 

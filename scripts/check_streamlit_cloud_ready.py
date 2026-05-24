@@ -58,7 +58,7 @@ auth_py = (root / "lib" / "auth.py").read_text(encoding="utf-8")
 if 'os.environ.get("CODEX_AUTO_LOGIN") != "1"' not in auth_py:
     print("NG: CODEX_AUTO_LOGIN guard was not found")
     raise SystemExit(1)
-if "def require_login" not in auth_py or "st.switch_page(_entrypoint_page())" not in auth_py:
+if "def require_login" not in auth_py or "go_to_login()" not in auth_py:
     print("NG: login redirect guard was not found")
     raise SystemExit(1)
 if "def require_admin" not in auth_py:
