@@ -2942,26 +2942,27 @@ def upsert_payroll_permission_pairs(target_ym, permission_pairs):
         return 0
     ensure_payroll_permission_schema()
     now = datetime.now().isoformat(sep=' ', timespec='seconds')
+    rows = [
+        (
+            target_ym,
+            str(email).strip().lower(),
+            int(employee_id),
+            1 if can_view else 0,
+            now,
+        )
+        for email, employee_id, can_view in permission_pairs
+    ]
     with get_conn() as conn:
-        count = 0
-        for email, employee_id, can_view in permission_pairs:
-            conn.execute("""
-                INSERT INTO payroll_view_permissions
-                (target_year_month, manager_email, employee_id, can_view, updated_at)
-                VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(target_year_month, manager_email, employee_id)
-                DO UPDATE SET
-                    can_view = excluded.can_view,
-                    updated_at = excluded.updated_at
-            """, (
-                target_ym,
-                str(email).strip().lower(),
-                int(employee_id),
-                1 if can_view else 0,
-                now,
-            ))
-            count += 1
-    return count
+        conn.executemany("""
+            INSERT INTO payroll_view_permissions
+            (target_year_month, manager_email, employee_id, can_view, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(target_year_month, manager_email, employee_id)
+            DO UPDATE SET
+                can_view = excluded.can_view,
+                updated_at = excluded.updated_at
+        """, rows)
+    return len(rows)
 
 
 def list_payroll_unconfigured_employees(target_ym):
