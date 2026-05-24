@@ -731,8 +731,9 @@ def _render_ocr_popover(r: dict, file_bytes: bytes, idx: int) -> None:
             st.warning(
                 "**ANTHROPIC_API_KEY が未設定です**\n\n"
                 "下記いずれかの方法で設定してください:\n"
-                "1. 環境変数 `ANTHROPIC_API_KEY` を設定して再起動\n"
-                "2. `config/anthropic.json` を作成: "
+                "1. Streamlit Cloud の Secrets に `ANTHROPIC_API_KEY` を追加して再起動\n"
+                "2. ローカル環境変数 `ANTHROPIC_API_KEY` を設定して再起動\n"
+                "3. `config/anthropic.json` を作成: "
                 "`{\"api_key\": \"sk-ant-...\"}`\n\n"
                 "API キーは https://console.anthropic.com/ から取得できます。"
             )
@@ -1910,7 +1911,7 @@ def _cash_render_receipt_popover(r: dict, file_bytes: bytes,
         if not receipt_ocr.is_available():
             st.warning(
                 "ANTHROPIC_API_KEY が未設定のため OCR は使えません。"
-                "config/anthropic.json または環境変数を設定してください。"
+                "Streamlit Secrets、config/anthropic.json、または環境変数を設定してください。"
             )
 
         cache_key = f"cash_ocr_cache::{r['path']}"

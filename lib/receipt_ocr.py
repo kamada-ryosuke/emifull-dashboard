@@ -9,7 +9,8 @@
   is_available() -> bool   # API キー設定済みか
 
 設定:
-  ANTHROPIC_API_KEY 環境変数、または config/anthropic.json の {"api_key": "..."}
+  ANTHROPIC_API_KEY 環境変数、Streamlit Secrets、または
+  config/anthropic.json の {"api_key": "..."}
 """
 from __future__ import annotations
 
@@ -82,17 +83,33 @@ def api_key_source() -> str | None:
         return "config/anthropic.json"
     if os.environ.get("ANTHROPIC_API_KEY"):
         return "environment"
+    if _load_api_key_from_streamlit_secrets():
+        return "streamlit secrets"
+    return None
+
+
+def _load_api_key_from_streamlit_secrets() -> str | None:
+    try:
+        import streamlit as st
+        key = st.secrets.get("ANTHROPIC_API_KEY")
+    except Exception:
+        return None
+    if key:
+        return str(key).strip()
     return None
 
 
 def _load_api_key() -> str | None:
-    """Load OCR API key. Prefer config/anthropic.json over environment."""
+    """Load OCR API key. Prefer config over env, then Streamlit Secrets."""
     key = _load_api_key_from_config()
     if key:
         return key
     key = os.environ.get("ANTHROPIC_API_KEY")
     if key:
         return key.strip()
+    key = _load_api_key_from_streamlit_secrets()
+    if key:
+        return key
     return None
 
 
