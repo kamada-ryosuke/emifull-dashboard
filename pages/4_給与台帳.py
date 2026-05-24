@@ -431,6 +431,36 @@ with tabs[1]:
 
         managers, employees, perm_map = db.list_payroll_permission_matrix(perm_ym)
         managers = _ordered_payroll_managers(managers)
+        all_employees = employees
+
+        dept_values = sorted({
+            (e.get('department') or '(部署未設定)').strip()
+            for e in all_employees
+        })
+        dept_options = ['すべて'] + dept_values
+        default_dept_index = 0
+        for i, dept_name in enumerate(dept_options):
+            if 'いなみ' in dept_name:
+                default_dept_index = i
+                break
+        dept_pick = st.selectbox(
+            "部署で絞る",
+            dept_options,
+            index=default_dept_index,
+            key=f'perm_dept_{perm_ym}',
+            help="表示人数を減らすと、チェック操作が軽くなります。",
+        )
+        if dept_pick != 'すべて':
+            employees = [
+                e for e in all_employees
+                if ((e.get('department') or '(部署未設定)').strip() == dept_pick)
+            ]
+
+        st.caption(
+            f"表示中: {len(employees)}名 / 全{len(all_employees)}名"
+            + (f"（{dept_pick}）" if dept_pick != 'すべて' else "")
+        )
+
         manager_emails_for_alert = [
             (m.get('email') or '').strip().lower()
             for m in managers
@@ -446,7 +476,7 @@ with tabs[1]:
                 for e in unconfigured[:8]
             )
             more = f" ほか{len(unconfigured) - 8}名" if len(unconfigured) > 8 else ""
-            st.warning(f"権限未設定の職員が {len(unconfigured)}名います: {names}{more}")
+            st.warning(f"表示中の部署に権限未設定の職員が {len(unconfigured)}名います: {names}{more}")
         else:
             st.success("この対象月の職員は全員、権限設定済みです。")
 
@@ -481,6 +511,7 @@ with tabs[1]:
             matrix_sig_key = f'perm_matrix_sig_{perm_ym}'
             editor_version_key = f'perm_editor_version_{perm_ym}'
             matrix_signature = (
+                dept_pick,
                 tuple(employee_ids),
                 tuple(manager_columns),
             )
@@ -518,7 +549,7 @@ with tabs[1]:
                     )
                 with top_note_col:
                     st.caption(
-                        "チェック中は保存されません。最後に左の保存を押すと反映します。"
+                        "チェック中は保存されません。最後に左の保存を押すと、表示中の部署だけ反映します。"
                     )
 
                 header_cols = st.columns([1.4] + [1] * len(manager_columns))
