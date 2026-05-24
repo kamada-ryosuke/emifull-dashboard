@@ -121,26 +121,41 @@ def _is_kamada_name(value: str | None) -> bool:
     return '鎌田' in normalized
 
 
+def _is_morita_name(value: str | None) -> bool:
+    normalized = (value or '').replace('　', ' ').replace(' ', '').strip()
+    return '森田' in normalized
+
+
+def _is_fixed_private_employee(value: str | None) -> bool:
+    return _is_kamada_name(value) or _is_morita_name(value)
+
+
 def _filter_allowed_records(records: list[dict]) -> list[dict]:
     if IS_ADMIN or CURRENT_EMAIL == PAYROLL_KAMADA_EMAIL:
         return records
     if CURRENT_EMAIL == PAYROLL_MORITA_EMAIL:
-        return [r for r in records if not _is_kamada_name(r.get('emp_name'))]
+        return [r for r in records if not _is_fixed_private_employee(r.get('emp_name'))]
     allowed = db.list_payroll_allowed_employee_ids(
         CURRENT_EMAIL, PAYROLL_PERMISSION_BASE_TARGET_YM,
     )
-    return [r for r in records if r.get('employee_id') in allowed]
+    return [
+        r for r in records
+        if r.get('employee_id') in allowed and not _is_fixed_private_employee(r.get('emp_name'))
+    ]
 
 
 def _filter_allowed_employees(employees: list[dict]) -> list[dict]:
     if IS_ADMIN or CURRENT_EMAIL == PAYROLL_KAMADA_EMAIL:
         return employees
     if CURRENT_EMAIL == PAYROLL_MORITA_EMAIL:
-        return [e for e in employees if not _is_kamada_name(e.get('name'))]
+        return [e for e in employees if not _is_fixed_private_employee(e.get('name'))]
     allowed = db.list_payroll_allowed_employee_ids(
         CURRENT_EMAIL, PAYROLL_PERMISSION_BASE_TARGET_YM,
     )
-    return [e for e in employees if e.get('id') in allowed]
+    return [
+        e for e in employees
+        if e.get('id') in allowed and not _is_fixed_private_employee(e.get('name'))
+    ]
 
 
 def _ordered_payroll_managers(managers: list[dict]) -> list[dict]:
@@ -171,7 +186,7 @@ def _name_text(employee: dict) -> str:
 
 
 def _manageable_payroll_employees(employees: list[dict]) -> list[dict]:
-    return [e for e in employees if not _is_kamada_name(e.get('name'))]
+    return [e for e in employees if not _is_fixed_private_employee(e.get('name'))]
 
 
 def _dept_has(employee: dict, *keywords: str) -> bool:
@@ -540,11 +555,6 @@ with tabs[1]:
                 if ((e.get('department') or '(部署未設定)').strip() == dept_pick)
             ]
 
-        st.caption(
-            f"表示中: {len(employees)}名 / 全{len(all_employees)}名"
-            + (f"（{dept_pick}）" if dept_pick != 'すべて' else "")
-        )
-
         manager_emails_for_alert = [
             (m.get('email') or '').strip().lower()
             for m in managers
@@ -553,6 +563,29 @@ with tabs[1]:
             emp for emp in employees
             if not all((email, emp['id']) in perm_map for email in manager_emails_for_alert)
         ]
+
+        show_missing_key = f'perm_show_missing_only_{perm_ym}'
+        st.session_state.setdefault(show_missing_key, False)
+        mc1, mc2, mc3 = st.columns([1.2, 1.2, 4])
+        with mc1:
+            if st.button("未設定者だけ表示", use_container_width=True,
+                         key=f'perm_missing_only_btn_{perm_ym}'):
+                st.session_state[show_missing_key] = True
+        with mc2:
+            if st.button("全員表示に戻す", use_container_width=True,
+                         key=f'perm_all_rows_btn_{perm_ym}'):
+                st.session_state[show_missing_key] = False
+        with mc3:
+            st.caption("未設定者だけ表示すると、深谷〜黒田の未設定行だけに絞って保存できます。")
+
+        if st.session_state[show_missing_key]:
+            employees = unconfigured
+
+        st.caption(
+            f"表示中: {len(employees)}名 / 全{len(all_employees)}名"
+            + (f"（{dept_pick}）" if dept_pick != 'すべて' else "")
+            + (" / 未設定者のみ" if st.session_state[show_missing_key] else "")
+        )
 
         if unconfigured:
             names = "、".join(
@@ -610,7 +643,10 @@ with tabs[1]:
         if not managers:
             st.warning("ユーザーが登録されていません。先に施設マスタ／設定でユーザーを登録してください。")
         elif not employees:
-            st.warning("この対象月の給与職員データがありません。")
+            if st.session_state[show_missing_key]:
+                st.info("この条件で表示する未設定者はいません。")
+            else:
+                st.warning("この対象月の給与職員データがありません。")
         else:
             manager_columns = []
             manager_email_by_col = {}
