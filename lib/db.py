@@ -12,6 +12,16 @@ LOCAL_REPLICA_PATH = Path(__file__).resolve().parent.parent / "data" / "cloud_re
 _CLOUD_CONNECTION = None
 _CLOUD_CONNECTION_KEY = None
 
+USER_POSITION_PRESETS = {
+    "kamada.rusk@emifull-group.or.jp": "部長",
+    "oketani.msm@emifull-group.or.jp": "係長",
+    "nishitsuji.msys@emifull-group.or.jp": "係長",
+    "kanbe.tkhr@emifull-group.or.jp": "係長",
+    "fukaya.kkr@emifull-group.or.jp": "課長",
+    "morita.yshr@emifull-group.or.jp": "次長",
+    "kuroda.yusk@emifull-group.or.jp": "副主任",
+}
+
 
 def _secret_value(key):
     value = os.getenv(key)
@@ -38,6 +48,7 @@ def init_login_schema():
             email TEXT UNIQUE NOT NULL,
             role TEXT NOT NULL CHECK(role IN ('admin', 'user')),
             name TEXT,
+            position TEXT,
             password_hash TEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
@@ -60,6 +71,9 @@ def init_login_schema():
         }
         if 'password_hash' not in user_cols:
             conn.execute("ALTER TABLE users ADD COLUMN password_hash TEXT")
+        if 'position' not in user_cols:
+            conn.execute("ALTER TABLE users ADD COLUMN position TEXT")
+        _ensure_user_position_presets(conn)
 
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_login_events_login_at "
@@ -219,6 +233,20 @@ def get_payment_methods(kbn):
     return PAYMENT_METHODS_SELF if kbn == 'self' else PAYMENT_METHODS_KOKUHO
 
 
+def _ensure_user_position_presets(conn):
+    """既存ユーザーに既定の役職を補完する。手入力済みの役職は上書きしない。"""
+    for email, position in USER_POSITION_PRESETS.items():
+        conn.execute(
+            """
+            UPDATE users
+               SET position = ?
+             WHERE lower(email) = ?
+               AND (position IS NULL OR trim(position) = '')
+            """,
+            (position, email),
+        )
+
+
 @contextmanager
 def get_conn():
     if _use_cloud_db():
@@ -313,6 +341,7 @@ def init_db():
             email TEXT UNIQUE NOT NULL,
             role TEXT NOT NULL CHECK(role IN ('admin', 'user')),
             name TEXT,
+            position TEXT,
             password_hash TEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
@@ -337,6 +366,9 @@ def init_db():
         }
         if 'password_hash' not in user_cols:
             conn.execute("ALTER TABLE users ADD COLUMN password_hash TEXT")
+        if 'position' not in user_cols:
+            conn.execute("ALTER TABLE users ADD COLUMN position TEXT")
+        _ensure_user_position_presets(conn)
 
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_login_events_login_at "
@@ -811,13 +843,13 @@ def list_users():
         ).fetchall()]
 
 
-def add_user(email, role, name=None):
+def add_user(email, role, name=None, position=None):
     if role not in ('admin', 'user'):
         raise ValueError(f"role は 'admin' または 'user': {role}")
     with get_conn() as conn:
         conn.execute(
-            "INSERT INTO users (email, role, name) VALUES (?, ?, ?)",
-            (email.strip().lower(), role, name)
+            "INSERT INTO users (email, role, name, position) VALUES (?, ?, ?, ?)",
+            (email.strip().lower(), role, name, position)
         )
 
 
@@ -889,7 +921,7 @@ def delete_all_records():
         return rec_count, imp_count
 
 
-def update_user(user_id, email=None, role=None, name=None):
+def update_user(user_id, email=None, role=None, name=None, position=None):
     sets = []
     params = []
     if email is not None:
@@ -903,6 +935,9 @@ def update_user(user_id, email=None, role=None, name=None):
     if name is not None:
         sets.append("name = ?")
         params.append(name)
+    if position is not None:
+        sets.append("position = ?")
+        params.append(position)
     if not sets:
         return
     params.append(user_id)

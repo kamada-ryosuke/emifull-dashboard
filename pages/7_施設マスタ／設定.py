@@ -3,6 +3,8 @@ import streamlit as st
 import pandas as pd
 from lib import db, styling, auth
 
+POSITION_OPTIONS = ["", "部長", "次長", "課長", "係長", "主任", "副主任", "一般職"]
+
 styling.inject_global_css()
 auth.require_admin()
 auth.render_sidebar_navigation()
@@ -97,6 +99,7 @@ with tab_users:
                 'メールアドレス': u['email'],
                 '権限': '管理者' if u['email'].lower() == auth.ADMIN_EMAIL else '一般（閲覧のみ）',
                 '名前': u['name'] or '',
+                '役職': u.get('position') or '',
                 'パスワード': '設定済' if u.get('password_hash') else '未設定',
                 '登録日': u['created_at'],
             }
@@ -126,7 +129,7 @@ with tab_users:
 
     st.markdown("#### 新規ユーザ登録")
     with st.form("add_user_form", clear_on_submit=True):
-        c1, c2, c3, c4 = st.columns([2, 1.5, 1.5, 1])
+        c1, c2, c3, c4, c5 = st.columns([2, 1.4, 1.2, 1.5, 1])
         with c1:
             new_email = st.text_input(
                 "メールアドレス",
@@ -135,8 +138,10 @@ with tab_users:
         with c2:
             new_name_u = st.text_input("名前（任意）")
         with c3:
-            new_pw = st.text_input("初期パスワード", type='password')
+            new_position = st.selectbox("役職", POSITION_OPTIONS, key="new_user_position")
         with c4:
+            new_pw = st.text_input("初期パスワード", type='password')
+        with c5:
             st.text_input("権限", value="一般（閲覧のみ）", disabled=True)
             new_role = "user"
 
@@ -150,7 +155,7 @@ with tab_users:
                 st.error("初期パスワードは8文字以上にしてください")
             else:
                 try:
-                    db.add_user(new_email, new_role, new_name_u or None)
+                    db.add_user(new_email, new_role, new_name_u or None, new_position or None)
                     user = db.get_user_by_email(new_email)
                     if user:
                         db.set_user_password(user['id'], auth.hash_password(new_pw))
@@ -173,7 +178,7 @@ with tab_users:
         selected_id_u = opts[selected_label_u]
         selected_user = next(u for u in users if u['id'] == selected_id_u)
 
-        c1, c2, c3 = st.columns([2, 1.5, 1])
+        c1, c2, c3, c4 = st.columns([2, 1.3, 1.2, 1])
         with c1:
             edit_email = st.text_input("メールアドレス", value=selected_user['email'],
                                          key=f'edit_email_{selected_id_u}')
@@ -181,6 +186,17 @@ with tab_users:
             edit_name = st.text_input("名前", value=selected_user['name'] or '',
                                         key=f'edit_name_{selected_id_u}')
         with c3:
+            current_position = selected_user.get('position') or ''
+            position_options = POSITION_OPTIONS
+            if current_position and current_position not in position_options:
+                position_options = [current_position] + POSITION_OPTIONS
+            edit_position = st.selectbox(
+                "役職",
+                position_options,
+                index=position_options.index(current_position) if current_position in position_options else 0,
+                key=f'edit_position_{selected_id_u}',
+            )
+        with c4:
             is_admin_email = selected_user['email'].lower() == auth.ADMIN_EMAIL
             st.text_input(
                 "権限",
@@ -200,6 +216,7 @@ with tab_users:
                         email=edit_email,
                         role=edit_role,
                         name=edit_name or None,
+                        position=edit_position,
                     )
                     st.success("更新しました")
                     st.rerun()

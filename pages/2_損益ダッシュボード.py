@@ -2217,6 +2217,23 @@ with tab_report:
     st.markdown("##### 報告書提出 — 収支の振り返り・対策")
     current = auth.current_user() or {}
     current_email = current.get('email') or ''
+    current_user_for_report = db.get_user_by_email(current_email) if current_email else None
+    default_reporter_name = (
+        (current_user_for_report or {}).get('name')
+        or current.get('name')
+        or ''
+    )
+    default_reporter_role = (
+        (current_user_for_report or {}).get('position')
+        or current.get('position')
+        or '一般職'
+    )
+    if default_reporter_role not in REPORTER_ROLES:
+        default_reporter_role = '一般職'
+    if st.session_state.get('profit_report_prefill_user') != current_email:
+        st.session_state.profit_report_name = default_reporter_name
+        st.session_state.profit_report_role = default_reporter_role
+        st.session_state.profit_report_prefill_user = current_email
 
     default_month = _default_report_month()
     month_idx = existing_yms.index(default_month) if default_month in existing_yms else 0
@@ -2273,11 +2290,15 @@ with tab_report:
 
         c3, c4 = st.columns([1, 2])
         with c3:
-            reporter_role = st.selectbox("役職", REPORTER_ROLES, key='profit_report_role')
+            reporter_role = st.selectbox(
+                "役職",
+                REPORTER_ROLES,
+                index=REPORTER_ROLES.index(default_reporter_role),
+                key='profit_report_role',
+            )
         with c4:
             reporter_name = st.text_input(
                 "氏名",
-                value=current.get('name') or "",
                 key='profit_report_name',
             )
 

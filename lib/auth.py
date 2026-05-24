@@ -57,9 +57,12 @@ def init_session():
         st.session_state.user_email = None
         st.session_state.user_role = None
         st.session_state.user_name = None
+        st.session_state.user_position = None
         st.session_state.login_event_id = None
     if 'login_event_id' not in st.session_state:
         st.session_state.login_event_id = None
+    if 'user_position' not in st.session_state:
+        st.session_state.user_position = None
 
 
 def is_logged_in():
@@ -89,6 +92,7 @@ def auto_login_for_codex():
     st.session_state.user_email = user["email"]
     st.session_state.user_role = user["role"]
     st.session_state.user_name = user["name"] if "name" in user.keys() else None
+    st.session_state.user_position = user["position"] if "position" in user.keys() else None
 
 
 def is_admin():
@@ -104,6 +108,7 @@ def current_user():
         'email': st.session_state.user_email,
         'role': st.session_state.user_role,
         'name': st.session_state.user_name,
+        'position': st.session_state.user_position,
     }
 
 
@@ -169,6 +174,7 @@ def login(email: str, password: str) -> tuple[bool, str]:
     st.session_state.user_email = user['email']
     st.session_state.user_role = user['role']
     st.session_state.user_name = user['name'] if 'name' in user.keys() else None
+    st.session_state.user_position = user['position'] if 'position' in user.keys() else None
     try:
         st.session_state.login_event_id = db.record_login_event(user)
     except Exception:
@@ -198,6 +204,7 @@ def logout(reason="手動ログアウト"):
     st.session_state.user_email = None
     st.session_state.user_role = None
     st.session_state.user_name = None
+    st.session_state.user_position = None
     st.session_state.login_event_id = None
     st.session_state._login_history_touched_at = 0
     st.session_state.disable_auto_login = True
