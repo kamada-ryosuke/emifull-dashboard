@@ -37,6 +37,7 @@ PAYROLL_MANAGER_ORDER = [
     ('kanbe.tkhr@emifull-group.or.jp', '神戸'),
     ('kuroda.yusk@emifull-group.or.jp', '黒田'),
 ]
+PAYROLL_PERMISSION_BASE_TARGET_YM = '2026-04'
 
 st.title("給与台帳")
 st.markdown(
@@ -115,32 +116,21 @@ def _color_total_amount(val):
     return 'background-color:#f1f5f9; color:#64748b; font-weight:600'
 
 
-def _target_ym_for_record(record: dict) -> str | None:
-    if record.get('pay_type') == '給与':
-        return db.payroll_target_ym(record.get('year_month'), '給与')
-    return record.get('year_month')
-
-
 def _filter_allowed_records(records: list[dict]) -> list[dict]:
     if IS_ADMIN:
         return records
-    allowed_by_month = {}
-    filtered = []
-    for r in records:
-        target_ym = _target_ym_for_record(r)
-        if target_ym not in allowed_by_month:
-            allowed_by_month[target_ym] = db.list_payroll_allowed_employee_ids(
-                CURRENT_EMAIL, target_ym,
-            )
-        if r.get('employee_id') in allowed_by_month[target_ym]:
-            filtered.append(r)
-    return filtered
+    allowed = db.list_payroll_allowed_employee_ids(
+        CURRENT_EMAIL, PAYROLL_PERMISSION_BASE_TARGET_YM,
+    )
+    return [r for r in records if r.get('employee_id') in allowed]
 
 
 def _filter_allowed_employees(employees: list[dict]) -> list[dict]:
     if IS_ADMIN:
         return employees
-    allowed = db.list_payroll_allowed_employee_ids(CURRENT_EMAIL)
+    allowed = db.list_payroll_allowed_employee_ids(
+        CURRENT_EMAIL, PAYROLL_PERMISSION_BASE_TARGET_YM,
+    )
     return [e for e in employees if e.get('id') in allowed]
 
 
@@ -428,12 +418,14 @@ with tabs[1]:
     else:
         st.markdown(
             "対象月ごとに、各管理者が閲覧できる職員を設定します。"
-            "新しい対象月は前月の設定を引き継ぎます。前月にいない新職員は未設定として警告します。"
+            "通常は 2026-04 の設定を使います。過去分の閲覧も 2026-04 の設定に合わせます。"
         )
         target_yms = db.list_payroll_target_year_months()
         ym_options = {_ym_label(t): t for t in target_yms}
+        default_perm_index = target_yms.index(PAYROLL_PERMISSION_BASE_TARGET_YM) if PAYROLL_PERMISSION_BASE_TARGET_YM in target_yms else 0
         picked_label = st.selectbox(
-            "対象月（労働月）", list(ym_options.keys()), key='perm_ym'
+            "対象月（労働月）", list(ym_options.keys()),
+            index=default_perm_index, key='perm_ym'
         )
         perm_ym = ym_options[picked_label]
 
@@ -483,91 +475,87 @@ with tabs[1]:
                 rows.append(row)
 
             matrix_df = pd.DataFrame(rows)
-
-            cc1, cc2, cc3 = st.columns([1, 1, 4])
             manager_emails = list(manager_email_by_col.values())
             employee_ids = [e['id'] for e in employees]
+            matrix_state_key = f'perm_matrix_state_{perm_ym}'
+            matrix_sig_key = f'perm_matrix_sig_{perm_ym}'
+            editor_version_key = f'perm_editor_version_{perm_ym}'
+            matrix_signature = (
+                tuple(employee_ids),
+                tuple(manager_columns),
+            )
 
-            def _checked_pairs_from_matrix(base_df, force_col=None, force_value=None):
-                checked = []
+            if (
+                matrix_state_key not in st.session_state
+                or st.session_state.get(matrix_sig_key) != matrix_signature
+            ):
+                st.session_state[matrix_state_key] = matrix_df.copy()
+                st.session_state[matrix_sig_key] = matrix_signature
+                st.session_state[editor_version_key] = 0
+
+            def _save_permission_df(base_df):
+                checked_pairs = []
                 for _, row in base_df.iterrows():
                     employee_id = int(row['employee_id'])
                     for col in manager_columns:
-                        value = bool(row[col])
-                        if col == force_col:
-                            value = bool(force_value)
-                        if value:
-                            checked.append((manager_email_by_col[col], employee_id))
-                return checked
+                        if bool(row[col]):
+                            checked_pairs.append((manager_email_by_col[col], employee_id))
+                db.save_payroll_permission_matrix(
+                    perm_ym,
+                    manager_emails,
+                    [int(eid) for eid in employee_ids],
+                    checked_pairs,
+                )
 
-            with cc1:
-                if st.button("✅ 全選択して保存", type='secondary',
-                             use_container_width=True, key='perm_all_on_btn'):
-                    checked_pairs = [
-                        (email, employee_id)
-                        for email in manager_emails
-                        for employee_id in employee_ids
-                    ]
-                    db.save_payroll_permission_matrix(
-                        perm_ym, manager_emails, employee_ids, checked_pairs,
-                    )
-                    st.success("全員閲覧可として保存しました。")
+            top_save_col, top_note_col = st.columns([1, 5])
+            with top_save_col:
+                if st.button("💾 保存", type='primary',
+                             use_container_width=True, key='perm_save_top_btn'):
+                    _save_permission_df(st.session_state[matrix_state_key])
+                    st.success("閲覧権限を保存しました。")
                     st.rerun()
-            with cc2:
-                if st.button("⬜ 全解除して保存", type='secondary',
-                             use_container_width=True, key='perm_all_off_btn'):
-                    db.save_payroll_permission_matrix(
-                        perm_ym, manager_emails, employee_ids, [],
-                    )
-                    st.success("全員閲覧不可として保存しました。")
+            with top_note_col:
+                st.caption(
+                    "全選択・全解除は表のチェックを変えるだけです。最後に左の保存を押してください。"
+                )
+
+            header_cols = st.columns([1.4] + [1] * len(manager_columns))
+            header_cols[0].markdown("**氏名**")
+            for h_col, manager_col in zip(header_cols[1:], manager_columns):
+                h_col.markdown(f"**{manager_col}**")
+
+            on_cols = st.columns([1.4] + [1] * len(manager_columns))
+            on_cols[0].caption("全選択")
+            for btn_col, manager_col in zip(on_cols[1:], manager_columns):
+                if btn_col.button(
+                    "全選択",
+                    type='secondary',
+                    use_container_width=True,
+                    key=f'perm_col_on_{perm_ym}_{manager_col}',
+                ):
+                    current = st.session_state[matrix_state_key].copy()
+                    current[manager_col] = True
+                    st.session_state[matrix_state_key] = current
+                    st.session_state[editor_version_key] += 1
                     st.rerun()
 
-            st.markdown("##### 氏名ごとの一括設定")
-            st.caption("各列の役職者ごとに、全職員をまとめて選択・解除して保存できます。")
-            manager_chunks = [
-                manager_columns[i:i + 4]
-                for i in range(0, len(manager_columns), 4)
-            ]
-            for chunk_idx, chunk in enumerate(manager_chunks):
-                cols = st.columns(len(chunk))
-                for col_box, manager_col in zip(cols, chunk):
-                    with col_box:
-                        st.markdown(f"**{manager_col}**")
-                        if st.button(
-                            "全選択保存",
-                            type='secondary',
-                            use_container_width=True,
-                            key=f'perm_col_on_{perm_ym}_{manager_col}_{chunk_idx}',
-                        ):
-                            db.save_payroll_permission_matrix(
-                                perm_ym,
-                                manager_emails,
-                                employee_ids,
-                                _checked_pairs_from_matrix(
-                                    matrix_df, force_col=manager_col, force_value=True,
-                                ),
-                            )
-                            st.success(f"{manager_col}さんの列を全選択で保存しました。")
-                            st.rerun()
-                        if st.button(
-                            "全解除保存",
-                            type='secondary',
-                            use_container_width=True,
-                            key=f'perm_col_off_{perm_ym}_{manager_col}_{chunk_idx}',
-                        ):
-                            db.save_payroll_permission_matrix(
-                                perm_ym,
-                                manager_emails,
-                                employee_ids,
-                                _checked_pairs_from_matrix(
-                                    matrix_df, force_col=manager_col, force_value=False,
-                                ),
-                            )
-                            st.success(f"{manager_col}さんの列を全解除で保存しました。")
-                            st.rerun()
+            off_cols = st.columns([1.4] + [1] * len(manager_columns))
+            off_cols[0].caption("全解除")
+            for btn_col, manager_col in zip(off_cols[1:], manager_columns):
+                if btn_col.button(
+                    "全解除",
+                    type='secondary',
+                    use_container_width=True,
+                    key=f'perm_col_off_{perm_ym}_{manager_col}',
+                ):
+                    current = st.session_state[matrix_state_key].copy()
+                    current[manager_col] = False
+                    st.session_state[matrix_state_key] = current
+                    st.session_state[editor_version_key] += 1
+                    st.rerun()
 
             edited = st.data_editor(
-                matrix_df,
+                st.session_state[matrix_state_key],
                 width='stretch',
                 hide_index=True,
                 height=min(700, 120 + 36 * len(matrix_df)),
@@ -582,23 +570,9 @@ with tabs[1]:
                         for col in manager_columns
                     },
                 },
-                key=f'perm_editor_{perm_ym}',
+                key=f'perm_editor_{perm_ym}_{st.session_state[editor_version_key]}',
             )
-
-            if st.button("💾 権限を保存", type='primary', key='perm_save_btn'):
-                checked_pairs = []
-                manager_emails = list(manager_email_by_col.values())
-                employee_ids = [int(e['id']) for e in employees]
-                for _, row in edited.iterrows():
-                    employee_id = int(row['employee_id'])
-                    for col in manager_columns:
-                        if bool(row[col]):
-                            checked_pairs.append((manager_email_by_col[col], employee_id))
-                db.save_payroll_permission_matrix(
-                    perm_ym, manager_emails, employee_ids, checked_pairs,
-                )
-                st.success("閲覧権限を保存しました。")
-                st.rerun()
+            st.session_state[matrix_state_key] = edited.copy()
 
 
 # ============================================================
