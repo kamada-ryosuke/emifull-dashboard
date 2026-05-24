@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="760" viewBox="0 0 1280 760">
+  <rect width="1280" height="760" fill="#f8fafc"/>
+  <rect x="24" y="24" width="260" height="712" rx="18" fill="#ffffff" stroke="#dbe4f0"/>
+  <rect x="320" y="54" width="900" height="70" rx="10" fill="#ffffff" stroke="#dbe4f0"/>
+  <text x="342" y="98" font-family="Arial, sans-serif" font-size="34" font-weight="700" fill="#0f172a">損益ダッシュボード</text>
+  <rect x="320" y="158" width="420" height="74" rx="12" fill="#eff6ff" stroke="#93c5fd"/>
+  <text x="352" y="205" font-family="Arial, sans-serif" font-size="26" fill="#1e3a8a">① 対象選択</text>
+  <rect x="780" y="158" width="300" height="74" rx="12" fill="#eff6ff" stroke="#93c5fd"/>
+  <text x="812" y="205" font-family="Arial, sans-serif" font-size="26" fill="#1e3a8a">② 対象月</text>
+  <rect x="320" y="268" width="900" height="56" rx="8" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="348" y="304" font-family="Arial, sans-serif" font-size="23" fill="#1e40af">③ タブ: サマリ / 構成比 / 比較 / 業績会議 / 報告書提出</text>
+  <rect x="320" y="360" width="420" height="250" rx="16" fill="#ffffff" stroke="#dbe4f0"/>
+  <text x="352" y="410" font-family="Arial, sans-serif" font-size="28" font-weight="700" fill="#0f172a">④ グラフ確認</text>
+  <polyline points="360,548 430,500 500,524 580,446 690,470" fill="none" stroke="#2563eb" stroke-width="8" stroke-linecap="round"/>
+  <rect x="800" y="360" width="420" height="250" rx="16" fill="#ffffff" stroke="#dbe4f0"/>
+  <text x="832" y="410" font-family="Arial, sans-serif" font-size="28" font-weight="700" fill="#0f172a">⑤ CSV / PDF出力</text>
+  <rect x="850" y="468" width="150" height="58" rx="10" fill="#2563eb"/>
+  <text x="888" y="505" font-family="Arial, sans-serif" font-size="22" font-weight="700" fill="#ffffff">CSV</text>
+  <rect x="1030" y="468" width="150" height="58" rx="10" fill="#0ea5e9"/>
+  <text x="1068" y="505" font-family="Arial, sans-serif" font-size="22" font-weight="700" fill="#ffffff">PDF</text>
+  <text x="52" y="86" font-family="Arial, sans-serif" font-size="24" font-weight="700" fill="#0f172a">左メニュー</text>
+  <text x="52" y="150" font-family="Arial, sans-serif" font-size="22" fill="#64748b">損益ダッシュボード</text>
+  <text x="52" y="202" font-family="Arial, sans-serif" font-size="22" fill="#64748b">車両管理</text>
+  <text x="52" y="690" font-family="Arial, sans-serif" font-size="20" fill="#991b1b">ログアウト</text>
+</svg>
