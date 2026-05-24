@@ -1154,8 +1154,12 @@ with tabs[4]:
                 .map(_color_corp, subset=['法人'])
                 .map(_color_emp_type, subset=['雇用区分'])
                 .format({c: '{:,}' for c in money_cols})
-                .background_gradient(subset=['年収(総支給+賞与)'], cmap='YlGn')
             )
+            if '年収(総支給+賞与)' in view.columns:
+                styler = styler.set_properties(
+                    subset=['年収(総支給+賞与)'],
+                    **{'background-color': '#dcfce7', 'font-weight': '700'},
+                )
             st.dataframe(styler, width='stretch', hide_index=True, height=560)
 
             csv = view.to_csv(index=False).encode('utf-8-sig')
