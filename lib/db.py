@@ -3231,13 +3231,29 @@ def insert_debit_entries(rows: list[dict], filename: str,
                  amount, credit_account, description,
                  vendor, purpose, items_text, items_count,
                  check_status, sheet_name, source_filename, file_hash)
-                VALUES (:corporation, :transaction_date, :year_month,
-                        :debit_account, :tax_class, :debit_item,
-                        :department_raw, :department_clean, :subunit_id,
-                        :amount, :credit_account, :description,
-                        :vendor, :purpose, :items_text, :items_count,
-                        :check_status, :sheet_name, :filename, :file_hash)
-            """, params)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                params['corporation'],
+                params['transaction_date'],
+                params['year_month'],
+                params['debit_account'],
+                params['tax_class'],
+                params['debit_item'],
+                params['department_raw'],
+                params['department_clean'],
+                params['subunit_id'],
+                params['amount'],
+                params['credit_account'],
+                params['description'],
+                params['vendor'],
+                params['purpose'],
+                params['items_text'],
+                params['items_count'],
+                params['check_status'],
+                params['sheet_name'],
+                params['filename'],
+                params['file_hash'],
+            ))
             if cur.rowcount > 0:
                 inserted += 1
             else:
