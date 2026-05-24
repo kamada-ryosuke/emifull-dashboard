@@ -30,12 +30,17 @@ CURRENT_EMAIL = (CURRENT_USER.get('email') or '').strip().lower()
 
 PAYROLL_KAMADA_EMAIL = 'kamada.rusk@emifull-group.or.jp'
 PAYROLL_MORITA_EMAIL = 'morita.yshr@emifull-group.or.jp'
+PAYROLL_FUKAYA_EMAIL = 'fukaya.kkr@emifull-group.or.jp'
+PAYROLL_NISHITSUJI_EMAIL = 'nishitsuji.msys@emifull-group.or.jp'
+PAYROLL_OKETANI_EMAIL = 'oketani.msm@emifull-group.or.jp'
+PAYROLL_KANBE_EMAIL = 'kanbe.tkhr@emifull-group.or.jp'
+PAYROLL_KURODA_EMAIL = 'kuroda.yusk@emifull-group.or.jp'
 PAYROLL_MANAGER_ORDER = [
-    ('fukaya.kkr@emifull-group.or.jp', '深谷'),
-    ('nishitsuji.msys@emifull-group.or.jp', '西辻'),
-    ('oketani.msm@emifull-group.or.jp', '桶谷'),
-    ('kanbe.tkhr@emifull-group.or.jp', '神戸'),
-    ('kuroda.yusk@emifull-group.or.jp', '黒田'),
+    (PAYROLL_FUKAYA_EMAIL, '深谷'),
+    (PAYROLL_NISHITSUJI_EMAIL, '西辻'),
+    (PAYROLL_OKETANI_EMAIL, '桶谷'),
+    (PAYROLL_KANBE_EMAIL, '神戸'),
+    (PAYROLL_KURODA_EMAIL, '黒田'),
 ]
 PAYROLL_PERMISSION_BASE_TARGET_YM = '2026-04'
 PAYROLL_PERMISSION_PAGE_SIZE = 10
@@ -182,6 +187,10 @@ def _dept_text(employee: dict) -> str:
     return (employee.get('department') or '').replace('　', ' ').strip()
 
 
+def _normalized_dept_text(employee: dict) -> str:
+    return _dept_text(employee).replace(' ', '').replace('　', '')
+
+
 def _name_text(employee: dict) -> str:
     return (employee.get('name') or '').replace('　', ' ').replace(' ', '').strip()
 
@@ -191,8 +200,44 @@ def _manageable_payroll_employees(employees: list[dict]) -> list[dict]:
 
 
 def _dept_has(employee: dict, *keywords: str) -> bool:
-    dept = _dept_text(employee)
-    return any(keyword in dept for keyword in keywords)
+    dept = _normalized_dept_text(employee)
+    return any(keyword.replace(' ', '').replace('　', '') in dept for keyword in keywords)
+
+
+def _dept_is_blank(employee: dict) -> bool:
+    dept = _normalized_dept_text(employee)
+    return not dept or dept in {'(部署未設定)', '部署未設定', '未設定'}
+
+
+def _past_department_rule_permission(manager_email: str, employee: dict,
+                                     base_perm_map: dict) -> bool | None:
+    """過去月の一括設定ルール。Noneは2026-04にも判断材料がない状態。"""
+    email = manager_email.strip().lower()
+    employee_id = employee.get('id')
+
+    if _dept_has(
+        employee,
+        'いなみ障がい',
+        'いなみ障害',
+        'カラダキッズかこがわ',
+        'ジョブカレッジかこがわ',
+        'シェアホーム加古川',
+        '障がい管理',
+        '障害管理',
+    ):
+        return email == PAYROLL_KANBE_EMAIL
+    if _dept_has(employee, 'てんり障がい', 'てんり障害'):
+        return email == PAYROLL_FUKAYA_EMAIL
+    if _dept_has(employee, 'シェアホーム天理'):
+        return email == PAYROLL_NISHITSUJI_EMAIL
+    if _dept_is_blank(employee):
+        if email in (PAYROLL_OKETANI_EMAIL, PAYROLL_KURODA_EMAIL):
+            key = (email, employee_id)
+            if key in base_perm_map:
+                return bool(base_perm_map[key])
+            return None
+        return False
+    return None
 
 
 def _default_payroll_permission(manager_email: str, employee: dict,
@@ -206,11 +251,11 @@ def _default_payroll_permission(manager_email: str, employee: dict,
         return True
     if email == PAYROLL_MORITA_EMAIL:
         return '鎌田' not in name
-    if email == 'fukaya.kkr@emifull-group.or.jp':
+    if email == PAYROLL_FUKAYA_EMAIL:
         return _dept_has(employee, 'てんり障がい', 'てんり障害')
-    if email == 'nishitsuji.msys@emifull-group.or.jp':
+    if email == PAYROLL_NISHITSUJI_EMAIL:
         return _dept_has(employee, 'シェアホーム天理')
-    if email == 'kanbe.tkhr@emifull-group.or.jp':
+    if email == PAYROLL_KANBE_EMAIL:
         return _dept_has(
             employee,
             'カラダキッズかこがわ',
@@ -219,7 +264,7 @@ def _default_payroll_permission(manager_email: str, employee: dict,
             'いなみ障がい',
             'いなみ障害',
         )
-    if email in ('oketani.msm@emifull-group.or.jp', 'kuroda.yusk@emifull-group.or.jp'):
+    if email in (PAYROLL_OKETANI_EMAIL, PAYROLL_KURODA_EMAIL):
         key = (email, employee_id)
         if key in base_perm_map:
             return bool(base_perm_map[key])
@@ -562,6 +607,45 @@ with tabs[1]:
             (m.get('email') or '').strip().lower()
             for m in managers
         ]
+
+        def _apply_past_department_rules():
+            _, _, base_perm_map = db.list_payroll_permission_matrix(
+                PAYROLL_PERMISSION_BASE_TARGET_YM,
+            )
+            target_past_yms = [
+                ym for ym in target_yms
+                if ym < PAYROLL_PERMISSION_BASE_TARGET_YM
+            ]
+            total_saved = 0
+            unknown = set()
+            for target_ym in target_past_yms:
+                _, month_employees, _ = db.list_payroll_permission_matrix(target_ym)
+                month_employees = _manageable_payroll_employees(month_employees)
+                pairs = []
+                for emp in month_employees:
+                    emp_unknown = False
+                    emp_pairs = []
+                    for email in manager_emails_for_alert:
+                        rule_value = _past_department_rule_permission(
+                            email, emp, base_perm_map,
+                        )
+                        if rule_value is None:
+                            emp_unknown = True
+                            continue
+                        emp_pairs.append((email, emp['id'], rule_value))
+                    if emp_unknown:
+                        unknown.add(
+                            f"{emp.get('name') or ''}"
+                            f"（{emp.get('department') or '部署未設定'}）"
+                        )
+                    pairs.extend(emp_pairs)
+                total_saved += db.upsert_payroll_permission_pairs(target_ym, pairs)
+            return {
+                'months': len(target_past_yms),
+                'saved': total_saved,
+                'unknown': sorted(unknown),
+            }
+
         def _is_unconfigured_employee(emp: dict, month_perm_map: dict) -> bool:
             return not all(
                 (email, emp['id']) in month_perm_map
@@ -618,6 +702,45 @@ with tabs[1]:
             st.warning(f"表示中の部署に権限未設定の職員が {len(unconfigured)}名います: {names}{more}")
         else:
             st.success("この対象月の職員は全員、権限設定済みです。")
+
+        with st.expander("過去分を部署ルールで一括設定"):
+            st.caption(
+                "過去月だけを対象に、指定部署は担当者だけ閲覧可として登録します。"
+                "部署未設定の職員は、2026-04の桶谷・黒田設定を引き継ぎます。"
+            )
+            st.markdown(
+                "- 神戸: いなみ障がい、カラダキッズかこがわ、ジョブカレッジかこがわ、"
+                "シェアホーム加古川、障がい管理\n"
+                "- 深谷: てんり障がい\n"
+                "- 西辻: シェアホーム天理\n"
+                "- 部署未設定: 桶谷・黒田を2026-04に準じて設定"
+            )
+            confirm_rule_apply = st.checkbox(
+                "上記ルールで過去月の深谷〜黒田権限を更新します",
+                key='perm_apply_past_department_rules_confirm',
+            )
+            if st.button(
+                "過去分を部署ルールで設定",
+                disabled=not confirm_rule_apply,
+                type='primary',
+                key='perm_apply_past_department_rules',
+            ):
+                result = _apply_past_department_rules()
+                _clear_payroll_page_cache()
+                st.success(
+                    f"過去月 {result['months']}か月分、"
+                    f"{result['saved']}件の権限を設定しました。"
+                )
+                if result['unknown']:
+                    st.warning(
+                        "部署ルールで判断できず未設定として残した職員: "
+                        + "、".join(result['unknown'][:10])
+                        + (
+                            f" ほか{len(result['unknown']) - 10}名"
+                            if len(result['unknown']) > 10 else ""
+                        )
+                    )
+                st.rerun()
 
         if not managers:
             st.warning("ユーザーが登録されていません。先に施設マスタ／設定でユーザーを登録してください。")
