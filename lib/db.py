@@ -2820,6 +2820,33 @@ def _previous_payroll_target_ym(target_ym):
     return f"{y:04d}-{m:02d}"
 
 
+def ensure_payroll_permission_schema():
+    """給与閲覧権限テーブルだけを安全に作成する。
+
+    既存の給与レコードや職員マスタは変更しない。
+    """
+    with get_conn() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS payroll_view_permissions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                target_year_month TEXT NOT NULL,
+                manager_email TEXT NOT NULL,
+                employee_id INTEGER NOT NULL REFERENCES payroll_employees(id) ON DELETE CASCADE,
+                can_view INTEGER NOT NULL DEFAULT 0,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (target_year_month, manager_email, employee_id)
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_payroll_perm_month
+            ON payroll_view_permissions(target_year_month)
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_payroll_perm_manager
+            ON payroll_view_permissions(manager_email)
+        """)
+
+
 def ensure_payroll_permissions_for_month(target_ym):
     """対象月の権限行を用意する。
 
@@ -2831,6 +2858,7 @@ def ensure_payroll_permissions_for_month(target_ym):
     prev_ym = _previous_payroll_target_ym(target_ym)
     now = datetime.now().isoformat(sep=' ', timespec='seconds')
 
+    ensure_payroll_permission_schema()
     with get_conn() as conn:
         existing_count = conn.execute(
             "SELECT COUNT(*) AS c FROM payroll_view_permissions WHERE target_year_month = ?",
@@ -2890,6 +2918,7 @@ def save_payroll_permission_matrix(target_ym, manager_emails, employee_ids, chec
         (str(email).strip().lower(), int(employee_id))
         for email, employee_id in checked_pairs
     }
+    ensure_payroll_permission_schema()
     with get_conn() as conn:
         for email in manager_emails:
             email = str(email).strip().lower()
@@ -2921,6 +2950,7 @@ def list_payroll_unconfigured_employees(target_ym):
 def list_payroll_allowed_employee_ids(manager_email, target_ym=None):
     if not manager_email:
         return set()
+    ensure_payroll_permission_schema()
     sql = """
         SELECT DISTINCT employee_id
         FROM payroll_view_permissions
