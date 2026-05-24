@@ -487,6 +487,19 @@ with tabs[1]:
             cc1, cc2, cc3 = st.columns([1, 1, 4])
             manager_emails = list(manager_email_by_col.values())
             employee_ids = [e['id'] for e in employees]
+
+            def _checked_pairs_from_matrix(base_df, force_col=None, force_value=None):
+                checked = []
+                for _, row in base_df.iterrows():
+                    employee_id = int(row['employee_id'])
+                    for col in manager_columns:
+                        value = bool(row[col])
+                        if col == force_col:
+                            value = bool(force_value)
+                        if value:
+                            checked.append((manager_email_by_col[col], employee_id))
+                return checked
+
             with cc1:
                 if st.button("✅ 全選択して保存", type='secondary',
                              use_container_width=True, key='perm_all_on_btn'):
@@ -508,6 +521,50 @@ with tabs[1]:
                     )
                     st.success("全員閲覧不可として保存しました。")
                     st.rerun()
+
+            st.markdown("##### 氏名ごとの一括設定")
+            st.caption("各列の役職者ごとに、全職員をまとめて選択・解除して保存できます。")
+            manager_chunks = [
+                manager_columns[i:i + 4]
+                for i in range(0, len(manager_columns), 4)
+            ]
+            for chunk_idx, chunk in enumerate(manager_chunks):
+                cols = st.columns(len(chunk))
+                for col_box, manager_col in zip(cols, chunk):
+                    with col_box:
+                        st.markdown(f"**{manager_col}**")
+                        if st.button(
+                            "全選択保存",
+                            type='secondary',
+                            use_container_width=True,
+                            key=f'perm_col_on_{perm_ym}_{manager_col}_{chunk_idx}',
+                        ):
+                            db.save_payroll_permission_matrix(
+                                perm_ym,
+                                manager_emails,
+                                employee_ids,
+                                _checked_pairs_from_matrix(
+                                    matrix_df, force_col=manager_col, force_value=True,
+                                ),
+                            )
+                            st.success(f"{manager_col}さんの列を全選択で保存しました。")
+                            st.rerun()
+                        if st.button(
+                            "全解除保存",
+                            type='secondary',
+                            use_container_width=True,
+                            key=f'perm_col_off_{perm_ym}_{manager_col}_{chunk_idx}',
+                        ):
+                            db.save_payroll_permission_matrix(
+                                perm_ym,
+                                manager_emails,
+                                employee_ids,
+                                _checked_pairs_from_matrix(
+                                    matrix_df, force_col=manager_col, force_value=False,
+                                ),
+                            )
+                            st.success(f"{manager_col}さんの列を全解除で保存しました。")
+                            st.rerun()
 
             edited = st.data_editor(
                 matrix_df,
