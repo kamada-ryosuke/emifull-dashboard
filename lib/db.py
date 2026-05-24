@@ -235,6 +235,11 @@ def get_payment_methods(kbn):
 
 def _ensure_user_position_presets(conn):
     """既存ユーザーに既定の役職を補完する。手入力済みの役職は上書きしない。"""
+    user_cols = {
+        r['name'] for r in conn.execute("PRAGMA table_info(users)").fetchall()
+    }
+    if 'position' not in user_cols:
+        conn.execute("ALTER TABLE users ADD COLUMN position TEXT")
     for email, position in USER_POSITION_PRESETS.items():
         conn.execute(
             """
@@ -830,6 +835,7 @@ def get_user_by_email(email):
     if not email:
         return None
     with get_conn() as conn:
+        _ensure_user_position_presets(conn)
         row = conn.execute(
             "SELECT * FROM users WHERE email = ?", (email.strip().lower(),)
         ).fetchone()
@@ -838,6 +844,7 @@ def get_user_by_email(email):
 
 def list_users():
     with get_conn() as conn:
+        _ensure_user_position_presets(conn)
         return [dict(r) for r in conn.execute(
             "SELECT * FROM users ORDER BY role DESC, email"
         ).fetchall()]
@@ -847,6 +854,7 @@ def add_user(email, role, name=None, position=None):
     if role not in ('admin', 'user'):
         raise ValueError(f"role は 'admin' または 'user': {role}")
     with get_conn() as conn:
+        _ensure_user_position_presets(conn)
         conn.execute(
             "INSERT INTO users (email, role, name, position) VALUES (?, ?, ?, ?)",
             (email.strip().lower(), role, name, position)
@@ -942,6 +950,7 @@ def update_user(user_id, email=None, role=None, name=None, position=None):
         return
     params.append(user_id)
     with get_conn() as conn:
+        _ensure_user_position_presets(conn)
         conn.execute(f"UPDATE users SET {', '.join(sets)} WHERE id = ?", params)
 
 
