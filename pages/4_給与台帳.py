@@ -28,9 +28,9 @@ IS_ADMIN = auth.is_admin()
 CURRENT_USER = auth.current_user() or {}
 CURRENT_EMAIL = (CURRENT_USER.get('email') or '').strip().lower()
 
+PAYROLL_KAMADA_EMAIL = 'kamada.rusk@emifull-group.or.jp'
+PAYROLL_MORITA_EMAIL = 'morita.yshr@emifull-group.or.jp'
 PAYROLL_MANAGER_ORDER = [
-    ('kamada.rusk@emifull-group.or.jp', '鎌田'),
-    ('morita.yshr@emifull-group.or.jp', '森田'),
     ('fukaya.kkr@emifull-group.or.jp', '深谷'),
     ('nishitsuji.msys@emifull-group.or.jp', '西辻'),
     ('oketani.msm@emifull-group.or.jp', '桶谷'),
@@ -116,9 +116,16 @@ def _color_total_amount(val):
     return 'background-color:#f1f5f9; color:#64748b; font-weight:600'
 
 
+def _is_kamada_name(value: str | None) -> bool:
+    normalized = (value or '').replace('　', ' ').replace(' ', '').strip()
+    return '鎌田' in normalized
+
+
 def _filter_allowed_records(records: list[dict]) -> list[dict]:
-    if IS_ADMIN:
+    if IS_ADMIN or CURRENT_EMAIL == PAYROLL_KAMADA_EMAIL:
         return records
+    if CURRENT_EMAIL == PAYROLL_MORITA_EMAIL:
+        return [r for r in records if not _is_kamada_name(r.get('emp_name'))]
     allowed = db.list_payroll_allowed_employee_ids(
         CURRENT_EMAIL, PAYROLL_PERMISSION_BASE_TARGET_YM,
     )
@@ -126,8 +133,10 @@ def _filter_allowed_records(records: list[dict]) -> list[dict]:
 
 
 def _filter_allowed_employees(employees: list[dict]) -> list[dict]:
-    if IS_ADMIN:
+    if IS_ADMIN or CURRENT_EMAIL == PAYROLL_KAMADA_EMAIL:
         return employees
+    if CURRENT_EMAIL == PAYROLL_MORITA_EMAIL:
+        return [e for e in employees if not _is_kamada_name(e.get('name'))]
     allowed = db.list_payroll_allowed_employee_ids(
         CURRENT_EMAIL, PAYROLL_PERMISSION_BASE_TARGET_YM,
     )
@@ -161,6 +170,10 @@ def _name_text(employee: dict) -> str:
     return (employee.get('name') or '').replace('　', ' ').replace(' ', '').strip()
 
 
+def _manageable_payroll_employees(employees: list[dict]) -> list[dict]:
+    return [e for e in employees if not _is_kamada_name(e.get('name'))]
+
+
 def _dept_has(employee: dict, *keywords: str) -> bool:
     dept = _dept_text(employee)
     return any(keyword in dept for keyword in keywords)
@@ -173,9 +186,9 @@ def _default_payroll_permission(manager_email: str, employee: dict,
     name = _name_text(employee)
     employee_id = employee.get('id')
 
-    if email == 'kamada.rusk@emifull-group.or.jp':
+    if email == PAYROLL_KAMADA_EMAIL:
         return True
-    if email == 'morita.yshr@emifull-group.or.jp':
+    if email == PAYROLL_MORITA_EMAIL:
         return '鎌田' not in name
     if email == 'fukaya.kkr@emifull-group.or.jp':
         return _dept_has(employee, 'てんり障がい', 'てんり障害')
@@ -476,10 +489,11 @@ with tabs[1]:
 
         managers, employees, perm_map = db.list_payroll_permission_matrix(perm_ym)
         managers = _ordered_payroll_managers(managers)
-        all_employees = employees
+        all_employees = _manageable_payroll_employees(employees)
 
         def _build_missing_rule_pairs(target_ym: str):
             raw_managers, target_employees, target_perm_map = db.list_payroll_permission_matrix(target_ym)
+            target_employees = _manageable_payroll_employees(target_employees)
             if target_ym == PAYROLL_PERMISSION_BASE_TARGET_YM:
                 target_base_perm_map = target_perm_map
             else:
@@ -553,6 +567,7 @@ with tabs[1]:
         with st.expander("基本ルールで未登録者を補完"):
             st.caption(
                 "既存の設定は上書きせず、未登録の組み合わせだけ追加します。"
+                "鎌田・森田は固定ルールのため対象外です。"
                 "桶谷・黒田は2026-04の設定がある職員だけ補完します。"
             )
             rc1, rc2 = st.columns(2)
