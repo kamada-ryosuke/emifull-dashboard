@@ -1,4 +1,4 @@
-﻿"""給与台帳 / Payroll Ledger
+"""給与台帳 / Payroll Ledger
 - 医療法人社団EMIFULL / NPO法人EMIFULL の給与CSVを取り込み
 - 月次・年度（4〜翌3月）・職員別の集計表示
 - 法人別/合算 の年収一覧・基本給の月別推移
@@ -416,571 +416,577 @@ def _corp_selector(key, include_combined=True, only_with_data=True):
 # ============================================================
 # タブ構成
 # ============================================================
-tabs = st.tabs([
-    "📥 取込",
-    "🔐 管理マスタ",
-    "📅 月次サマリ",
-    "📊 年度サマリ",
-    "👤 職員一覧（年収）",
-    "📈 職員別 推移",
-    "🎯 処遇改善",
-    "⏰ 残業管理",
+PAYROLL_CAN_EDIT = CURRENT_EMAIL == PAYROLL_KAMADA_EMAIL
+_payroll_tab_labels = []
+if PAYROLL_CAN_EDIT:
+    _payroll_tab_labels.extend(["取込", "管理マスタ"])
+_payroll_tab_labels.extend([
+    "月次サマリ",
+    "年度サマリ",
+    "職員一覧（年収）",
+    "職員別推移",
 ])
+if PAYROLL_CAN_EDIT:
+    _payroll_tab_labels.append("処遇改善")
+_payroll_tab_labels.append("残業管理")
+tabs = dict(zip(_payroll_tab_labels, st.tabs(_payroll_tab_labels)))
 
 
 # ============================================================
 # ① 取込
 # ============================================================
-with tabs[0]:
-    if not IS_ADMIN:
-        st.warning('取込は管理者のみ利用できます。')
-    else:
-        st.markdown(
-            "給与台帳CSV（`YYMM給与台帳（XX）.csv`）をこの画面からアップロードして取込みます。\n"
-            "- 法人は会社名・ファイル名から自動判定\n"
-            "- 賞与（夏季/冬季）も自動判定\n"
-            "- 同じ年月・法人・賞与種別で再取込すると上書き\n"
-            "- 奉志会(旧法人)の過去データはスキップ\n\n"
-            "Dropboxフォルダとの自動紐づけは使いません。過去に取込済みのデータはDBに残っているため、そのまま閲覧できます。"
-        )
-        st.markdown("##### アップロード取込")
-        up = st.file_uploader(
-            "給与台帳CSV（複数選択可）", type=['csv'], accept_multiple_files=True,
-            key='payroll_uploader',
-        )
-        if up and st.button("アップロードしたファイルを取込", type='primary',
-                              key='import_upload_btn'):
-            ok = 0
-            errs = []
-            for f in up:
-                tmp = UPLOAD_TMP_DIR / f.name
-                tmp.parent.mkdir(parents=True, exist_ok=True)
-                tmp.write_bytes(f.getvalue())
-                # ファイル名 → 中身 の順で判定
-                info = pp.detect_file(tmp)
-                if not info or not info.get('year_month') or not info.get('corp_code'):
-                    errs.append(f"給与台帳CSVと判定できません: {f.name}")
-                    continue
-                try:
-                    r = _import_file(tmp, info)
-                    if r['status'] == 'ok':
-                        ok += 1
-                    else:
-                        errs.append(r.get('message', '?'))
-                except Exception as e:
-                    errs.append(f"{f.name}: {e}")
-            st.success(f"取込完了: 成功 {ok} / {len(up)}")
-            for m in errs:
-                st.error(m)
-            _clear_payroll_page_cache()
-            st.rerun()
-
-        with st.expander("⚙️ メンテナンス"):
-            st.markdown("##### 雇用区分の一括再判定")
-            st.caption(
-                "過去の給与CSVから『基本給の最大値』を集計し、20万円以上を **正社員**、"
-                "それ未満を **パート** に一括更新します。手動で雇用区分を編集していた内容は上書きされます。"
+if PAYROLL_CAN_EDIT:
+    with tabs["取込"]:
+        if not IS_ADMIN:
+            st.warning('取込は管理者のみ利用できます。')
+        else:
+            st.markdown(
+                "給与台帳CSV（`YYMM給与台帳（XX）.csv`）をこの画面からアップロードして取込みます。\n"
+                "- 法人は会社名・ファイル名から自動判定\n"
+                "- 賞与（夏季/冬季）も自動判定\n"
+                "- 同じ年月・法人・賞与種別で再取込すると上書き\n"
+                "- 奉志会(旧法人)の過去データはスキップ\n\n"
+                "Dropboxフォルダとの自動紐づけは使いません。過去に取込済みのデータはDBに残っているため、そのまま閲覧できます。"
             )
-            corps_for_reclass = _cached_payroll_corps()
-            for corp in corps_for_reclass:
-                if corp['code'] == 'HOUSHIKAI':
-                    continue
-                cnt = len(db.list_payroll_employees(corp_id=corp['id']))
-                if cnt == 0:
-                    continue
-                cc1, cc2 = st.columns([3, 1])
-                with cc1:
-                    st.markdown(f"**{corp['name']}** （職員 {cnt}名）")
-                with cc2:
-                    if st.button(f"再判定", key=f'reclass_{corp["code"]}',
-                                  type='primary', use_container_width=True):
-                        res = db.reclassify_payroll_employees_by_base_salary(
-                            corp['id'], threshold=200_000,
-                        )
-                        st.success(
-                            f"{corp['name']}: 正社員 {res['正社員']}名 / "
-                            f"パート {res['パート']}名 / 判定不可（基本給0） {res['据え置き']}名"
-                        )
-                        _clear_payroll_page_cache()
-                        st.rerun()
-
-            st.markdown("---")
-            st.warning("給与データを全削除します（取込テスト用）。")
-            confirm = st.checkbox("削除を確認しました", key='wipe_confirm')
-            if st.button("🗑️ 給与データ全削除", disabled=not confirm,
-                          type='secondary', key='wipe_btn'):
-                db.delete_all_payroll()
-                st.success("削除しました")
+            st.markdown("##### アップロード取込")
+            up = st.file_uploader(
+                "給与台帳CSV（複数選択可）", type=['csv'], accept_multiple_files=True,
+                key='payroll_uploader',
+            )
+            if up and st.button("アップロードしたファイルを取込", type='primary',
+                                  key='import_upload_btn'):
+                ok = 0
+                errs = []
+                for f in up:
+                    tmp = UPLOAD_TMP_DIR / f.name
+                    tmp.parent.mkdir(parents=True, exist_ok=True)
+                    tmp.write_bytes(f.getvalue())
+                    # ファイル名 → 中身 の順で判定
+                    info = pp.detect_file(tmp)
+                    if not info or not info.get('year_month') or not info.get('corp_code'):
+                        errs.append(f"給与台帳CSVと判定できません: {f.name}")
+                        continue
+                    try:
+                        r = _import_file(tmp, info)
+                        if r['status'] == 'ok':
+                            ok += 1
+                        else:
+                            errs.append(r.get('message', '?'))
+                    except Exception as e:
+                        errs.append(f"{f.name}: {e}")
+                st.success(f"取込完了: 成功 {ok} / {len(up)}")
+                for m in errs:
+                    st.error(m)
                 _clear_payroll_page_cache()
                 st.rerun()
 
-        # === 取込済み一覧（取込タブの下部に統合） ===
-        st.markdown("---")
-        st.markdown("### 🗂️ 取込済み一覧")
-        periods = _cached_payroll_periods()
-        if not periods:
-            st.info("取込履歴はまだありません。")
-        else:
-            df_p = pd.DataFrame([
-                {
-                    'id': p['id'],
-                    '法人': p['corp_name'],
-                    '対象月': db.payroll_target_ym(p['year_month'], p['pay_type']) if p['pay_type'] == '給与' else '-',
-                    '支給月': p['year_month'],
-                    '区分': p['pay_type'] + (f"({p['bonus_round']})" if p['bonus_round'] else ''),
-                    '件数': p['row_count'],
-                    'ファイル': p['source_filename'],
-                    '取込日時': p['imported_at'],
-                }
-                for p in periods
-            ])
-            st.dataframe(
-                df_p.drop(columns=['id']).style.map(_color_corp, subset=['法人']),
-                width='stretch', hide_index=True, height=400,
-            )
+            with st.expander("⚙️ メンテナンス"):
+                st.markdown("##### 雇用区分の一括再判定")
+                st.caption(
+                    "過去の給与CSVから『基本給の最大値』を集計し、20万円以上を **正社員**、"
+                    "それ未満を **パート** に一括更新します。手動で雇用区分を編集していた内容は上書きされます。"
+                )
+                corps_for_reclass = _cached_payroll_corps()
+                for corp in corps_for_reclass:
+                    if corp['code'] == 'HOUSHIKAI':
+                        continue
+                    cnt = len(db.list_payroll_employees(corp_id=corp['id']))
+                    if cnt == 0:
+                        continue
+                    cc1, cc2 = st.columns([3, 1])
+                    with cc1:
+                        st.markdown(f"**{corp['name']}** （職員 {cnt}名）")
+                    with cc2:
+                        if st.button(f"再判定", key=f'reclass_{corp["code"]}',
+                                      type='primary', use_container_width=True):
+                            res = db.reclassify_payroll_employees_by_base_salary(
+                                corp['id'], threshold=200_000,
+                            )
+                            st.success(
+                                f"{corp['name']}: 正社員 {res['正社員']}名 / "
+                                f"パート {res['パート']}名 / 判定不可（基本給0） {res['据え置き']}名"
+                            )
+                            _clear_payroll_page_cache()
+                            st.rerun()
 
-            with st.expander("🗑️ 取込済みの個別削除"):
-                opts = {
-                    f"#{p['id']} [{p['corp_name']}] {p['year_month']} {p['pay_type']}"
-                    f"{('('+p['bonus_round']+')') if p['bonus_round'] else ''} - {p['source_filename']}": p['id']
-                    for p in periods
-                }
-                target = st.selectbox("削除対象", list(opts.keys()), key='del_period_pick')
-                confirm_d = st.checkbox("削除を確認しました", key='del_period_confirm')
-                if st.button("🗑️ 削除", disabled=not confirm_d, key='del_period_btn'):
-                    db.delete_payroll_period(opts[target])
+                st.markdown("---")
+                st.warning("給与データを全削除します（取込テスト用）。")
+                confirm = st.checkbox("削除を確認しました", key='wipe_confirm')
+                if st.button("🗑️ 給与データ全削除", disabled=not confirm,
+                              type='secondary', key='wipe_btn'):
+                    db.delete_all_payroll()
                     st.success("削除しました")
                     _clear_payroll_page_cache()
                     st.rerun()
 
-
-# ============================================================
-# ② 管理マスタ
-# ============================================================
-with tabs[1]:
-    if not IS_ADMIN:
-        st.warning("給与の閲覧権限設定は管理者のみ利用できます。")
-    elif not _cached_target_year_months():
-        st.info("まだ給与データがありません。「取込」タブから取込んでください。")
-    else:
-        st.markdown(
-            "対象月ごとに、各管理者が閲覧できる職員を設定します。"
-            "通常は 2026-04 の設定を使います。過去分の閲覧も 2026-04 の設定に合わせます。"
-        )
-        target_yms = _cached_target_year_months()
-        ym_options = {_ym_label(t): t for t in target_yms}
-        default_perm_index = target_yms.index(PAYROLL_PERMISSION_BASE_TARGET_YM) if PAYROLL_PERMISSION_BASE_TARGET_YM in target_yms else 0
-        picked_label = st.selectbox(
-            "対象月（労働月）", list(ym_options.keys()),
-            index=default_perm_index, key='perm_ym'
-        )
-        perm_ym = ym_options[picked_label]
-
-        managers, employees, perm_map = db.list_payroll_permission_matrix(perm_ym)
-        managers = _ordered_payroll_managers(managers)
-        all_employees = _manageable_payroll_employees(employees)
-
-        dept_values = sorted({
-            (e.get('department') or '(部署未設定)').strip()
-            for e in all_employees
-        })
-        dept_options = ['すべて'] + dept_values
-        default_dept_index = 0
-        for i, dept_name in enumerate(dept_options):
-            if 'いなみ' in dept_name:
-                default_dept_index = i
-                break
-        dept_pick = st.selectbox(
-            "部署で絞る",
-            dept_options,
-            index=default_dept_index,
-            key=f'perm_dept_{perm_ym}',
-            help="表示人数を減らすと、チェック操作が軽くなります。",
-        )
-        if dept_pick != 'すべて':
-            employees = [
-                e for e in all_employees
-                if ((e.get('department') or '(部署未設定)').strip() == dept_pick)
-            ]
-
-        manager_emails_for_alert = [
-            (m.get('email') or '').strip().lower()
-            for m in managers
-        ]
-
-        def _apply_past_department_rules():
-            _, _, base_perm_map = db.list_payroll_permission_matrix(
-                PAYROLL_PERMISSION_BASE_TARGET_YM,
-            )
-            target_past_yms = [
-                ym for ym in target_yms
-                if ym < PAYROLL_PERMISSION_BASE_TARGET_YM
-            ]
-            total_saved = 0
-            unknown = set()
-            for target_ym in target_past_yms:
-                _, month_employees, _ = db.list_payroll_permission_matrix(target_ym)
-                month_employees = _manageable_payroll_employees(month_employees)
-                pairs = []
-                for emp in month_employees:
-                    emp_unknown = False
-                    emp_pairs = []
-                    for email in manager_emails_for_alert:
-                        rule_value = _past_department_rule_permission(
-                            email, emp, base_perm_map,
-                        )
-                        if rule_value is None:
-                            emp_unknown = True
-                            continue
-                        emp_pairs.append((email, emp['id'], rule_value))
-                    if emp_unknown:
-                        unknown.add(
-                            f"{emp.get('name') or ''}"
-                            f"（{emp.get('department') or '部署未設定'}）"
-                        )
-                    pairs.extend(emp_pairs)
-                total_saved += db.upsert_payroll_permission_pairs(target_ym, pairs)
-            return {
-                'months': len(target_past_yms),
-                'saved': total_saved,
-                'unknown': sorted(unknown),
-            }
-
-        def _is_unconfigured_employee(emp: dict, month_perm_map: dict) -> bool:
-            return not all(
-                (email, emp['id']) in month_perm_map
-                for email in manager_emails_for_alert
-            )
-
-        unconfigured = [
-            emp for emp in employees
-            if _is_unconfigured_employee(emp, perm_map)
-        ]
-
-        display_mode_key = f'perm_display_mode_{perm_ym}'
-        st.session_state.setdefault(display_mode_key, 'month_all')
-        mc1, mc2, mc3, mc4 = st.columns([1.2, 1.5, 1.2, 3.5])
-        with mc1:
-            if st.button("対象月の未設定者", use_container_width=True,
-                         key=f'perm_missing_only_btn_{perm_ym}'):
-                st.session_state[display_mode_key] = 'month_missing'
-        with mc2:
-            if st.button("過去月すべての未設定者", use_container_width=True,
-                         key=f'perm_missing_past_all_btn_{perm_ym}'):
-                st.session_state[display_mode_key] = 'past_missing'
-        with mc3:
-            if st.button("全員表示", use_container_width=True,
-                         key=f'perm_all_rows_btn_{perm_ym}'):
-                st.session_state[display_mode_key] = 'month_all'
-        with mc4:
-            st.caption("未設定者ボタンは、深谷〜黒田の権限が未登録の職員だけを抽出します。")
-
-        display_mode = st.session_state[display_mode_key]
-        if display_mode == 'month_missing':
-            employees = unconfigured
-        elif display_mode == 'past_missing':
-            employees = []
-
-        if display_mode == 'past_missing':
-            st.caption(
-                "表示モード: 過去月すべての未設定者"
-                + (f"（{dept_pick}）" if dept_pick != 'すべて' else "")
-            )
-        else:
-            st.caption(
-                f"表示中: {len(employees)}名 / 全{len(all_employees)}名"
-                + (f"（{dept_pick}）" if dept_pick != 'すべて' else "")
-                + (" / 対象月の未設定者のみ" if display_mode == 'month_missing' else "")
-            )
-
-        if unconfigured:
-            names = "、".join(
-                e['name']
-                for e in unconfigured[:8]
-            )
-            more = f" ほか{len(unconfigured) - 8}名" if len(unconfigured) > 8 else ""
-            st.warning(f"表示中の部署に権限未設定の職員が {len(unconfigured)}名います: {names}{more}")
-        else:
-            st.success("この対象月の職員は全員、権限設定済みです。")
-
-        with st.expander("過去分を部署ルールで一括設定"):
-            st.caption(
-                "過去月だけを対象に、指定部署は担当者だけ閲覧可として登録します。"
-                "部署未設定の職員は、2026-04の桶谷・黒田設定を引き継ぎます。"
-            )
-            st.markdown(
-                "- 神戸: いなみ障がい、カラダキッズかこがわ、ジョブカレッジかこがわ、"
-                "シェアホーム加古川、障がい管理\n"
-                "- 深谷: てんり障がい\n"
-                "- 西辻: シェアホーム天理\n"
-                "- 部署未設定: 桶谷・黒田を2026-04に準じて設定"
-            )
-            confirm_rule_apply = st.checkbox(
-                "上記ルールで過去月の深谷〜黒田権限を更新します",
-                key='perm_apply_past_department_rules_confirm',
-            )
-            if st.button(
-                "過去分を部署ルールで設定",
-                disabled=not confirm_rule_apply,
-                type='primary',
-                key='perm_apply_past_department_rules',
-            ):
-                result = _apply_past_department_rules()
-                _clear_payroll_page_cache()
-                st.success(
-                    f"過去月 {result['months']}か月分、"
-                    f"{result['saved']}件の権限を設定しました。"
-                )
-                if result['unknown']:
-                    st.warning(
-                        "部署ルールで判断できず未設定として残した職員: "
-                        + "、".join(result['unknown'][:10])
-                        + (
-                            f" ほか{len(result['unknown']) - 10}名"
-                            if len(result['unknown']) > 10 else ""
-                        )
-                    )
-                st.rerun()
-
-        if not managers:
-            st.warning("ユーザーが登録されていません。先に施設マスタ／設定でユーザーを登録してください。")
-        elif not employees and display_mode != 'past_missing':
-            if display_mode == 'month_missing':
-                st.info("この条件で表示する未設定者はいません。")
+            # === 取込済み一覧（取込タブの下部に統合） ===
+            st.markdown("---")
+            st.markdown("### 🗂️ 取込済み一覧")
+            periods = _cached_payroll_periods()
+            if not periods:
+                st.info("取込履歴はまだありません。")
             else:
-                st.warning("この対象月の給与職員データがありません。")
-        else:
-            manager_columns = []
-            manager_email_by_col = {}
-            for manager in managers:
-                email = (manager.get('email') or '').strip().lower()
-                col = manager.get('display_name') or manager.get('name') or email
-                manager_columns.append(col)
-                manager_email_by_col[col] = email
-
-            def _rows_for_month(target_ym: str, month_employees: list[dict],
-                                month_perm_map: dict, only_missing: bool) -> list[dict]:
-                rows_for_month = []
-                for emp in month_employees:
-                    if only_missing and not _is_unconfigured_employee(emp, month_perm_map):
-                        continue
-                    row = {
-                        'target_ym': target_ym,
-                        'employee_id': emp['id'],
-                        '対象月': _ym_label(target_ym),
-                        '部署': emp.get('department') or '',
-                        '氏名': emp['name'],
+                df_p = pd.DataFrame([
+                    {
+                        'id': p['id'],
+                        '法人': p['corp_name'],
+                        '対象月': db.payroll_target_ym(p['year_month'], p['pay_type']) if p['pay_type'] == '給与' else '-',
+                        '支給月': p['year_month'],
+                        '区分': p['pay_type'] + (f"({p['bonus_round']})" if p['bonus_round'] else ''),
+                        '件数': p['row_count'],
+                        'ファイル': p['source_filename'],
+                        '取込日時': p['imported_at'],
                     }
-                    for col in manager_columns:
-                        email = manager_email_by_col[col]
-                        row[col] = bool(month_perm_map.get((email, emp['id']), False))
-                    rows_for_month.append(row)
-                return rows_for_month
+                    for p in periods
+                ])
+                st.dataframe(
+                    df_p.drop(columns=['id']).style.map(_color_corp, subset=['法人']),
+                    width='stretch', hide_index=True, height=400,
+                )
 
-            if display_mode == 'past_missing':
-                past_page_key = f'perm_past_missing_page_{perm_ym}'
-                past_page_sig_key = f'perm_past_missing_sig_{perm_ym}'
-                past_page_sig = dept_pick
-                if st.session_state.get(past_page_sig_key) != past_page_sig:
-                    st.session_state[past_page_key] = 0
-                    st.session_state[past_page_sig_key] = past_page_sig
-                st.session_state.setdefault(past_page_key, 0)
-                past_page = max(0, int(st.session_state[past_page_key]))
-                offset = past_page * PAYROLL_PERMISSION_PAGE_SIZE
-                rows = []
-                matched_count = 0
-                has_next_page = False
+                with st.expander("🗑️ 取込済みの個別削除"):
+                    opts = {
+                        f"#{p['id']} [{p['corp_name']}] {p['year_month']} {p['pay_type']}"
+                        f"{('('+p['bonus_round']+')') if p['bonus_round'] else ''} - {p['source_filename']}": p['id']
+                        for p in periods
+                    }
+                    target = st.selectbox("削除対象", list(opts.keys()), key='del_period_pick')
+                    confirm_d = st.checkbox("削除を確認しました", key='del_period_confirm')
+                    if st.button("🗑️ 削除", disabled=not confirm_d, key='del_period_btn'):
+                        db.delete_payroll_period(opts[target])
+                        st.success("削除しました")
+                        _clear_payroll_page_cache()
+                        st.rerun()
+
+
+    # ============================================================
+    # ② 管理マスタ
+    # ============================================================
+if PAYROLL_CAN_EDIT:
+    with tabs["管理マスタ"]:
+        if not IS_ADMIN:
+            st.warning("給与の閲覧権限設定は管理者のみ利用できます。")
+        elif not _cached_target_year_months():
+            st.info("まだ給与データがありません。「取込」タブから取込んでください。")
+        else:
+            st.markdown(
+                "対象月ごとに、各管理者が閲覧できる職員を設定します。"
+                "通常は 2026-04 の設定を使います。過去分の閲覧も 2026-04 の設定に合わせます。"
+            )
+            target_yms = _cached_target_year_months()
+            ym_options = {_ym_label(t): t for t in target_yms}
+            default_perm_index = target_yms.index(PAYROLL_PERMISSION_BASE_TARGET_YM) if PAYROLL_PERMISSION_BASE_TARGET_YM in target_yms else 0
+            picked_label = st.selectbox(
+                "対象月（労働月）", list(ym_options.keys()),
+                index=default_perm_index, key='perm_ym'
+            )
+            perm_ym = ym_options[picked_label]
+
+            managers, employees, perm_map = db.list_payroll_permission_matrix(perm_ym)
+            managers = _ordered_payroll_managers(managers)
+            all_employees = _manageable_payroll_employees(employees)
+
+            dept_values = sorted({
+                (e.get('department') or '(部署未設定)').strip()
+                for e in all_employees
+            })
+            dept_options = ['すべて'] + dept_values
+            default_dept_index = 0
+            for i, dept_name in enumerate(dept_options):
+                if 'いなみ' in dept_name:
+                    default_dept_index = i
+                    break
+            dept_pick = st.selectbox(
+                "部署で絞る",
+                dept_options,
+                index=default_dept_index,
+                key=f'perm_dept_{perm_ym}',
+                help="表示人数を減らすと、チェック操作が軽くなります。",
+            )
+            if dept_pick != 'すべて':
+                employees = [
+                    e for e in all_employees
+                    if ((e.get('department') or '(部署未設定)').strip() == dept_pick)
+                ]
+
+            manager_emails_for_alert = [
+                (m.get('email') or '').strip().lower()
+                for m in managers
+            ]
+
+            def _apply_past_department_rules():
+                _, _, base_perm_map = db.list_payroll_permission_matrix(
+                    PAYROLL_PERMISSION_BASE_TARGET_YM,
+                )
                 target_past_yms = [
                     ym for ym in target_yms
                     if ym < PAYROLL_PERMISSION_BASE_TARGET_YM
                 ]
+                total_saved = 0
+                unknown = set()
                 for target_ym in target_past_yms:
-                    _, month_employees, month_perm_map = db.list_payroll_permission_matrix(target_ym)
+                    _, month_employees, _ = db.list_payroll_permission_matrix(target_ym)
                     month_employees = _manageable_payroll_employees(month_employees)
-                    if dept_pick != 'すべて':
-                        month_employees = [
-                            e for e in month_employees
-                            if ((e.get('department') or '(部署未設定)').strip() == dept_pick)
-                        ]
-                    for row in _rows_for_month(target_ym, month_employees, month_perm_map, True):
-                        if matched_count < offset:
-                            matched_count += 1
-                            continue
-                        if len(rows) < PAYROLL_PERMISSION_PAGE_SIZE:
-                            rows.append(row)
-                            matched_count += 1
-                            continue
-                        has_next_page = True
-                        break
-                    if has_next_page:
-                        break
+                    pairs = []
+                    for emp in month_employees:
+                        emp_unknown = False
+                        emp_pairs = []
+                        for email in manager_emails_for_alert:
+                            rule_value = _past_department_rule_permission(
+                                email, emp, base_perm_map,
+                            )
+                            if rule_value is None:
+                                emp_unknown = True
+                                continue
+                            emp_pairs.append((email, emp['id'], rule_value))
+                        if emp_unknown:
+                            unknown.add(
+                                f"{emp.get('name') or ''}"
+                                f"（{emp.get('department') or '部署未設定'}）"
+                            )
+                        pairs.extend(emp_pairs)
+                    total_saved += db.upsert_payroll_permission_pairs(target_ym, pairs)
+                return {
+                    'months': len(target_past_yms),
+                    'saved': total_saved,
+                    'unknown': sorted(unknown),
+                }
 
-                pc1, pc2, pc3, pc4 = st.columns([1, 1, 2, 4])
-                with pc1:
-                    if st.button("前の10件", disabled=past_page <= 0,
-                                 use_container_width=True, key=f'perm_past_prev_{perm_ym}'):
-                        st.session_state[past_page_key] = max(0, past_page - 1)
-                        st.rerun()
-                with pc2:
-                    if st.button("次の10件", disabled=not has_next_page,
-                                 use_container_width=True, key=f'perm_past_next_{perm_ym}'):
-                        st.session_state[past_page_key] = past_page + 1
-                        st.rerun()
-                with pc3:
-                    st.caption(
-                        f"{past_page + 1}ページ目 / 最大{PAYROLL_PERMISSION_PAGE_SIZE}件表示"
-                    )
-            else:
-                rows = _rows_for_month(
-                    perm_ym,
-                    employees,
-                    perm_map,
-                    display_mode == 'month_missing',
+            def _is_unconfigured_employee(emp: dict, month_perm_map: dict) -> bool:
+                return not all(
+                    (email, emp['id']) in month_perm_map
+                    for email in manager_emails_for_alert
                 )
+
+            unconfigured = [
+                emp for emp in employees
+                if _is_unconfigured_employee(emp, perm_map)
+            ]
+
+            display_mode_key = f'perm_display_mode_{perm_ym}'
+            st.session_state.setdefault(display_mode_key, 'month_all')
+            mc1, mc2, mc3, mc4 = st.columns([1.2, 1.5, 1.2, 3.5])
+            with mc1:
+                if st.button("対象月の未設定者", use_container_width=True,
+                             key=f'perm_missing_only_btn_{perm_ym}'):
+                    st.session_state[display_mode_key] = 'month_missing'
+            with mc2:
+                if st.button("過去月すべての未設定者", use_container_width=True,
+                             key=f'perm_missing_past_all_btn_{perm_ym}'):
+                    st.session_state[display_mode_key] = 'past_missing'
+            with mc3:
+                if st.button("全員表示", use_container_width=True,
+                             key=f'perm_all_rows_btn_{perm_ym}'):
+                    st.session_state[display_mode_key] = 'month_all'
+            with mc4:
+                st.caption("未設定者ボタンは、深谷〜黒田の権限が未登録の職員だけを抽出します。")
+
+            display_mode = st.session_state[display_mode_key]
+            if display_mode == 'month_missing':
+                employees = unconfigured
+            elif display_mode == 'past_missing':
+                employees = []
 
             if display_mode == 'past_missing':
-                st.caption(f"このページの未設定行: {len(rows)}件")
+                st.caption(
+                    "表示モード: 過去月すべての未設定者"
+                    + (f"（{dept_pick}）" if dept_pick != 'すべて' else "")
+                )
+            else:
+                st.caption(
+                    f"表示中: {len(employees)}名 / 全{len(all_employees)}名"
+                    + (f"（{dept_pick}）" if dept_pick != 'すべて' else "")
+                    + (" / 対象月の未設定者のみ" if display_mode == 'month_missing' else "")
+                )
 
-            if not rows:
-                if display_mode == 'past_missing':
-                    st.info("この条件で表示する過去月の未設定者はいません。")
-                elif display_mode == 'month_missing':
+            if unconfigured:
+                names = "、".join(
+                    e['name']
+                    for e in unconfigured[:8]
+                )
+                more = f" ほか{len(unconfigured) - 8}名" if len(unconfigured) > 8 else ""
+                st.warning(f"表示中の部署に権限未設定の職員が {len(unconfigured)}名います: {names}{more}")
+            else:
+                st.success("この対象月の職員は全員、権限設定済みです。")
+
+            with st.expander("過去分を部署ルールで一括設定"):
+                st.caption(
+                    "過去月だけを対象に、指定部署は担当者だけ閲覧可として登録します。"
+                    "部署未設定の職員は、2026-04の桶谷・黒田設定を引き継ぎます。"
+                )
+                st.markdown(
+                    "- 神戸: いなみ障がい、カラダキッズかこがわ、ジョブカレッジかこがわ、"
+                    "シェアホーム加古川、障がい管理\n"
+                    "- 深谷: てんり障がい\n"
+                    "- 西辻: シェアホーム天理\n"
+                    "- 部署未設定: 桶谷・黒田を2026-04に準じて設定"
+                )
+                confirm_rule_apply = st.checkbox(
+                    "上記ルールで過去月の深谷〜黒田権限を更新します",
+                    key='perm_apply_past_department_rules_confirm',
+                )
+                if st.button(
+                    "過去分を部署ルールで設定",
+                    disabled=not confirm_rule_apply,
+                    type='primary',
+                    key='perm_apply_past_department_rules',
+                ):
+                    result = _apply_past_department_rules()
+                    _clear_payroll_page_cache()
+                    st.success(
+                        f"過去月 {result['months']}か月分、"
+                        f"{result['saved']}件の権限を設定しました。"
+                    )
+                    if result['unknown']:
+                        st.warning(
+                            "部署ルールで判断できず未設定として残した職員: "
+                            + "、".join(result['unknown'][:10])
+                            + (
+                                f" ほか{len(result['unknown']) - 10}名"
+                                if len(result['unknown']) > 10 else ""
+                            )
+                        )
+                    st.rerun()
+
+            if not managers:
+                st.warning("ユーザーが登録されていません。先に施設マスタ／設定でユーザーを登録してください。")
+            elif not employees and display_mode != 'past_missing':
+                if display_mode == 'month_missing':
                     st.info("この条件で表示する未設定者はいません。")
                 else:
-                    st.info("表示する職員がいません。")
+                    st.warning("この対象月の給与職員データがありません。")
+            else:
+                manager_columns = []
+                manager_email_by_col = {}
+                for manager in managers:
+                    email = (manager.get('email') or '').strip().lower()
+                    col = manager.get('display_name') or manager.get('name') or email
+                    manager_columns.append(col)
+                    manager_email_by_col[col] = email
 
-            matrix_df = pd.DataFrame(rows)
-            if matrix_df.empty:
-                matrix_df = pd.DataFrame(
-                    columns=['target_ym', 'employee_id', '対象月', '部署', '氏名']
-                    + manager_columns
+                def _rows_for_month(target_ym: str, month_employees: list[dict],
+                                    month_perm_map: dict, only_missing: bool) -> list[dict]:
+                    rows_for_month = []
+                    for emp in month_employees:
+                        if only_missing and not _is_unconfigured_employee(emp, month_perm_map):
+                            continue
+                        row = {
+                            'target_ym': target_ym,
+                            'employee_id': emp['id'],
+                            '対象月': _ym_label(target_ym),
+                            '部署': emp.get('department') or '',
+                            '氏名': emp['name'],
+                        }
+                        for col in manager_columns:
+                            email = manager_email_by_col[col]
+                            row[col] = bool(month_perm_map.get((email, emp['id']), False))
+                        rows_for_month.append(row)
+                    return rows_for_month
+
+                if display_mode == 'past_missing':
+                    past_page_key = f'perm_past_missing_page_{perm_ym}'
+                    past_page_sig_key = f'perm_past_missing_sig_{perm_ym}'
+                    past_page_sig = dept_pick
+                    if st.session_state.get(past_page_sig_key) != past_page_sig:
+                        st.session_state[past_page_key] = 0
+                        st.session_state[past_page_sig_key] = past_page_sig
+                    st.session_state.setdefault(past_page_key, 0)
+                    past_page = max(0, int(st.session_state[past_page_key]))
+                    offset = past_page * PAYROLL_PERMISSION_PAGE_SIZE
+                    rows = []
+                    matched_count = 0
+                    has_next_page = False
+                    target_past_yms = [
+                        ym for ym in target_yms
+                        if ym < PAYROLL_PERMISSION_BASE_TARGET_YM
+                    ]
+                    for target_ym in target_past_yms:
+                        _, month_employees, month_perm_map = db.list_payroll_permission_matrix(target_ym)
+                        month_employees = _manageable_payroll_employees(month_employees)
+                        if dept_pick != 'すべて':
+                            month_employees = [
+                                e for e in month_employees
+                                if ((e.get('department') or '(部署未設定)').strip() == dept_pick)
+                            ]
+                        for row in _rows_for_month(target_ym, month_employees, month_perm_map, True):
+                            if matched_count < offset:
+                                matched_count += 1
+                                continue
+                            if len(rows) < PAYROLL_PERMISSION_PAGE_SIZE:
+                                rows.append(row)
+                                matched_count += 1
+                                continue
+                            has_next_page = True
+                            break
+                        if has_next_page:
+                            break
+
+                    pc1, pc2, pc3, pc4 = st.columns([1, 1, 2, 4])
+                    with pc1:
+                        if st.button("前の10件", disabled=past_page <= 0,
+                                     use_container_width=True, key=f'perm_past_prev_{perm_ym}'):
+                            st.session_state[past_page_key] = max(0, past_page - 1)
+                            st.rerun()
+                    with pc2:
+                        if st.button("次の10件", disabled=not has_next_page,
+                                     use_container_width=True, key=f'perm_past_next_{perm_ym}'):
+                            st.session_state[past_page_key] = past_page + 1
+                            st.rerun()
+                    with pc3:
+                        st.caption(
+                            f"{past_page + 1}ページ目 / 最大{PAYROLL_PERMISSION_PAGE_SIZE}件表示"
+                        )
+                else:
+                    rows = _rows_for_month(
+                        perm_ym,
+                        employees,
+                        perm_map,
+                        display_mode == 'month_missing',
+                    )
+
+                if display_mode == 'past_missing':
+                    st.caption(f"このページの未設定行: {len(rows)}件")
+
+                if not rows:
+                    if display_mode == 'past_missing':
+                        st.info("この条件で表示する過去月の未設定者はいません。")
+                    elif display_mode == 'month_missing':
+                        st.info("この条件で表示する未設定者はいません。")
+                    else:
+                        st.info("表示する職員がいません。")
+
+                matrix_df = pd.DataFrame(rows)
+                if matrix_df.empty:
+                    matrix_df = pd.DataFrame(
+                        columns=['target_ym', 'employee_id', '対象月', '部署', '氏名']
+                        + manager_columns
+                    )
+                manager_emails = list(manager_email_by_col.values())
+                matrix_state_key = f'perm_matrix_state_{perm_ym}_{display_mode}'
+                matrix_sig_key = f'perm_matrix_sig_{perm_ym}_{display_mode}'
+                editor_version_key = f'perm_editor_version_{perm_ym}_{display_mode}'
+                matrix_signature = (
+                    display_mode,
+                    dept_pick,
+                    tuple((r['target_ym'], r['employee_id']) for r in rows),
+                    tuple(manager_columns),
                 )
-            manager_emails = list(manager_email_by_col.values())
-            matrix_state_key = f'perm_matrix_state_{perm_ym}_{display_mode}'
-            matrix_sig_key = f'perm_matrix_sig_{perm_ym}_{display_mode}'
-            editor_version_key = f'perm_editor_version_{perm_ym}_{display_mode}'
-            matrix_signature = (
-                display_mode,
-                dept_pick,
-                tuple((r['target_ym'], r['employee_id']) for r in rows),
-                tuple(manager_columns),
-            )
 
-            if (
-                matrix_state_key not in st.session_state
-                or st.session_state.get(matrix_sig_key) != matrix_signature
-            ):
-                st.session_state[matrix_state_key] = matrix_df.copy()
-                st.session_state[matrix_sig_key] = matrix_signature
-                st.session_state[editor_version_key] = 0
+                if (
+                    matrix_state_key not in st.session_state
+                    or st.session_state.get(matrix_sig_key) != matrix_signature
+                ):
+                    st.session_state[matrix_state_key] = matrix_df.copy()
+                    st.session_state[matrix_sig_key] = matrix_signature
+                    st.session_state[editor_version_key] = 0
 
-            def _save_permission_df(base_df):
-                pairs_by_month = defaultdict(list)
-                for _, row in base_df.iterrows():
-                    target_ym = str(row['target_ym'])
-                    employee_id = int(row['employee_id'])
-                    for col in manager_columns:
-                        pairs_by_month[target_ym].append(
-                            (manager_email_by_col[col], employee_id, bool(row[col]))
-                        )
-                saved = 0
-                for target_ym, pairs in pairs_by_month.items():
-                    saved += db.upsert_payroll_permission_pairs(target_ym, pairs)
-                return saved
-
-            with st.form(
-                key=f'perm_form_{perm_ym}_{display_mode}_{st.session_state[editor_version_key]}',
-                clear_on_submit=False,
-            ):
-                top_save_col, top_note_col = st.columns([1, 5])
-                with top_save_col:
-                    save_clicked = st.form_submit_button(
-                        "💾 保存", type='primary', use_container_width=True,
-                    )
-                with top_note_col:
-                    st.caption(
-                        "チェック中は保存されません。最後に左の保存を押すと、表示中の行だけ反映します。"
-                    )
-
-                header_cols = st.columns([1.8] + [1] * len(manager_columns))
-                header_cols[0].markdown("**氏名**")
-                for h_col, manager_col in zip(header_cols[1:], manager_columns):
-                    h_col.markdown(f"**{manager_col}**")
-
-                on_clicked = {}
-                on_cols = st.columns([1.8] + [1] * len(manager_columns))
-                on_cols[0].caption("全選択")
-                for btn_col, manager_col in zip(on_cols[1:], manager_columns):
-                    with btn_col:
-                        on_clicked[manager_col] = st.form_submit_button(
-                            f"{manager_col} 全選択",
-                            type='secondary',
-                            use_container_width=True,
-                        )
-
-                off_clicked = {}
-                off_cols = st.columns([1.8] + [1] * len(manager_columns))
-                off_cols[0].caption("全解除")
-                for btn_col, manager_col in zip(off_cols[1:], manager_columns):
-                    with btn_col:
-                        off_clicked[manager_col] = st.form_submit_button(
-                            f"{manager_col} 全解除",
-                            type='secondary',
-                            use_container_width=True,
-                        )
-
-                edited = st.data_editor(
-                    st.session_state[matrix_state_key],
-                    width='stretch',
-                    hide_index=True,
-                    height=min(700, 120 + 36 * len(matrix_df)),
-                    column_config={
-                        'target_ym': None,
-                        'employee_id': None,
-                        '対象月': (
-                            st.column_config.TextColumn(disabled=True)
-                            if display_mode == 'past_missing' else None
-                        ),
-                        '部署': st.column_config.TextColumn(disabled=True),
-                        '氏名': st.column_config.TextColumn(disabled=True),
-                        **{
-                            col: st.column_config.CheckboxColumn(
-                                label=col,
-                                help=f"{col}さんがこの職員の給与を閲覧できる場合にチェックします。",
+                def _save_permission_df(base_df):
+                    pairs_by_month = defaultdict(list)
+                    for _, row in base_df.iterrows():
+                        target_ym = str(row['target_ym'])
+                        employee_id = int(row['employee_id'])
+                        for col in manager_columns:
+                            pairs_by_month[target_ym].append(
+                                (manager_email_by_col[col], employee_id, bool(row[col]))
                             )
-                            for col in manager_columns
+                    saved = 0
+                    for target_ym, pairs in pairs_by_month.items():
+                        saved += db.upsert_payroll_permission_pairs(target_ym, pairs)
+                    return saved
+
+                with st.form(
+                    key=f'perm_form_{perm_ym}_{display_mode}_{st.session_state[editor_version_key]}',
+                    clear_on_submit=False,
+                ):
+                    top_save_col, top_note_col = st.columns([1, 5])
+                    with top_save_col:
+                        save_clicked = st.form_submit_button(
+                            "💾 保存", type='primary', use_container_width=True,
+                        )
+                    with top_note_col:
+                        st.caption(
+                            "チェック中は保存されません。最後に左の保存を押すと、表示中の行だけ反映します。"
+                        )
+
+                    header_cols = st.columns([1.8] + [1] * len(manager_columns))
+                    header_cols[0].markdown("**氏名**")
+                    for h_col, manager_col in zip(header_cols[1:], manager_columns):
+                        h_col.markdown(f"**{manager_col}**")
+
+                    on_clicked = {}
+                    on_cols = st.columns([1.8] + [1] * len(manager_columns))
+                    on_cols[0].caption("全選択")
+                    for btn_col, manager_col in zip(on_cols[1:], manager_columns):
+                        with btn_col:
+                            on_clicked[manager_col] = st.form_submit_button(
+                                f"{manager_col} 全選択",
+                                type='secondary',
+                                use_container_width=True,
+                            )
+
+                    off_clicked = {}
+                    off_cols = st.columns([1.8] + [1] * len(manager_columns))
+                    off_cols[0].caption("全解除")
+                    for btn_col, manager_col in zip(off_cols[1:], manager_columns):
+                        with btn_col:
+                            off_clicked[manager_col] = st.form_submit_button(
+                                f"{manager_col} 全解除",
+                                type='secondary',
+                                use_container_width=True,
+                            )
+
+                    edited = st.data_editor(
+                        st.session_state[matrix_state_key],
+                        width='stretch',
+                        hide_index=True,
+                        height=min(700, 120 + 36 * len(matrix_df)),
+                        column_config={
+                            'target_ym': None,
+                            'employee_id': None,
+                            '対象月': (
+                                st.column_config.TextColumn(disabled=True)
+                                if display_mode == 'past_missing' else None
+                            ),
+                            '部署': st.column_config.TextColumn(disabled=True),
+                            '氏名': st.column_config.TextColumn(disabled=True),
+                            **{
+                                col: st.column_config.CheckboxColumn(
+                                    label=col,
+                                    help=f"{col}さんがこの職員の給与を閲覧できる場合にチェックします。",
+                                )
+                                for col in manager_columns
+                            },
                         },
-                    },
-                    key=f'perm_editor_{perm_ym}_{display_mode}_{st.session_state[editor_version_key]}',
-                )
+                        key=f'perm_editor_{perm_ym}_{display_mode}_{st.session_state[editor_version_key]}',
+                    )
 
-            if save_clicked:
-                st.session_state[matrix_state_key] = edited.copy()
-                saved = _save_permission_df(st.session_state[matrix_state_key])
-                st.success(f"閲覧権限を保存しました（{saved}件）。")
-                _clear_payroll_page_cache()
-                st.rerun()
+                if save_clicked:
+                    st.session_state[matrix_state_key] = edited.copy()
+                    saved = _save_permission_df(st.session_state[matrix_state_key])
+                    st.success(f"閲覧権限を保存しました（{saved}件）。")
+                    _clear_payroll_page_cache()
+                    st.rerun()
 
-            changed_by_bulk = False
-            current = edited.copy()
-            for manager_col in manager_columns:
-                if on_clicked.get(manager_col):
-                    current[manager_col] = True
-                    changed_by_bulk = True
-                if off_clicked.get(manager_col):
-                    current[manager_col] = False
-                    changed_by_bulk = True
+                changed_by_bulk = False
+                current = edited.copy()
+                for manager_col in manager_columns:
+                    if on_clicked.get(manager_col):
+                        current[manager_col] = True
+                        changed_by_bulk = True
+                    if off_clicked.get(manager_col):
+                        current[manager_col] = False
+                        changed_by_bulk = True
 
-            st.session_state[matrix_state_key] = current.copy()
-            if changed_by_bulk:
-                st.session_state[editor_version_key] += 1
-                st.rerun()
+                st.session_state[matrix_state_key] = current.copy()
+                if changed_by_bulk:
+                    st.session_state[editor_version_key] += 1
+                    st.rerun()
 
 
-# ============================================================
-# ③ 月次サマリ
-# ============================================================
-with tabs[2]:
+    # ============================================================
+    # ③ 月次サマリ
+    # ============================================================
+with tabs["月次サマリ"]:
     if not _cached_target_year_months():
         st.info("まだ給与データがありません。「取込」タブから取込んでください。")
     else:
@@ -1251,7 +1257,7 @@ with tabs[2]:
 # ============================================================
 # ④ 年度サマリ（4月始まり、対象月ベース）
 # ============================================================
-with tabs[3]:
+with tabs["年度サマリ"]:
     if not _cached_fiscal_years():
         st.info("まだ給与データがありません。")
     else:
@@ -1369,7 +1375,7 @@ with tabs[3]:
 # ============================================================
 # ⑤ 職員一覧（年収）
 # ============================================================
-with tabs[4]:
+with tabs["職員一覧（年収）"]:
     if not _cached_fiscal_years():
         st.info("まだ給与データがありません。")
     else:
@@ -1583,7 +1589,7 @@ with tabs[4]:
 # ============================================================
 # ⑥ 職員別 推移
 # ============================================================
-with tabs[5]:
+with tabs["職員別推移"]:
     employees_all = db.list_payroll_employees()
     if not employees_all:
         st.info("職員マスタがまだありません。")
@@ -1699,341 +1705,342 @@ with tabs[5]:
 # ============================================================
 # ⑦ 処遇改善
 # ============================================================
-with tabs[6]:
-    if not IS_ADMIN:
-        st.warning('処遇改善は管理者のみ閲覧できます。')
-    else:
-        st.markdown(
-            "国に処遇改善として計上できる金額を算出します。\n"
-            "**計算式: ①最低賃金との差額 + ②役職・職位手当 + ③資格手当 + ④処遇改善 + "
-            "⑤業務手当 + ⑥インセンティブ + ⑦医療費補助**\n\n"
-            "- 部署が **てんり/天理** を含む → 奈良県の最低賃金、それ以外 → 兵庫県の最低賃金\n"
-            "- **正社員**: 最低賃金時給 × 176時間（実出勤が176h未満なら実時間で按分）\n"
-            "- **パート**: 最低賃金時給 × 各月の実出勤時間\n"
-            "- ②役職・職位手当 = 「役職手当」+「職位手当」+「役職・職位手当」の合算\n"
-            "- ④処遇改善 = 「処遇改善手当」+「処遇改善金」の合算\n"
-            "- ⑥インセンティブ = 「インセンティブ」+「その他手当」の合算\n"
-            "- 最低賃金は適用開始日に応じて自動切替（毎年10月頃に新賃金を登録すれば過去データも含めて再計算）"
-        )
-
-        if not _cached_fiscal_years():
-            st.info("給与データがまだありません。")
+if PAYROLL_CAN_EDIT:
+    with tabs["処遇改善"]:
+        if not IS_ADMIN:
+            st.warning('処遇改善は管理者のみ閲覧できます。')
         else:
-            # === 最低賃金マスタ（折りたたみ） ===
-            with st.expander("⚙️ 最低賃金マスタの編集（毎年10月の改定時に追加）"):
-                mw_list = db.list_minimum_wages()
-                if mw_list:
-                    df_mw = pd.DataFrame([
-                        {
-                            'id': r['id'],
-                            '都道府県': r['prefecture'],
-                            '適用開始日': r['effective_from'],
-                            '時給(円)': r['hourly_wage'],
-                        }
-                        for r in mw_list
-                    ])
-                    st.dataframe(df_mw.drop(columns=['id']),
-                                  width='stretch', hide_index=True)
+            st.markdown(
+                "国に処遇改善として計上できる金額を算出します。\n"
+                "**計算式: ①最低賃金との差額 + ②役職・職位手当 + ③資格手当 + ④処遇改善 + "
+                "⑤業務手当 + ⑥インセンティブ + ⑦医療費補助**\n\n"
+                "- 部署が **てんり/天理** を含む → 奈良県の最低賃金、それ以外 → 兵庫県の最低賃金\n"
+                "- **正社員**: 最低賃金時給 × 176時間（実出勤が176h未満なら実時間で按分）\n"
+                "- **パート**: 最低賃金時給 × 各月の実出勤時間\n"
+                "- ②役職・職位手当 = 「役職手当」+「職位手当」+「役職・職位手当」の合算\n"
+                "- ④処遇改善 = 「処遇改善手当」+「処遇改善金」の合算\n"
+                "- ⑥インセンティブ = 「インセンティブ」+「その他手当」の合算\n"
+                "- 最低賃金は適用開始日に応じて自動切替（毎年10月頃に新賃金を登録すれば過去データも含めて再計算）"
+            )
 
-                st.markdown("##### 新規登録 / 更新")
-                wc1, wc2, wc3, wc4 = st.columns([1, 1, 1, 1])
-                with wc1:
-                    add_pref = st.selectbox("都道府県", ['兵庫県', '奈良県'],
-                                              key='mw_pref')
-                with wc2:
-                    add_eff = st.date_input("適用開始日",
-                                              value=None, key='mw_eff',
-                                              help="例: 2025-10-01")
-                with wc3:
-                    add_wage = st.number_input("時給(円)", min_value=500, max_value=3000,
-                                                  step=1, value=1100, key='mw_wage')
-                with wc4:
-                    st.write("")
-                    st.write("")
-                    if st.button("💾 登録/更新", type='primary',
-                                  key='mw_save_btn',
-                                  use_container_width=True):
-                        if not add_eff:
-                            st.error("適用開始日を入力してください")
-                        else:
-                            db.upsert_minimum_wage(
-                                add_pref, add_eff.isoformat(), int(add_wage)
-                            )
-                            st.success(
-                                f"{add_pref} {add_eff} {add_wage}円 を登録しました"
-                            )
+            if not _cached_fiscal_years():
+                st.info("給与データがまだありません。")
+            else:
+                # === 最低賃金マスタ（折りたたみ） ===
+                with st.expander("⚙️ 最低賃金マスタの編集（毎年10月の改定時に追加）"):
+                    mw_list = db.list_minimum_wages()
+                    if mw_list:
+                        df_mw = pd.DataFrame([
+                            {
+                                'id': r['id'],
+                                '都道府県': r['prefecture'],
+                                '適用開始日': r['effective_from'],
+                                '時給(円)': r['hourly_wage'],
+                            }
+                            for r in mw_list
+                        ])
+                        st.dataframe(df_mw.drop(columns=['id']),
+                                      width='stretch', hide_index=True)
+
+                    st.markdown("##### 新規登録 / 更新")
+                    wc1, wc2, wc3, wc4 = st.columns([1, 1, 1, 1])
+                    with wc1:
+                        add_pref = st.selectbox("都道府県", ['兵庫県', '奈良県'],
+                                                  key='mw_pref')
+                    with wc2:
+                        add_eff = st.date_input("適用開始日",
+                                                  value=None, key='mw_eff',
+                                                  help="例: 2025-10-01")
+                    with wc3:
+                        add_wage = st.number_input("時給(円)", min_value=500, max_value=3000,
+                                                      step=1, value=1100, key='mw_wage')
+                    with wc4:
+                        st.write("")
+                        st.write("")
+                        if st.button("💾 登録/更新", type='primary',
+                                      key='mw_save_btn',
+                                      use_container_width=True):
+                            if not add_eff:
+                                st.error("適用開始日を入力してください")
+                            else:
+                                db.upsert_minimum_wage(
+                                    add_pref, add_eff.isoformat(), int(add_wage)
+                                )
+                                st.success(
+                                    f"{add_pref} {add_eff} {add_wage}円 を登録しました"
+                                )
+                                _clear_payroll_page_cache()
+                                st.rerun()
+
+                    st.markdown("##### 削除")
+                    if mw_list:
+                        del_opts = {
+                            f"{r['prefecture']} {r['effective_from']} {r['hourly_wage']}円": r['id']
+                            for r in mw_list
+                        }
+                        del_label = st.selectbox("削除対象", list(del_opts.keys()),
+                                                    key='mw_del_pick')
+                        if st.button("🗑️ 削除", key='mw_del_btn'):
+                            db.delete_minimum_wage(del_opts[del_label])
+                            st.success("削除しました")
                             _clear_payroll_page_cache()
                             st.rerun()
 
-                st.markdown("##### 削除")
-                if mw_list:
-                    del_opts = {
-                        f"{r['prefecture']} {r['effective_from']} {r['hourly_wage']}円": r['id']
-                        for r in mw_list
-                    }
-                    del_label = st.selectbox("削除対象", list(del_opts.keys()),
-                                                key='mw_del_pick')
-                    if st.button("🗑️ 削除", key='mw_del_btn'):
-                        db.delete_minimum_wage(del_opts[del_label])
-                        st.success("削除しました")
-                        _clear_payroll_page_cache()
-                        st.rerun()
+                # === 計算条件 ===
+                st.markdown("---")
+                c1, c2, c3 = st.columns([1.5, 1.5, 1])
+                with c1:
+                    corp_id, corp_label = _corp_selector('sk_corp')
+                with c2:
+                    fys = _cached_fiscal_years(corp_id=corp_id)
+                    if not fys:
+                        st.warning("該当法人にデータがありません")
+                        fy = None
+                    else:
+                        fy_options = {f"{fy}年度": fy for fy in fys}
+                        fy_label = st.selectbox("年度（対象月ベース）",
+                                                  list(fy_options.keys()), key='sk_fy')
+                        fy = fy_options[fy_label]
+                with c3:
+                    view_mode_sk = st.selectbox(
+                        "表示", ['月別×職員', '月別合計', '職員別 年計'],
+                        key='sk_view',
+                    )
 
-            # === 計算条件 ===
-            st.markdown("---")
-            c1, c2, c3 = st.columns([1.5, 1.5, 1])
-            with c1:
-                corp_id, corp_label = _corp_selector('sk_corp')
-            with c2:
-                fys = _cached_fiscal_years(corp_id=corp_id)
-                if not fys:
-                    st.warning("該当法人にデータがありません")
-                    fy = None
+                if fy is None:
+                    st.stop()
+
+                target_months = db.payroll_fiscal_year_months(fy)
+                # 給与のみ対象（賞与は処遇改善計算には入れない）
+                records = db.list_payroll_records_in_target_range(
+                    corp_id=corp_id,
+                    start_target_ym=target_months[0],
+                    end_target_ym=target_months[-1],
+                    pay_type='給与',
+                )
+                records = _filter_allowed_records(records)
+
+                if not records:
+                    st.warning("対象データがありません")
                 else:
-                    fy_options = {f"{fy}年度": fy for fy in fys}
-                    fy_label = st.selectbox("年度（対象月ベース）",
-                                              list(fy_options.keys()), key='sk_fy')
-                    fy = fy_options[fy_label]
-            with c3:
-                view_mode_sk = st.selectbox(
-                    "表示", ['月別×職員', '月別合計', '職員別 年計'],
-                    key='sk_view',
-                )
-
-            if fy is None:
-                st.stop()
-
-            target_months = db.payroll_fiscal_year_months(fy)
-            # 給与のみ対象（賞与は処遇改善計算には入れない）
-            records = db.list_payroll_records_in_target_range(
-                corp_id=corp_id,
-                start_target_ym=target_months[0],
-                end_target_ym=target_months[-1],
-                pay_type='給与',
-            )
-            records = _filter_allowed_records(records)
-
-            if not records:
-                st.warning("対象データがありません")
-            else:
-                # 各レコードに処遇改善計算を適用
-                calc_rows = []
-                for r in records:
-                    calc = db.calc_shogu_kaizen_for_record(r)
-                    target_ym_r = db.payroll_target_ym(r['year_month'], '給与')
-                    shortened = (
-                        (r['employment_type'] == '正社員')
-                        and calc['基準時間'] < db.FULLTIME_STANDARD_HOURS
-                    )
-                    calc_rows.append({
-                        '対象月': target_ym_r,
-                        '支給月': r['year_month'],
-                        '法人': r['corp_name'],
-                        '社員番号': r['emp_code'],
-                        '氏名': r['emp_name'],
-                        '雇用区分': r['employment_type'] or '未設定',
-                        '部署': r['department'] or '',
-                        '都道府県': calc['都道府県'],
-                        '時給': calc['最低賃金時給'] or 0,
-                        '基準時間': calc['基準時間'],
-                        '時間根拠': calc['基準時間根拠'],
-                        '時間短縮': '⚠️' if shortened else '',
-                        '最低賃金月額': calc['最低賃金月額'],
-                        '本給': calc['本給'],
-                        '①差額': calc['差額①(本給-最低賃金)'],
-                        '②役職・職位': calc['役職・職位手当②'],
-                        '③資格': calc['資格手当③'],
-                        '④処遇改善': calc['処遇改善④'],
-                        '⑤業務手当': calc['業務手当⑤'],
-                        '⑥インセンティブ': calc['インセンティブ⑥'],
-                        '⑦医療費補助': calc['医療費補助⑦'],
-                        '計上額': calc['処遇改善計上額'],
-                    })
-                df_calc = pd.DataFrame(calc_rows)
-
-                # === 全体メトリック ===
-                st.markdown("##### 年度合計")
-                mc1, mc2, mc3, mc4 = st.columns(4)
-                mc1.metric("①差額 合計", _format_yen(int(df_calc['①差額'].sum())))
-                mc2.metric("②役職・職位", _format_yen(int(df_calc['②役職・職位'].sum())))
-                mc3.metric("③資格手当", _format_yen(int(df_calc['③資格'].sum())))
-                mc4.metric("④処遇改善", _format_yen(int(df_calc['④処遇改善'].sum())))
-                mc5, mc6, mc7, mc8 = st.columns(4)
-                mc5.metric("⑤業務手当", _format_yen(int(df_calc['⑤業務手当'].sum())))
-                mc6.metric("⑥インセンティブ",
-                            _format_yen(int(df_calc['⑥インセンティブ'].sum())))
-                mc7.metric("⑦医療費補助", _format_yen(int(df_calc['⑦医療費補助'].sum())))
-                mc8.metric(
-                    "💎 計上額 合計",
-                    _format_yen(int(df_calc['計上額'].sum())),
-                    help="処遇改善として国に計上する金額（①+②+③+④+⑤+⑥+⑦）",
-                )
-
-                # 警告: 最低賃金割れ
-                below = df_calc[df_calc['①差額'] < 0]
-                if not below.empty:
-                    st.warning(
-                        f"⚠️ 最低賃金を下回っているレコードが **{len(below)}件** あります"
-                        "（差額がマイナス）。雇用区分や部署の設定を確認してください。"
-                    )
-
-                # 情報: 正社員の時間短縮（休職・欠勤等）
-                shortened = df_calc[
-                    (df_calc['雇用区分'] == '正社員')
-                    & (df_calc['時間短縮'] == '⚠️')
-                ]
-                if not shortened.empty:
-                    st.info(
-                        f"ℹ️ 正社員で実出勤時間が **{db.FULLTIME_STANDARD_HOURS}h 未満** だった "
-                        f"レコードが **{len(shortened)}件** あります "
-                        f"（休職・欠勤・早退・短時間勤務等）。"
-                        f"これらは実出勤時間ベースで最低賃金月額を再計算しています。"
-                    )
-
-                # === 表示 ===
-                ALLOWANCE_COLS = ['②役職・職位', '③資格', '④処遇改善',
-                                  '⑤業務手当', '⑥インセンティブ', '⑦医療費補助']
-                money_cols_sk = ['最低賃金月額', '本給', '①差額'] + ALLOWANCE_COLS + ['計上額']
-
-                if view_mode_sk == '月別×職員':
-                    st.markdown("##### 月別×職員 一覧")
-                    f1, f2 = st.columns(2)
-                    with f1:
-                        emp_f_sk = st.multiselect(
-                            "雇用区分", ['正社員', 'パート', '不明', '未設定'],
-                            default=['正社員', 'パート', '不明', '未設定'],
-                            key='sk_emp_f',
+                    # 各レコードに処遇改善計算を適用
+                    calc_rows = []
+                    for r in records:
+                        calc = db.calc_shogu_kaizen_for_record(r)
+                        target_ym_r = db.payroll_target_ym(r['year_month'], '給与')
+                        shortened = (
+                            (r['employment_type'] == '正社員')
+                            and calc['基準時間'] < db.FULLTIME_STANDARD_HOURS
                         )
-                    with f2:
-                        pref_f = st.multiselect(
-                            "都道府県", ['兵庫県', '奈良県'],
-                            default=['兵庫県', '奈良県'], key='sk_pref_f',
+                        calc_rows.append({
+                            '対象月': target_ym_r,
+                            '支給月': r['year_month'],
+                            '法人': r['corp_name'],
+                            '社員番号': r['emp_code'],
+                            '氏名': r['emp_name'],
+                            '雇用区分': r['employment_type'] or '未設定',
+                            '部署': r['department'] or '',
+                            '都道府県': calc['都道府県'],
+                            '時給': calc['最低賃金時給'] or 0,
+                            '基準時間': calc['基準時間'],
+                            '時間根拠': calc['基準時間根拠'],
+                            '時間短縮': '⚠️' if shortened else '',
+                            '最低賃金月額': calc['最低賃金月額'],
+                            '本給': calc['本給'],
+                            '①差額': calc['差額①(本給-最低賃金)'],
+                            '②役職・職位': calc['役職・職位手当②'],
+                            '③資格': calc['資格手当③'],
+                            '④処遇改善': calc['処遇改善④'],
+                            '⑤業務手当': calc['業務手当⑤'],
+                            '⑥インセンティブ': calc['インセンティブ⑥'],
+                            '⑦医療費補助': calc['医療費補助⑦'],
+                            '計上額': calc['処遇改善計上額'],
+                        })
+                    df_calc = pd.DataFrame(calc_rows)
+
+                    # === 全体メトリック ===
+                    st.markdown("##### 年度合計")
+                    mc1, mc2, mc3, mc4 = st.columns(4)
+                    mc1.metric("①差額 合計", _format_yen(int(df_calc['①差額'].sum())))
+                    mc2.metric("②役職・職位", _format_yen(int(df_calc['②役職・職位'].sum())))
+                    mc3.metric("③資格手当", _format_yen(int(df_calc['③資格'].sum())))
+                    mc4.metric("④処遇改善", _format_yen(int(df_calc['④処遇改善'].sum())))
+                    mc5, mc6, mc7, mc8 = st.columns(4)
+                    mc5.metric("⑤業務手当", _format_yen(int(df_calc['⑤業務手当'].sum())))
+                    mc6.metric("⑥インセンティブ",
+                                _format_yen(int(df_calc['⑥インセンティブ'].sum())))
+                    mc7.metric("⑦医療費補助", _format_yen(int(df_calc['⑦医療費補助'].sum())))
+                    mc8.metric(
+                        "💎 計上額 合計",
+                        _format_yen(int(df_calc['計上額'].sum())),
+                        help="処遇改善として国に計上する金額（①+②+③+④+⑤+⑥+⑦）",
+                    )
+
+                    # 警告: 最低賃金割れ
+                    below = df_calc[df_calc['①差額'] < 0]
+                    if not below.empty:
+                        st.warning(
+                            f"⚠️ 最低賃金を下回っているレコードが **{len(below)}件** あります"
+                            "（差額がマイナス）。雇用区分や部署の設定を確認してください。"
                         )
 
-                    view = df_calc.copy()
-                    if emp_f_sk:
-                        view = view[view['雇用区分'].isin(emp_f_sk)]
-                    if pref_f:
-                        view = view[view['都道府県'].isin(pref_f)]
+                    # 情報: 正社員の時間短縮（休職・欠勤等）
+                    shortened = df_calc[
+                        (df_calc['雇用区分'] == '正社員')
+                        & (df_calc['時間短縮'] == '⚠️')
+                    ]
+                    if not shortened.empty:
+                        st.info(
+                            f"ℹ️ 正社員で実出勤時間が **{db.FULLTIME_STANDARD_HOURS}h 未満** だった "
+                            f"レコードが **{len(shortened)}件** あります "
+                            f"（休職・欠勤・早退・短時間勤務等）。"
+                            f"これらは実出勤時間ベースで最低賃金月額を再計算しています。"
+                        )
 
-                    view = view.sort_values(['対象月', '法人', '雇用区分', '社員番号'])
-                    view_disp = view.copy()
-                    view_disp['基準時間'] = view_disp['基準時間'].apply(lambda x: f"{x:.1f}h")
+                    # === 表示 ===
+                    ALLOWANCE_COLS = ['②役職・職位', '③資格', '④処遇改善',
+                                      '⑤業務手当', '⑥インセンティブ', '⑦医療費補助']
+                    money_cols_sk = ['最低賃金月額', '本給', '①差額'] + ALLOWANCE_COLS + ['計上額']
 
-                    styler = (
-                        view_disp.style
-                        .map(_color_corp, subset=['法人'])
-                        .map(_color_emp_type, subset=['雇用区分'])
-                        .format({c: '{:,}' for c in money_cols_sk + ['時給']})
-                    )
-                    styler = styler.map(_color_total_amount, subset=['計上額'])
+                    if view_mode_sk == '月別×職員':
+                        st.markdown("##### 月別×職員 一覧")
+                        f1, f2 = st.columns(2)
+                        with f1:
+                            emp_f_sk = st.multiselect(
+                                "雇用区分", ['正社員', 'パート', '不明', '未設定'],
+                                default=['正社員', 'パート', '不明', '未設定'],
+                                key='sk_emp_f',
+                            )
+                        with f2:
+                            pref_f = st.multiselect(
+                                "都道府県", ['兵庫県', '奈良県'],
+                                default=['兵庫県', '奈良県'], key='sk_pref_f',
+                            )
 
-                    def _warn_below(val):
-                        try:
-                            if int(val) < 0:
-                                return 'background-color:#fee2e2; color:#991b1b; font-weight:700'
-                        except (TypeError, ValueError):
-                            pass
-                        return ''
-                    styler = styler.map(_warn_below, subset=['①差額'])
+                        view = df_calc.copy()
+                        if emp_f_sk:
+                            view = view[view['雇用区分'].isin(emp_f_sk)]
+                        if pref_f:
+                            view = view[view['都道府県'].isin(pref_f)]
 
-                    st.dataframe(styler, width='stretch', hide_index=True, height=560)
+                        view = view.sort_values(['対象月', '法人', '雇用区分', '社員番号'])
+                        view_disp = view.copy()
+                        view_disp['基準時間'] = view_disp['基準時間'].apply(lambda x: f"{x:.1f}h")
 
-                    csv = view.to_csv(index=False).encode('utf-8-sig')
-                    label_safe = corp_label.replace('🔀 ', '').replace('🟢 ', '').replace('🔵 ', '')
-                    st.download_button(
-                        "💾 月別×職員 CSV", csv,
-                        file_name=f"処遇改善_{fy}年度_{label_safe}.csv",
-                        mime='text/csv',
-                    )
+                        styler = (
+                            view_disp.style
+                            .map(_color_corp, subset=['法人'])
+                            .map(_color_emp_type, subset=['雇用区分'])
+                            .format({c: '{:,}' for c in money_cols_sk + ['時給']})
+                        )
+                        styler = styler.map(_color_total_amount, subset=['計上額'])
 
-                elif view_mode_sk == '月別合計':
-                    st.markdown("##### 月別合計（年度推移）")
-                    agg_dict = {c: 'sum' for c in
-                                ['①差額'] + ALLOWANCE_COLS + ['計上額']}
-                    agg_dict['氏名'] = 'count'
-                    month_agg = (
-                        df_calc.groupby('対象月').agg(agg_dict)
-                        .rename(columns={'氏名': '対象人数'})
-                        .reset_index()
-                        .sort_values('対象月')
-                    )
-                    full = pd.DataFrame({'対象月': target_months})
-                    month_agg = full.merge(month_agg, on='対象月', how='left').fillna(0)
-                    # 年度順（4月→翌3月）で表示
-                    month_agg = month_agg.sort_values('対象月').reset_index(drop=True)
-                    # 合計行（先頭）
-                    total_row = {
-                        '対象月': '合計',
-                        '対象人数': int(month_agg['対象人数'].max() if len(month_agg) else 0),
-                    }
-                    for c in ['①差額'] + ALLOWANCE_COLS + ['計上額']:
-                        total_row[c] = int(month_agg[c].sum())
-                    month_agg = pd.concat(
-                        [pd.DataFrame([total_row]), month_agg], ignore_index=True
-                    )
-                    for c in ['①差額'] + ALLOWANCE_COLS + ['計上額']:
-                        month_agg[c] = month_agg[c].astype(int)
+                        def _warn_below(val):
+                            try:
+                                if int(val) < 0:
+                                    return 'background-color:#fee2e2; color:#991b1b; font-weight:700'
+                            except (TypeError, ValueError):
+                                pass
+                            return ''
+                        styler = styler.map(_warn_below, subset=['①差額'])
 
-                    fmt_cols = ['①差額'] + ALLOWANCE_COLS + ['計上額']
-                    styler = month_agg.style.format({c: '{:,}' for c in fmt_cols})
-                    styler = styler.map(_color_total_amount, subset=['計上額'])
-                    styler = styler.map(
-                        lambda v: 'background-color:#fee2e2; color:#991b1b; font-weight:700'
-                        if isinstance(v, (int, float)) and v < 0 else '',
-                        subset=['①差額'],
-                    )
-                    st.dataframe(styler, width='stretch', hide_index=True)
+                        st.dataframe(styler, width='stretch', hide_index=True, height=560)
 
-                    # グラフは時系列順（昇順）で見やすく
-                    df_chart = (
-                        month_agg[month_agg['対象月'] != '合計']
-                        .sort_values('対象月')
-                        .set_index('対象月')[['①差額'] + ALLOWANCE_COLS]
-                    )
-                    st.markdown("##### 月別 内訳")
-                    st.bar_chart(df_chart, height=320)
+                        csv = view.to_csv(index=False).encode('utf-8-sig')
+                        label_safe = corp_label.replace('🔀 ', '').replace('🟢 ', '').replace('🔵 ', '')
+                        st.download_button(
+                            "💾 月別×職員 CSV", csv,
+                            file_name=f"処遇改善_{fy}年度_{label_safe}.csv",
+                            mime='text/csv',
+                        )
 
-                else:  # 職員別 年計
-                    st.markdown("##### 職員別 年計")
-                    agg_dict = {c: 'sum' for c in
-                                ['①差額'] + ALLOWANCE_COLS + ['計上額']}
-                    agg_dict['対象月'] = 'count'
-                    emp_agg = (
-                        df_calc.groupby([
-                            '法人', '社員番号', '氏名', '雇用区分', '都道府県'
-                        ]).agg(agg_dict)
-                        .rename(columns={'対象月': '稼働月数'})
-                        .reset_index()
-                        .sort_values(['法人', '計上額'], ascending=[True, False])
-                    )
-                    fmt_cols = ['①差額'] + ALLOWANCE_COLS + ['計上額']
-                    styler = (
-                        emp_agg.style
-                        .map(_color_corp, subset=['法人'])
-                        .map(_color_emp_type, subset=['雇用区分'])
-                        .format({c: '{:,}' for c in fmt_cols})
-                    )
-                    styler = styler.map(_color_total_amount, subset=['計上額'])
-                    styler = styler.map(
-                        lambda v: 'background-color:#fee2e2; color:#991b1b; font-weight:700'
-                        if isinstance(v, (int, float)) and v < 0 else '',
-                        subset=['①差額'],
-                    )
-                    st.dataframe(styler, width='stretch', hide_index=True, height=560)
+                    elif view_mode_sk == '月別合計':
+                        st.markdown("##### 月別合計（年度推移）")
+                        agg_dict = {c: 'sum' for c in
+                                    ['①差額'] + ALLOWANCE_COLS + ['計上額']}
+                        agg_dict['氏名'] = 'count'
+                        month_agg = (
+                            df_calc.groupby('対象月').agg(agg_dict)
+                            .rename(columns={'氏名': '対象人数'})
+                            .reset_index()
+                            .sort_values('対象月')
+                        )
+                        full = pd.DataFrame({'対象月': target_months})
+                        month_agg = full.merge(month_agg, on='対象月', how='left').fillna(0)
+                        # 年度順（4月→翌3月）で表示
+                        month_agg = month_agg.sort_values('対象月').reset_index(drop=True)
+                        # 合計行（先頭）
+                        total_row = {
+                            '対象月': '合計',
+                            '対象人数': int(month_agg['対象人数'].max() if len(month_agg) else 0),
+                        }
+                        for c in ['①差額'] + ALLOWANCE_COLS + ['計上額']:
+                            total_row[c] = int(month_agg[c].sum())
+                        month_agg = pd.concat(
+                            [pd.DataFrame([total_row]), month_agg], ignore_index=True
+                        )
+                        for c in ['①差額'] + ALLOWANCE_COLS + ['計上額']:
+                            month_agg[c] = month_agg[c].astype(int)
 
-                    csv = emp_agg.to_csv(index=False).encode('utf-8-sig')
-                    label_safe = corp_label.replace('🔀 ', '').replace('🟢 ', '').replace('🔵 ', '')
-                    st.download_button(
-                        "💾 職員別年計 CSV", csv,
-                        file_name=f"処遇改善_職員別{fy}年度_{label_safe}.csv",
-                        mime='text/csv',
-                    )
+                        fmt_cols = ['①差額'] + ALLOWANCE_COLS + ['計上額']
+                        styler = month_agg.style.format({c: '{:,}' for c in fmt_cols})
+                        styler = styler.map(_color_total_amount, subset=['計上額'])
+                        styler = styler.map(
+                            lambda v: 'background-color:#fee2e2; color:#991b1b; font-weight:700'
+                            if isinstance(v, (int, float)) and v < 0 else '',
+                            subset=['①差額'],
+                        )
+                        st.dataframe(styler, width='stretch', hide_index=True)
 
-# ============================================================
-# ⑧ 残業管理
-# ============================================================
-with tabs[7]:
+                        # グラフは時系列順（昇順）で見やすく
+                        df_chart = (
+                            month_agg[month_agg['対象月'] != '合計']
+                            .sort_values('対象月')
+                            .set_index('対象月')[['①差額'] + ALLOWANCE_COLS]
+                        )
+                        st.markdown("##### 月別 内訳")
+                        st.bar_chart(df_chart, height=320)
+
+                    else:  # 職員別 年計
+                        st.markdown("##### 職員別 年計")
+                        agg_dict = {c: 'sum' for c in
+                                    ['①差額'] + ALLOWANCE_COLS + ['計上額']}
+                        agg_dict['対象月'] = 'count'
+                        emp_agg = (
+                            df_calc.groupby([
+                                '法人', '社員番号', '氏名', '雇用区分', '都道府県'
+                            ]).agg(agg_dict)
+                            .rename(columns={'対象月': '稼働月数'})
+                            .reset_index()
+                            .sort_values(['法人', '計上額'], ascending=[True, False])
+                        )
+                        fmt_cols = ['①差額'] + ALLOWANCE_COLS + ['計上額']
+                        styler = (
+                            emp_agg.style
+                            .map(_color_corp, subset=['法人'])
+                            .map(_color_emp_type, subset=['雇用区分'])
+                            .format({c: '{:,}' for c in fmt_cols})
+                        )
+                        styler = styler.map(_color_total_amount, subset=['計上額'])
+                        styler = styler.map(
+                            lambda v: 'background-color:#fee2e2; color:#991b1b; font-weight:700'
+                            if isinstance(v, (int, float)) and v < 0 else '',
+                            subset=['①差額'],
+                        )
+                        st.dataframe(styler, width='stretch', hide_index=True, height=560)
+
+                        csv = emp_agg.to_csv(index=False).encode('utf-8-sig')
+                        label_safe = corp_label.replace('🔀 ', '').replace('🟢 ', '').replace('🔵 ', '')
+                        st.download_button(
+                            "💾 職員別年計 CSV", csv,
+                            file_name=f"処遇改善_職員別{fy}年度_{label_safe}.csv",
+                            mime='text/csv',
+                        )
+
+    # ============================================================
+    # ⑧ 残業管理
+    # ============================================================
+with tabs["残業管理"]:
     st.markdown(
         "残業時間と残業手当の集計。月次／年次で確認できます。\n\n"
         "- **残業時間** = 普通残業＋深夜残業＋休出残業＋早出残業（法定内残業は別カラム）\n"
