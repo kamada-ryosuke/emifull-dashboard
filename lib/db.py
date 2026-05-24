@@ -2001,6 +2001,7 @@ def init_profit_reports_schema():
             facility_name TEXT NOT NULL,
             reporter_role TEXT NOT NULL,
             reporter_name TEXT NOT NULL,
+            previous_review TEXT,
             issue_review TEXT NOT NULL,
             next_actions TEXT NOT NULL,
             other_notes TEXT,
@@ -2016,13 +2017,19 @@ def init_profit_reports_schema():
         CREATE INDEX IF NOT EXISTS idx_profit_reports_created_by
             ON profit_reports(created_by_user);
         """)
+        cols = {
+            r['name'] for r in conn.execute("PRAGMA table_info(profit_reports)").fetchall()
+        }
+        if 'previous_review' not in cols:
+            conn.execute("ALTER TABLE profit_reports ADD COLUMN previous_review TEXT")
 
 
 def save_profit_report(fiscal_year_type, target_month, facility_id, facility_name,
                        reporter_role, reporter_name, issue_review, next_actions,
                        other_notes=None, ai_summary=None, created_by_user=None,
-                       report_id=None):
+                       report_id=None, previous_review=None):
     now = datetime.now().isoformat(timespec='seconds')
+    init_profit_reports_schema()
     with get_conn() as conn:
         if report_id:
             conn.execute("""
@@ -2033,6 +2040,7 @@ def save_profit_report(fiscal_year_type, target_month, facility_id, facility_nam
                        facility_name = ?,
                        reporter_role = ?,
                        reporter_name = ?,
+                       previous_review = ?,
                        issue_review = ?,
                        next_actions = ?,
                        other_notes = ?,
@@ -2041,25 +2049,26 @@ def save_profit_report(fiscal_year_type, target_month, facility_id, facility_nam
                  WHERE id = ?
             """, (
                 fiscal_year_type, target_month, facility_id, facility_name,
-                reporter_role, reporter_name, issue_review, next_actions,
+                reporter_role, reporter_name, previous_review, issue_review, next_actions,
                 other_notes, ai_summary, now, report_id,
             ))
             return report_id
         cur = conn.execute("""
             INSERT INTO profit_reports
             (fiscal_year_type, target_month, facility_id, facility_name,
-             reporter_role, reporter_name, issue_review, next_actions,
+             reporter_role, reporter_name, previous_review, issue_review, next_actions,
              other_notes, ai_summary, created_by_user, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             fiscal_year_type, target_month, facility_id, facility_name,
-            reporter_role, reporter_name, issue_review, next_actions,
+            reporter_role, reporter_name, previous_review, issue_review, next_actions,
             other_notes, ai_summary, created_by_user, now, now,
         ))
         return cur.lastrowid
 
 
 def update_profit_report_ai_summary(report_id, ai_summary):
+    init_profit_reports_schema()
     with get_conn() as conn:
         conn.execute("""
             UPDATE profit_reports
@@ -2069,6 +2078,7 @@ def update_profit_report_ai_summary(report_id, ai_summary):
 
 
 def delete_profit_report(report_id):
+    init_profit_reports_schema()
     with get_conn() as conn:
         cur = conn.execute("DELETE FROM profit_reports WHERE id = ?", (report_id,))
         return cur.rowcount
@@ -2076,6 +2086,7 @@ def delete_profit_report(report_id):
 
 def get_profit_reports(target_month=None, facility_id=None, facility_name=None,
                        created_by_user=None):
+    init_profit_reports_schema()
     sql = "SELECT * FROM profit_reports WHERE 1=1"
     params = []
     if target_month:
@@ -2096,6 +2107,7 @@ def get_profit_reports(target_month=None, facility_id=None, facility_name=None,
 
 
 def get_profit_report(report_id):
+    init_profit_reports_schema()
     with get_conn() as conn:
         row = conn.execute(
             "SELECT * FROM profit_reports WHERE id = ?", (report_id,)

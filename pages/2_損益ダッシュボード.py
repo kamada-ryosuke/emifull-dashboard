@@ -632,13 +632,15 @@ def _fallback_report_summary(target_month, facility_name, excel_names, reports):
     if not reports:
         return "未提出"
     metrics = _pl_metrics_for_excel_names(target_month, excel_names)
-    issue = _compact_text(" / ".join(r.get('issue_review') or '' for r in reports), 80)
+    previous = _compact_text(" / ".join(r.get('previous_review') or '' for r in reports), 70)
+    issue = _compact_text(" / ".join(r.get('issue_review') or '' for r in reports), 70)
     actions = _compact_text(" / ".join(r.get('next_actions') or '' for r in reports), 70)
     return (
         f"{target_month}の{facility_name}は、売上{_yen_man(metrics['売上'])}、"
         f"人件費率{_pct(metrics['人件費率'])}、経費率{_pct(metrics['経費率'])}、"
         f"営業利益{_yen_man(metrics['営業利益'])}、利益率{_pct(metrics['利益率'])}で、"
-        f"{issue or '提出内容を確認中'}を踏まえ、次月は{actions or '改善策の具体化'}を進める必要がある。"
+        f"前月の振り返りは{previous or '確認中'}、現在の課題は{issue or '整理中'}であり、"
+        f"次月は{actions or '改善策の具体化'}を進める必要がある。"
     )
 
 
@@ -671,8 +673,9 @@ def build_facility_report_summary(target_month, facility_name, excel_names, repo
         metrics = _pl_metrics_for_excel_names(target_month, excel_names)
         body = "\n\n".join(
             f"報告者:{r.get('reporter_role')} {r.get('reporter_name')}\n"
-            f"課題と振り返り:{r.get('issue_review')}\n"
-            f"対策:{r.get('next_actions')}\n"
+            f"前月の振り返り:{r.get('previous_review') or ''}\n"
+            f"現在の課題:{r.get('issue_review')}\n"
+            f"次月以降の対策:{r.get('next_actions')}\n"
             f"その他:{r.get('other_notes') or ''}"
             for r in reports
         )
@@ -791,9 +794,13 @@ def _report_preview_rows(target_month, facilities=None):
             'AI要約': build_facility_report_summary(
                 target_month, fac['name'], fac['excel_names'], reports
             ),
-            '課題と振り返り要約': build_facility_field_summary(
+            '前月の振り返り要約': build_facility_field_summary(
                 target_month, fac['name'], fac['excel_names'], reports,
-                'issue_review', '課題と振り返り'
+                'previous_review', '前月の振り返り'
+            ),
+            '現在の課題要約': build_facility_field_summary(
+                target_month, fac['name'], fac['excel_names'], reports,
+                'issue_review', '現在の課題'
             ),
             '対策要約': build_facility_field_summary(
                 target_month, fac['name'], fac['excel_names'], reports,
@@ -803,7 +810,8 @@ def _report_preview_rows(target_month, facilities=None):
                 target_month, fac['name'], fac['excel_names'], reports,
                 'other_notes', 'その他'
             ),
-            '課題と振り返り': "\n---\n".join(r.get('issue_review') or '' for r in reports),
+            '前月の振り返り': "\n---\n".join(r.get('previous_review') or '' for r in reports),
+            '現在の課題': "\n---\n".join(r.get('issue_review') or '' for r in reports),
             '対策': "\n---\n".join(r.get('next_actions') or '' for r in reports),
             'その他': "\n---\n".join(r.get('other_notes') or '' for r in reports),
             '報告者': " / ".join(
@@ -2271,7 +2279,10 @@ with tab_report:
     )
 
     if st.button("文章欄だけクリア", key='profit_report_clear_texts'):
-        for key in ('profit_report_issue', 'profit_report_actions', 'profit_report_other'):
+        for key in (
+            'profit_report_previous', 'profit_report_issue',
+            'profit_report_actions', 'profit_report_other',
+        ):
             st.session_state[key] = ''
         st.rerun()
 
@@ -2302,20 +2313,26 @@ with tab_report:
                 key='profit_report_name',
             )
 
+        previous_review = st.text_area(
+            "① 前月の振り返り",
+            height=140,
+            key='profit_report_previous',
+            placeholder="例：前月に決めた予約確認・欠席フォローを実施し、利用率は改善しました。一方で、送迎調整や記録業務に時間がかかり、現場負担が残りました。",
+        )
         issue_review = st.text_area(
-            "課題と振り返り",
+            "② 現在の課題",
             height=150,
             key='profit_report_issue',
-            placeholder="例：売上は安定していた一方で、欠席増加と人件費率の上昇により利益が圧迫されました。予約数、稼働率、経費の動きなどを振り返ってください。",
+            placeholder="例：欠席の偏り、稼働率のばらつき、人件費率の上昇、送迎・記録業務の負担など、今月時点で利益や運営に影響している課題を記入してください。",
         )
         next_actions = st.text_area(
-            "次月以降の対策",
+            "③ 次月以降の対策",
             height=150,
             key='profit_report_actions',
-            placeholder="例：予約枠の早期確認、欠席フォロー、シフト調整、経費の見直しを進め、利益率改善を目指します。",
+            placeholder="例：予約枠の早期確認、欠席フォロー、シフト調整、経費の見直しを進めます。担当者・期限・確認方法が分かる形で書くと会議で共有しやすくなります。",
         )
         other_notes = st.text_area(
-            "その他（任意）",
+            "④ その他（任意）",
             height=110,
             key='profit_report_other',
             placeholder="例：採用状況、設備修繕、関係機関連携、利用者動向など、会議で共有したいことがあれば記入してください。",
@@ -2353,8 +2370,8 @@ with tab_report:
             st.markdown("<div class='emifull-sad'>悲しいです。</div>", unsafe_allow_html=True)
         elif not reporter_name.strip():
             st.warning("氏名を入力してください。")
-        elif not issue_review.strip() or not next_actions.strip():
-            st.warning("課題と振り返り、次月以降の対策を入力してください。")
+        elif not previous_review.strip() or not issue_review.strip() or not next_actions.strip():
+            st.warning("前月の振り返り、現在の課題、次月以降の対策を入力してください。")
         else:
             report_id = same_reporter[0]['id'] if same_reporter and duplicate_mode == "上書き" else None
             saved_id = db.save_profit_report(
@@ -2364,6 +2381,7 @@ with tab_report:
                 facility_name=facility_name,
                 reporter_role=reporter_role,
                 reporter_name=reporter_name.strip(),
+                previous_review=previous_review.strip(),
                 issue_review=issue_review.strip(),
                 next_actions=next_actions.strip(),
                 other_notes=other_notes.strip(),
@@ -2371,7 +2389,7 @@ with tab_report:
                 report_id=report_id,
             )
             _refresh_facility_month_summary(report_month, facility_name)
-            st.success("報告書を提出しました。ありがとうございます。")
+            st.success("一緒に人生咲かそう")
 
     st.markdown("---")
     st.markdown("##### 自分の提出内容")
@@ -2379,13 +2397,14 @@ with tab_report:
     if my_reports:
         my_df = pd.DataFrame(my_reports)[[
             'target_month', 'facility_name', 'reporter_role', 'reporter_name',
-            'issue_review', 'next_actions', 'other_notes', 'ai_summary', 'created_at'
+            'previous_review', 'issue_review', 'next_actions', 'other_notes', 'ai_summary', 'created_at'
         ]].rename(columns={
             'target_month': '対象月',
             'facility_name': '施設名',
             'reporter_role': '役職',
             'reporter_name': '報告者',
-            'issue_review': '課題と振り返り',
+            'previous_review': '前月の振り返り',
+            'issue_review': '現在の課題',
             'next_actions': '次月以降の対策',
             'other_notes': 'その他',
             'ai_summary': 'AI要約',
@@ -2396,11 +2415,20 @@ with tab_report:
         for r in my_reports:
             label = f"{r['target_month']} / {r['facility_name']} / {r['reporter_role']} {r['reporter_name']}"
             with st.expander(label, expanded=False):
-                st.markdown("**課題と振り返り**")
+                st.markdown("**前月の振り返り**")
                 st.text_area(
-                    "課題と振り返り 原文",
+                    "前月の振り返り 原文",
+                    value=r.get('previous_review') or '',
+                    height=140,
+                    label_visibility='collapsed',
+                    disabled=True,
+                    key=f"my_previous_raw_{r['id']}",
+                )
+                st.markdown("**現在の課題**")
+                st.text_area(
+                    "現在の課題 原文",
                     value=r.get('issue_review') or '',
-                    height=180,
+                    height=140,
                     label_visibility='collapsed',
                     disabled=True,
                     key=f"my_issue_raw_{r['id']}",
@@ -2465,9 +2493,10 @@ with tab_report:
                     key='profit_report_edit_role',
                 )
                 ename = st.text_input("氏名", value=edit_r['reporter_name'], key='profit_report_edit_name')
-                eissue = st.text_area("課題と振り返り", value=edit_r['issue_review'], height=140, key='profit_report_edit_issue')
-                eactions = st.text_area("次月以降の対策", value=edit_r['next_actions'], height=140, key='profit_report_edit_actions')
-                eother = st.text_area("その他", value=edit_r.get('other_notes') or '', height=100, key='profit_report_edit_other')
+                eprevious = st.text_area("① 前月の振り返り", value=edit_r.get('previous_review') or '', height=120, key='profit_report_edit_previous')
+                eissue = st.text_area("② 現在の課題", value=edit_r['issue_review'], height=140, key='profit_report_edit_issue')
+                eactions = st.text_area("③ 次月以降の対策", value=edit_r['next_actions'], height=140, key='profit_report_edit_actions')
+                eother = st.text_area("④ その他", value=edit_r.get('other_notes') or '', height=100, key='profit_report_edit_other')
                 delete_confirm = st.checkbox("この報告書を削除する内容を確認しました", key='profit_report_delete_confirm')
                 bc1, bc2 = st.columns([1, 1])
                 with bc1:
@@ -2484,6 +2513,7 @@ with tab_report:
                     facility_name=efacility_name,
                     reporter_role=erole,
                     reporter_name=ename.strip(),
+                    previous_review=eprevious.strip(),
                     issue_review=eissue.strip(),
                     next_actions=eactions.strip(),
                     other_notes=eother.strip(),
@@ -2934,19 +2964,23 @@ with tab_meeting:
             prev_by_fac = {r['施設名']: r for r in prev_report_preview_rows}
             facility_names = [f['name'] for f in report_facilities]
 
-            _write_report_block("2: 課題・振り返り", [
-                (name, preview_by_fac.get(name, {}).get('課題と振り返り要約') or '未提出')
+            _write_report_block("2: 前月の振り返り", [
+                (name, preview_by_fac.get(name, {}).get('前月の振り返り要約') or '未提出')
                 for name in facility_names
             ])
-            _write_report_block("3: 対策", [
+            _write_report_block("3: 現在の課題", [
+                (name, preview_by_fac.get(name, {}).get('現在の課題要約') or '未提出')
+                for name in facility_names
+            ])
+            _write_report_block("4: 次月以降の対策", [
                 (name, preview_by_fac.get(name, {}).get('対策要約') or '未提出')
                 for name in facility_names
             ])
-            _write_report_block("4: その他", [
+            _write_report_block("5: その他", [
                 (name, preview_by_fac.get(name, {}).get('その他要約') or ('未提出' if preview_by_fac.get(name, {}).get('提出状況') == '未提出' else ''))
                 for name in facility_names
             ])
-            _write_report_block("5: 前回TODO", [
+            _write_report_block("6: 前回TODO", [
                 (name, " / ".join(filter(None, [
                     prev_by_fac.get(name, {}).get('対策'),
                     prev_by_fac.get(name, {}).get('その他'),
@@ -2973,14 +3007,16 @@ with tab_meeting:
 
         st.markdown("##### 報告書プレビュー")
         with st.container(border=True):
-            _render_summary_cards("① 課題・振り返り", report_preview_rows, '課題と振り返り要約')
+            _render_summary_cards("① 前月の振り返り", report_preview_rows, '前月の振り返り要約')
         with st.container(border=True):
-            _render_summary_cards("② 対策", report_preview_rows, '対策要約')
+            _render_summary_cards("② 現在の課題", report_preview_rows, '現在の課題要約')
         with st.container(border=True):
-            _render_summary_cards("③ その他", report_preview_rows, 'その他要約')
+            _render_summary_cards("③ 次月以降の対策", report_preview_rows, '対策要約')
+        with st.container(border=True):
+            _render_summary_cards("④ その他", report_preview_rows, 'その他要約')
         preview_df = pd.DataFrame(report_preview_rows)[[
             '対象月', '施設名', '提出状況', 'AI要約',
-            '課題と振り返り要約', '対策要約', 'その他要約',
+            '前月の振り返り要約', '現在の課題要約', '対策要約', 'その他要約',
             '報告者', '提出日時'
         ]]
         st.dataframe(
