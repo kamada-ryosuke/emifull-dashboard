@@ -738,7 +738,7 @@ def _default_report_month():
     for key in ('pl_summary_ym', 'pl_meeting_ym'):
         if st.session_state.get(key) in existing_yms:
             return st.session_state[key]
-    return existing_yms[0]
+    return existing_yms[0] if existing_yms else None
 
 
 def _compact_text(text, limit=90):
@@ -2564,6 +2564,9 @@ with tab_yoy:
 # =============================================================
 with tab_report:
     st.markdown("##### 報告書提出 — 収支の振り返り・対策")
+    if not existing_yms:
+        st.info("損益データがまだ取り込まれていないため、報告書は提出できません。管理者が損益計算書を取り込むと利用できます。")
+        st.stop()
     current = auth.current_user() or {}
     current_email = current.get('email') or ''
     current_user_for_report = db.get_user_by_email(current_email) if current_email else None
@@ -2837,15 +2840,19 @@ with tab_report:
                 eissue = st.text_area("② 現在の課題", value=edit_r['issue_review'], height=140, key='profit_report_edit_issue')
                 eactions = st.text_area("③ 次月以降の対策", value=edit_r['next_actions'], height=140, key='profit_report_edit_actions')
                 eother = st.text_area("④ その他", value=edit_r.get('other_notes') or '', height=100, key='profit_report_edit_other')
-                delete_confirm = st.checkbox("この報告書を削除する内容を確認しました", key='profit_report_delete_confirm')
+                delete_confirm = False
                 bc1, bc2 = st.columns([1, 1])
                 with bc1:
                     edit_submit = st.form_submit_button("修正を保存", type='primary')
                 with bc2:
-                    delete_submit = st.form_submit_button(
-                        "この報告書を削除",
-                        disabled=not _is_admin,
-                    )
+                    if _is_admin:
+                        delete_confirm = st.checkbox(
+                            "この報告書を削除する内容を確認しました",
+                            key='profit_report_delete_confirm',
+                        )
+                        delete_submit = st.form_submit_button("この報告書を削除")
+                    else:
+                        delete_submit = False
             if edit_submit:
                 old_month = edit_r['target_month']
                 old_facility = edit_r['facility_name']
@@ -2943,6 +2950,9 @@ with tab_report:
 
 with tab_meeting:
     st.markdown("##### 業績会議 — 単月 / 千円(切捨)")
+    if not existing_yms:
+        st.info("損益データがまだ取り込まれていないため、業績会議表は表示できません。管理者が損益計算書を取り込むと利用できます。")
+        st.stop()
 
     sel_meeting_ym = st.selectbox(
         "対象月", existing_yms, index=0, key='pl_meeting_ym',
