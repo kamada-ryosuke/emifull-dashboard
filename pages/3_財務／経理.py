@@ -75,13 +75,17 @@ parent_debit, parent_cash = st.tabs([
 #                                  └ 01.デビッドカード清算\  (レシート)
 GDRIVE_PARENT = Path(r"G:\マイドライブ\管理者提出物")
 RECEIPT_FOLDER_PATTERN = "デビッドカード清算"
-DEFAULT_DEBIT_RECEIPT_FOLDER_ID = "1wSmOBCJ95wqKtmPh6J9T_1D3kKouORum"
+DEFAULT_DEBIT_RECEIPT_FOLDER_ID = "1p_SKPwE30n7Hy5KyCZA6M-TdLdugovDw"
 DEFAULT_DEBIT_RECEIPT_FOLDER_URL = (
     f"https://drive.google.com/drive/folders/{DEFAULT_DEBIT_RECEIPT_FOLDER_ID}"
 )
 DEFAULT_DEBIT_STORAGE_FOLDER_ID = "1FToAeulgwYV58yNMlTeMJ2eekoBlUfnL"
 DEFAULT_DEBIT_STORAGE_FOLDER_URL = (
     f"https://drive.google.com/drive/folders/{DEFAULT_DEBIT_STORAGE_FOLDER_ID}"
+)
+DEFAULT_DEBIT_WORKBOOK_FILE_IDS = (
+    "1NL9zWNIxq0drmRLJcXtM_fpKk8FUd7At",
+    "14A2SWC2_U2jXbss5XSrfIkaZqkeWWBWB",
 )
 
 
@@ -94,6 +98,7 @@ def _load_debit_folder_config() -> dict:
         'name': '01.デビッドカード清算',
         'storage_folder_id': DEFAULT_DEBIT_STORAGE_FOLDER_ID,
         'storage_folder_url': DEFAULT_DEBIT_STORAGE_FOLDER_URL,
+        'workbook_file_ids': list(DEFAULT_DEBIT_WORKBOOK_FILE_IDS),
         'local_storage_dir': None,
     }
     if cfg_path.exists():
@@ -105,6 +110,10 @@ def _load_debit_folder_config() -> dict:
             out['name'] = cfg.get('debit_receipt_folder_name')
             out['storage_folder_id'] = cfg.get('debit_storage_folder_id')
             out['storage_folder_url'] = cfg.get('debit_storage_folder_url')
+            out['workbook_file_ids'] = (
+                cfg.get('debit_workbook_file_ids')
+                or list(DEFAULT_DEBIT_WORKBOOK_FILE_IDS)
+            )
             out['local_storage_dir'] = cfg.get('debit_local_storage_dir')
         except Exception:
             pass
@@ -307,7 +316,7 @@ def _list_drive_api_debit_files() -> list[dict]:
         )
         res = service.files().list(
             q=q,
-            fields="files(id,name,size,modifiedTime)",
+            fields="files(id,name,size,modifiedTime,mimeType)",
             pageSize=50,
             supportsAllDrives=True,
             includeItemsFromAllDrives=True,
@@ -319,23 +328,52 @@ def _list_drive_api_debit_files() -> list[dict]:
         )
         cache_dir.mkdir(parents=True, exist_ok=True)
 
-        for item in res.get('files', []):
+        raw_items = list(res.get('files', []))
+        seen_ids = {item.get('id') for item in raw_items}
+        for file_id in (DEBIT_FOLDER_REF.get('workbook_file_ids') or ()):
+            if file_id in seen_ids:
+                continue
+            try:
+                item = service.files().get(
+                    fileId=file_id,
+                    fields="id,name,size,modifiedTime,mimeType",
+                    supportsAllDrives=True,
+                ).execute()
+                raw_items.append(item)
+            except Exception:
+                continue
+
+        for item in raw_items:
             name = item.get('name') or ''
-            if Path(name).suffix.lower() != '.xlsx':
+            is_native_sheet = (
+                item.get('mimeType') == 'application/vnd.google-apps.spreadsheet'
+            )
+            if Path(name).suffix.lower() != '.xlsx' and not is_native_sheet:
                 continue
             if 'デビット' not in name and 'デビッド' not in name:
                 continue
 
-            data = drive_sync.download_file_bytes(service, item['id'])
-            local_path = cache_dir / name
+            if is_native_sheet:
+                data = drive_sync.export_file_bytes(
+                    service,
+                    item['id'],
+                    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                )
+                local_name = f"{Path(name).stem}.xlsx"
+            else:
+                data = drive_sync.download_file_bytes(service, item['id'])
+                local_name = name
+            local_path = cache_dir / local_name
             local_path.write_bytes(data)
             items.append({
                 'path': local_path,
-                'name': name,
+                'name': local_name,
                 'corporation': _detect_corporation_from_filename(name),
                 'size': int(item.get('size') or len(data)),
                 'mtime': _drive_ts(item.get('modifiedTime')),
                 'source': 'drive_api',
+                'drive_file_id': item['id'],
+                'drive_mime_type': item.get('mimeType'),
             })
 
         items.sort(key=lambda x: x['name'])
@@ -344,6 +382,45 @@ def _list_drive_api_debit_files() -> list[dict]:
     except Exception as e:
         st.session_state['debit_drive_api_error'] = str(e)
         return []
+
+
+def _resolve_debit_xlsx_for_write(corp: str) -> dict | None:
+    """法人ラベルから追記対象Excelを探す。Drive APIキャッシュにも対応。"""
+    files = _list_dropbox_files()
+    for f in files:
+        if (f.get('corporation') or '') == corp:
+            return f
+    for f in files:
+        if corp and corp in f.get('name', ''):
+            return f
+    return None
+
+
+def _upload_drive_api_xlsx_if_needed(file_info: dict | None) -> None:
+    """Drive APIで取得したExcelを更新した場合、Drive本体へ書き戻す。"""
+    if not file_info or file_info.get('source') != 'drive_api':
+        return
+    file_id = file_info.get('drive_file_id')
+    path = file_info.get('path')
+    if not file_id or not path:
+        return
+    cfg = _drive_api_config()
+    service = drive_sync.build_service(cfg)
+    drive_sync.update_file_bytes(
+        service,
+        file_id,
+        Path(path).read_bytes(),
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    )
+    st.cache_data.clear()
+
+
+def _drive_file_info_for_path(path: Path) -> dict | None:
+    target = str(path)
+    for f in _list_dropbox_files():
+        if str(f.get('path')) == target:
+            return f
+    return None
 
 
 def _drive_api_config() -> dict:
@@ -796,10 +873,11 @@ def _render_ocr_popover(r: dict, file_bytes: bytes, idx: int) -> None:
                 st.error("金額は1以上を入力してください。")
                 return
 
-            xlsx_path = excel_writer.resolve_debit_xlsx(corp, GDRIVE_DIR)
+            xlsx_info = _resolve_debit_xlsx_for_write(corp)
+            xlsx_path = Path(xlsx_info['path']) if xlsx_info else None
             if xlsx_path is None:
                 st.error(
-                    f"{corp} のデビットExcelが見つかりません: {GDRIVE_DIR}"
+                    f"{corp} のデビットExcelが見つかりません"
                 )
                 return
 
@@ -818,6 +896,11 @@ def _render_ocr_popover(r: dict, file_bytes: bytes, idx: int) -> None:
 
             if not res.get('ok'):
                 st.error(f"追記失敗: {res.get('error')}")
+                return
+            try:
+                _upload_drive_api_xlsx_if_needed(xlsx_info)
+            except Exception as e:
+                st.error(f"DriveへのExcel書き戻しに失敗: {e}")
                 return
 
             extra = ''
@@ -1615,6 +1698,17 @@ with tab_import:
                             changed,
                         )
                         if upd.get('ok'):
+                            try:
+                                _upload_drive_api_xlsx_if_needed(
+                                    _drive_file_info_for_path(
+                                        Path(str(row['_excel_path']))
+                                    )
+                                )
+                            except Exception as e:
+                                error_msgs.append(
+                                    f"{row.get('レシート','?')}: Drive書き戻し失敗 {e}"
+                                )
+                                continue
                             update_count += 1
                         else:
                             error_msgs.append(
@@ -1622,9 +1716,8 @@ with tab_import:
                             )
                     else:
                         # ----- 新規 (要編集 / OCR失敗 / 手動入力) → Excelに追記 -----
-                        xlsx_path = excel_writer.resolve_debit_xlsx(
-                            corp, GDRIVE_DIR,
-                        )
+                        xlsx_info = _resolve_debit_xlsx_for_write(corp)
+                        xlsx_path = Path(xlsx_info['path']) if xlsx_info else None
                         if xlsx_path is None:
                             error_msgs.append(
                                 f"行{idx+1}: {corp} のデビットExcelが見つかりません"
@@ -1639,6 +1732,13 @@ with tab_import:
                             'description': str(row.get('摘要') or ''),
                         })
                         if write_res.get('ok'):
+                            try:
+                                _upload_drive_api_xlsx_if_needed(xlsx_info)
+                            except Exception as e:
+                                error_msgs.append(
+                                    f"行{idx+1} ({corp}): Drive書き戻し失敗 {e}"
+                                )
+                                continue
                             append_count += 1
                             # receipt_processed を success に更新 (再処理回避)
                             file_name = row.get('レシート') or ''

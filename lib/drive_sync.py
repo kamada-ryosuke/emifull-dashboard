@@ -291,6 +291,35 @@ def download_file_bytes(service, file_id: str) -> bytes:
     return buf.getvalue()
 
 
+def export_file_bytes(service, file_id: str, mime_type: str) -> bytes:
+    """Google Workspace形式のファイルを指定形式でエクスポートする。"""
+    from googleapiclient.http import MediaIoBaseDownload
+    request = service.files().export_media(fileId=file_id, mimeType=mime_type)
+    buf = io.BytesIO()
+    downloader = MediaIoBaseDownload(buf, request)
+    done = False
+    while not done:
+        _status, done = downloader.next_chunk()
+    return buf.getvalue()
+
+
+def update_file_bytes(
+    service,
+    file_id: str,
+    data: bytes,
+    mime_type: str,
+) -> None:
+    """Drive上の既存ファイル本体を差し替える。"""
+    from googleapiclient.http import MediaIoBaseUpload
+    media = MediaIoBaseUpload(io.BytesIO(data), mimetype=mime_type, resumable=False)
+    service.files().update(
+        fileId=file_id,
+        media_body=media,
+        fields="id,modifiedTime",
+        supportsAllDrives=True,
+    ).execute()
+
+
 def move_file(service, file_id: str, new_parent_id: str) -> None:
     """親IDを差し替えてファイルを移動。"""
     file = service.files().get(
