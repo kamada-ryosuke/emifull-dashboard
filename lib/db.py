@@ -3161,10 +3161,68 @@ def insert_debit_entries(rows: list[dict], filename: str,
     if not rows:
         return {'inserted': 0, 'skipped': 0, 'year_months': []}
 
+    def _text_value(v) -> str:
+        if v is None:
+            return ""
+        try:
+            if v != v:  # NaN
+                return ""
+        except Exception:
+            pass
+        return str(v)
+
+    def _int_value(v) -> int:
+        if v is None or v == "":
+            return 0
+        try:
+            if v != v:  # NaN
+                return 0
+        except Exception:
+            pass
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            return 0
+
+    def _nullable_int(v):
+        if v is None or v == "":
+            return None
+        try:
+            if v != v:  # NaN
+                return None
+        except Exception:
+            pass
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            return None
+
     with get_conn() as conn:
         inserted = 0
         skipped = 0
         for r in rows:
+            params = {
+                'corporation': _text_value(r.get('corporation') or corporation),
+                'transaction_date': _text_value(r.get('transaction_date')),
+                'year_month': _text_value(r.get('year_month')),
+                'debit_account': _text_value(r.get('debit_account')),
+                'tax_class': _text_value(r.get('tax_class')),
+                'debit_item': _text_value(r.get('debit_item')),
+                'department_raw': _text_value(r.get('department_raw')),
+                'department_clean': _text_value(r.get('department_clean')),
+                'subunit_id': _nullable_int(r.get('subunit_id')),
+                'amount': _int_value(r.get('amount')),
+                'credit_account': _text_value(r.get('credit_account')),
+                'description': _text_value(r.get('description')),
+                'vendor': _text_value(r.get('vendor')),
+                'purpose': _text_value(r.get('purpose')),
+                'items_text': _text_value(r.get('items_text')),
+                'items_count': _int_value(r.get('items_count')),
+                'check_status': _text_value(r.get('check_status')),
+                'sheet_name': _text_value(r.get('sheet_name')),
+                'filename': _text_value(filename),
+                'file_hash': _text_value(file_hash),
+            }
             cur = conn.execute("""
                 INSERT OR IGNORE INTO debit_entries
                 (corporation, transaction_date, year_month,
@@ -3179,7 +3237,7 @@ def insert_debit_entries(rows: list[dict], filename: str,
                         :amount, :credit_account, :description,
                         :vendor, :purpose, :items_text, :items_count,
                         :check_status, :sheet_name, :filename, :file_hash)
-            """, {**r, 'filename': filename, 'file_hash': file_hash})
+            """, params)
             if cur.rowcount > 0:
                 inserted += 1
             else:
