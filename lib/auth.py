@@ -398,6 +398,7 @@ def _render_role_navigation():
         links = [
             (login_page, "ログイン"),
             ("pages/2_損益ダッシュボード.py", "損益ダッシュボード"),
+            ("pages/4_給与台帳.py", "給与台帳"),
             ("pages/6_車両管理.py", "車両管理"),
         ]
 

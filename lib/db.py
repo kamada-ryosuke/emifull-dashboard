@@ -2358,6 +2358,20 @@ def init_payroll_schema():
         );
         CREATE INDEX IF NOT EXISTS idx_payroll_records_period ON payroll_records(period_id);
         CREATE INDEX IF NOT EXISTS idx_payroll_records_emp ON payroll_records(employee_id);
+
+        CREATE TABLE IF NOT EXISTS payroll_view_permissions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            target_year_month TEXT NOT NULL,        -- 対象月（労働月）'YYYY-MM'
+            manager_email TEXT NOT NULL,
+            employee_id INTEGER NOT NULL REFERENCES payroll_employees(id) ON DELETE CASCADE,
+            can_view INTEGER NOT NULL DEFAULT 0,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (target_year_month, manager_email, employee_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_payroll_perm_month
+            ON payroll_view_permissions(target_year_month);
+        CREATE INDEX IF NOT EXISTS idx_payroll_perm_manager
+            ON payroll_view_permissions(manager_email);
         """)
 
         # 法人 seed
@@ -2759,6 +2773,166 @@ def list_payroll_records_by_target_ym(corp_id=None, target_ym=None,
     return list_payroll_records(
         corp_id=corp_id, year_month=pay_ym, pay_type=pay_type,
     )
+
+
+def list_payroll_employees_for_target_ym(target_ym, corp_id=None):
+    """指定対象月に給与レコードがある職員一覧を返す。"""
+    pay_ym = payroll_pay_ym(target_ym)
+    sql = """
+        SELECT DISTINCT e.*, c.code AS corp_code, c.name AS corp_name
+        FROM payroll_records r
+        JOIN payroll_periods p ON p.id = r.period_id
+        JOIN payroll_employees e ON e.id = r.employee_id
+        JOIN payroll_corps c ON c.id = e.corp_id
+        WHERE p.pay_type = '給与'
+          AND p.year_month = ?
+    """
+    params = [pay_ym]
+    if corp_id is not None:
+        sql += " AND p.corp_id = ?"
+        params.append(corp_id)
+    sql += " ORDER BY c.display_order, e.emp_code"
+    with get_conn() as conn:
+        return [dict(r) for r in conn.execute(sql, params).fetchall()]
+
+
+def list_payroll_manager_users():
+    """給与閲覧権限を付ける候補ユーザー。氏名未登録ならメールを表示名に使う。"""
+    users = list_users()
+    return [
+        {
+            **u,
+            "display_name": (u.get("name") or u.get("email") or "").strip(),
+        }
+        for u in users
+        if u.get("email")
+    ]
+
+
+def _previous_payroll_target_ym(target_ym):
+    if not target_ym:
+        return None
+    y, m = int(target_ym[:4]), int(target_ym[5:7])
+    m -= 1
+    if m == 0:
+        y -= 1
+        m = 12
+    return f"{y:04d}-{m:02d}"
+
+
+def ensure_payroll_permissions_for_month(target_ym):
+    """対象月の権限行を用意する。
+
+    まだ一度も設定されていない月だけ、前月の設定を同じ職員へ引き継ぐ。
+    新職員など前月に存在しない職員は未設定のままにし、画面側で警告する。
+    """
+    employees = list_payroll_employees_for_target_ym(target_ym)
+    managers = list_payroll_manager_users()
+    prev_ym = _previous_payroll_target_ym(target_ym)
+    now = datetime.now().isoformat(sep=' ', timespec='seconds')
+
+    with get_conn() as conn:
+        existing_count = conn.execute(
+            "SELECT COUNT(*) AS c FROM payroll_view_permissions WHERE target_year_month = ?",
+            (target_ym,),
+        ).fetchone()["c"]
+
+        prev_map = {}
+        if existing_count == 0 and prev_ym:
+            rows = conn.execute("""
+                SELECT manager_email, employee_id, can_view
+                FROM payroll_view_permissions
+                WHERE target_year_month = ?
+            """, (prev_ym,)).fetchall()
+            prev_map = {
+                (r["manager_email"], r["employee_id"]): int(r["can_view"] or 0)
+                for r in rows
+            }
+
+        for manager in managers:
+            email = (manager.get("email") or "").strip().lower()
+            if not email:
+                continue
+            for emp in employees:
+                inherited = prev_map.get((email, emp["id"]))
+                if inherited is None:
+                    continue
+                conn.execute("""
+                    INSERT INTO payroll_view_permissions
+                    (target_year_month, manager_email, employee_id, can_view, updated_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(target_year_month, manager_email, employee_id)
+                    DO NOTHING
+                """, (target_ym, email, emp["id"], inherited, now))
+
+
+def list_payroll_permission_matrix(target_ym):
+    ensure_payroll_permissions_for_month(target_ym)
+    employees = list_payroll_employees_for_target_ym(target_ym)
+    managers = list_payroll_manager_users()
+    with get_conn() as conn:
+        rows = conn.execute("""
+            SELECT manager_email, employee_id, can_view
+            FROM payroll_view_permissions
+            WHERE target_year_month = ?
+        """, (target_ym,)).fetchall()
+    perm_map = {
+        (r["manager_email"], r["employee_id"]): bool(r["can_view"])
+        for r in rows
+    }
+    return managers, employees, perm_map
+
+
+def save_payroll_permission_matrix(target_ym, manager_emails, employee_ids, checked_pairs):
+    """指定対象月の権限を保存する。給与データ本体は変更しない。"""
+    now = datetime.now().isoformat(sep=' ', timespec='seconds')
+    checked_pairs = {
+        (str(email).strip().lower(), int(employee_id))
+        for email, employee_id in checked_pairs
+    }
+    with get_conn() as conn:
+        for email in manager_emails:
+            email = str(email).strip().lower()
+            for employee_id in employee_ids:
+                employee_id = int(employee_id)
+                can_view = 1 if (email, employee_id) in checked_pairs else 0
+                conn.execute("""
+                    INSERT INTO payroll_view_permissions
+                    (target_year_month, manager_email, employee_id, can_view, updated_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(target_year_month, manager_email, employee_id)
+                    DO UPDATE SET
+                        can_view = excluded.can_view,
+                        updated_at = excluded.updated_at
+                """, (target_ym, email, employee_id, can_view, now))
+
+
+def list_payroll_unconfigured_employees(target_ym):
+    managers, employees, perm_map = list_payroll_permission_matrix(target_ym)
+    if not managers:
+        return employees
+    manager_emails = [(m.get("email") or "").strip().lower() for m in managers]
+    return [
+        emp for emp in employees
+        if not any((email, emp["id"]) in perm_map for email in manager_emails)
+    ]
+
+
+def list_payroll_allowed_employee_ids(manager_email, target_ym=None):
+    if not manager_email:
+        return set()
+    sql = """
+        SELECT DISTINCT employee_id
+        FROM payroll_view_permissions
+        WHERE lower(manager_email) = ?
+          AND can_view = 1
+    """
+    params = [manager_email.strip().lower()]
+    if target_ym is not None:
+        sql += " AND target_year_month = ?"
+        params.append(target_ym)
+    with get_conn() as conn:
+        return {r["employee_id"] for r in conn.execute(sql, params).fetchall()}
 
 
 # === 最低賃金マスタ ===
