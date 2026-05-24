@@ -1,21 +1,52 @@
-name: Keep Streamlit App Awake
+name: Keep Streamlit Login Ready
 
 on:
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "0 */6 * * *"
   workflow_dispatch:
 
 jobs:
-  ping:
+  wake:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
-      - name: Ping Streamlit health endpoint
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install browser
+        run: npx playwright install --with-deps chromium
+      - name: Open app and wake it if needed
         run: |
-          curl --location --silent --show-error --max-time 30 \
-            "https://emifull-dashboard-ztnc6s7xiappzqxlljdw48e.streamlit.app/_stcore/health" \
-            || true
-      - name: Ping app root
-        run: |
-          curl --location --silent --show-error --max-time 30 \
-            "https://emifull-dashboard-ztnc6s7xiappzqxlljdw48e.streamlit.app/" \
-            || true
+          node <<'NODE'
+          const { chromium } = require('playwright');
+
+          const appUrl = 'https://emifull-dashboard-ztnc6s7xiappzqxlljdw48e.streamlit.app/';
+
+          (async () => {
+            const browser = await chromium.launch({ headless: true });
+            const page = await browser.newPage();
+            await page.goto(appUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+
+            const wakeButton = page.getByRole('button', {
+              name: /get this app back up|復旧|wake/i,
+            });
+            if (await wakeButton.count()) {
+              await wakeButton.first().click();
+            }
+
+            await page.waitForLoadState('networkidle', { timeout: 60000 }).catch(() => {});
+            await page.getByText(/ログイン|メールアドレス|EMIFULL/i)
+              .first()
+              .waitFor({ timeout: 90000 })
+              .catch(() => {});
+
+            const title = await page.title();
+            const body = await page.locator('body').innerText({ timeout: 10000 }).catch(() => '');
+            console.log(`Opened: ${title}`);
+            console.log(body.slice(0, 500));
+            await browser.close();
+          })().catch((error) => {
+            console.error(error);
+            process.exit(1);
+          });
+          NODE
