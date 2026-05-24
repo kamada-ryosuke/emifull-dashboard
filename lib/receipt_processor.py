@@ -528,6 +528,10 @@ def auto_process_batch(
                     'account': oc.get('suggested_account'),
                     'sub_index': j,
                     'sub_total': max_n,
+                    'source': r.get('source'),
+                    'drive_file_id': r.get('drive_file_id'),
+                    'source_url': r.get('source_url'),
+                    'moved_to': res.get('moved_to'),
                 }
                 results.append(item)
                 if on_progress is not None:
@@ -541,6 +545,10 @@ def auto_process_batch(
                 'status': res['status'],
                 'reason': res.get('reason') or '',
                 'excel': None,
+                'source': r.get('source'),
+                'drive_file_id': r.get('drive_file_id'),
+                'source_url': r.get('source_url'),
+                'moved_to': res.get('moved_to'),
             }
             results.append(item)
             if on_progress is not None:

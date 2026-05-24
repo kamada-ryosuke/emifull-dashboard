@@ -2,7 +2,7 @@
 
 階層構成:
   💳 デビットカード      - デビット明細・レシート (既存)
-    └ 取込 / サマリ / 施設別 / 勘定科目別 / 購入先別 / 購入明細 / レシート
+    └ 取込 / サマリ / 施設別 / 勘定科目別 / 購入先別 / 購入明細
   💴 現金立替レシート    - 現金立替清算 (出納帳 / 経費精算書)
     └ 取込 / サマリ / 施設別 / 勘定科目別 / 購入先別 / 出納帳
         / レシート / 経費精算書出力
@@ -423,6 +423,68 @@ def _drive_file_info_for_path(path: Path) -> dict | None:
     return None
 
 
+def _move_drive_api_receipts_to_processed(results: list[dict] | None) -> dict:
+    """Drive APIで処理した原本を、成功分だけDrive上の処理済みフォルダへ移動する。"""
+    if not results:
+        return {'moved': 0, 'skipped': 0, 'errors': []}
+
+    grouped: dict[str, list[dict]] = {}
+    for row in results:
+        file_id = row.get('drive_file_id')
+        if row.get('source') == 'drive_api' and file_id:
+            grouped.setdefault(str(file_id), []).append(row)
+
+    if not grouped:
+        return {'moved': 0, 'skipped': 0, 'errors': []}
+
+    folder_id = (
+        DEBIT_FOLDER_REF.get('storage_folder_id')
+        or _extract_drive_folder_id(DEBIT_FOLDER_REF.get('storage_folder_url'))
+        or DEBIT_FOLDER_REF.get('id')
+        or _extract_drive_folder_id(DEBIT_FOLDER_REF.get('url'))
+    )
+    if not folder_id:
+        return {
+            'moved': 0,
+            'skipped': len(grouped),
+            'errors': ['Driveのレシート格納先IDを特定できませんでした。'],
+        }
+
+    cfg = _drive_api_config()
+    service = drive_sync.build_service(cfg)
+    processed_root = drive_sync.ensure_subfolder(service, folder_id, '_処理済み')
+
+    moved = 0
+    skipped = 0
+    errors: list[str] = []
+    for file_id, rows in grouped.items():
+        if any(r.get('status') != 'success' for r in rows):
+            skipped += 1
+            continue
+        first = rows[0]
+        year_month = ''
+        for r in rows:
+            date = str(r.get('date') or '')
+            if len(date) >= 7:
+                year_month = date[:7]
+                break
+        if not year_month:
+            year_month = datetime.now().strftime('%Y-%m')
+        facility = str(first.get('facility') or '未分類')
+        try:
+            ym_folder = drive_sync.ensure_subfolder(service, processed_root, year_month)
+            fac_folder = drive_sync.ensure_subfolder(service, ym_folder, facility)
+            drive_sync.move_file(service, file_id, fac_folder)
+            moved += 1
+        except Exception as e:
+            skipped += 1
+            errors.append(f"{first.get('file_name') or file_id}: {e}")
+
+    if moved:
+        st.cache_data.clear()
+    return {'moved': moved, 'skipped': skipped, 'errors': errors}
+
+
 def _current_debit_work_dir(files: list[dict]) -> Path:
     for f in files:
         if f.get('source') == 'drive_api' and f.get('path'):
@@ -470,7 +532,7 @@ def _drive_list_children(service, folder_id: str) -> list[dict]:
             q=q,
             fields=(
                 "nextPageToken, "
-                "files(id,name,mimeType,size,modifiedTime,parents)"
+                "files(id,name,mimeType,size,modifiedTime,parents,webViewLink)"
             ),
             pageSize=100,
             pageToken=page_token,
@@ -553,6 +615,10 @@ def _list_drive_api_receipt_files(folder_id: str) -> list[dict]:
                     'mtime': _drive_ts(item.get('modifiedTime')),
                     'source': 'drive_api',
                     'drive_file_id': item['id'],
+                    'source_url': (
+                        item.get('webViewLink')
+                        or f"https://drive.google.com/file/d/{item['id']}/view"
+                    ),
                 })
 
         walk(folder_id, ())
@@ -977,15 +1043,16 @@ def _render_ocr_popover(r: dict, file_bytes: bytes, idx: int) -> None:
 # ============================================================
 # タブ構成 (デビットカード親タブの子)
 # ============================================================
+SHOW_DEBIT_RECEIPT_TAB = False
+
 (tab_import, tab_summary, tab_fac, tab_acc, tab_vendor,
- tab_detail, tab_receipts) = parent_debit.tabs([
+ tab_detail) = parent_debit.tabs([
     "📥 取込",
     "📊 サマリ",
     "🏢 施設別",
     "📚 勘定科目別",
     "🏪 購入先別",
     "🛒 購入明細",
-    "📷 レシート",
 ])
 
 
@@ -1334,6 +1401,16 @@ with tab_import:
                         except Exception as e:
                             st.error(f"DriveへのExcel書き戻しに失敗: {e}")
                             st.stop()
+                        move_summary = _move_drive_api_receipts_to_processed(
+                            receipt_summary.get('results')
+                        )
+                        if move_summary.get('moved'):
+                            st.success(
+                                f"📦 処理済みレシート原本 {move_summary['moved']} 件を"
+                                " Driveの `_処理済み` フォルダへ移動しました。"
+                            )
+                        for msg in move_summary.get('errors') or []:
+                            st.warning(f"レシート原本の移動に失敗: {msg}")
                     elif unprocessed and not receipt_ocr.is_available():
                         st.warning(
                             f"未処理レシート {len(unprocessed)} 件ありますが、"
@@ -1564,6 +1641,7 @@ with tab_import:
                 review_rows.append({
                     '状態': state_label,
                     'レシート': rr['file_name'],
+                    '原本確認': rr.get('source_url') or '',
                     '法人': corp_label or '医療法人',
                     '日付': rr.get('date') or '',
                     '部門': rr.get('facility') or '',
@@ -1598,6 +1676,13 @@ with tab_import:
                     ),
                     'レシート': st.column_config.TextColumn(
                         'レシート', disabled=True, width='small',
+                    ),
+                    '原本確認': st.column_config.LinkColumn(
+                        '原本確認',
+                        display_text='Driveで開く',
+                        disabled=True,
+                        width='small',
+                        help='Drive上のレシート原本を開いて確認できます。',
                     ),
                     '法人': st.column_config.SelectboxColumn(
                         '法人',
@@ -4305,338 +4390,5 @@ with tab_detail:
 # ============================================================
 # 📷 レシートタブ（写メ / PDF プレビュー）
 # ============================================================
-import base64
-
-with tab_receipts:
-    st.markdown("### 📷 レシート（写メ / PDF）")
-    st.caption(
-        "Google Drive 上のレシート画像（JPEG/PNG/HEIC等）と PDF を施設別に閲覧できます。"
-        " 01.デビッドカード清算／{施設}／ 配下を再帰的にスキャン。"
-    )
-    if DEBIT_FOLDER_REF.get('url'):
-        st.markdown(
-            f"<div style='background:#f0f9ff; border-left:4px solid #3b82f6; "
-            f"padding:8px 14px; border-radius:4px; margin:6px 0 14px;'>"
-            f"📁 <b>格納先 (Google Drive)</b>: "
-            f"<a href='{DEBIT_FOLDER_REF['url']}' target='_blank' "
-            f"style='color:#1e40af;'>{DEBIT_FOLDER_REF.get('name') or 'Drive フォルダ'}</a>"
-            f"</div>",
-            unsafe_allow_html=True,
-        )
-
-    storage_root = _resolve_storage_dir()
-    receipt_folder_id = (
-        DEBIT_FOLDER_REF.get('id')
-        or _extract_drive_folder_id(DEBIT_FOLDER_REF.get('url'))
-        or DEFAULT_DEBIT_RECEIPT_FOLDER_ID
-    )
-    use_drive_api_receipts = not storage_root.exists()
-
-    if use_drive_api_receipts:
-        with st.spinner("レシート読込中..."):
-            receipts = _list_drive_api_receipt_files(receipt_folder_id)
-        api_error = st.session_state.get('debit_receipt_drive_api_error')
-        if api_error:
-            st.warning(f"Drive APIでレシートを読めませんでした: {api_error}")
-    else:
-        with st.spinner("レシート読込中..."):
-            receipts = _list_receipt_files(storage_root)
-
-    if not receipts:
-        st.info(
-            "レシートファイルが見つかりません。\n"
-            "対応形式: " + ", ".join(sorted(RECEIPT_ALL_EXTS))
-        )
-    else:
-            # ---- KPI ----
-            n_total = len(receipts)
-            n_img = sum(1 for r in receipts if r['kind'] == 'image')
-            n_pdf = sum(1 for r in receipts if r['kind'] == 'pdf')
-            facilities = sorted({r['facility'] for r in receipts if r['facility']})
-            total_size = sum(r['size'] for r in receipts)
-
-            c1, c2, c3, c4, c5 = st.columns(5)
-            c1.metric("レシート総数", f"{n_total:,}")
-            c2.metric("📸 写メ", f"{n_img:,}")
-            c3.metric("📄 PDF", f"{n_pdf:,}")
-            c4.metric("施設数", f"{len(facilities)}")
-            c5.metric("総容量", _format_size(total_size))
-
-            # ---- 自動処理 状態表示のみ (実行は「📥 取込」タブから) ----
-            n_unproc = len(receipt_processor.detect_unprocessed(receipts))
-            n_processed = sum(
-                1 for r in receipts
-                if r.get('kind') == 'image'
-                and db.is_receipt_processed(str(r['path']))
-            )
-            # _処理済みフォルダにあるがOCR未実行のファイル（孤立ファイル）
-            n_orphaned = sum(
-                1 for r in receipts
-                if r.get('status') == '処理済み'
-                and r.get('kind') == 'image'
-                and not db.is_receipt_processed(str(r['path']))
-            )
-            if n_unproc > 0:
-                st.info(
-                    f"🤖 未処理レシート **{n_unproc}** 件 ／ 処理済 {n_processed} 件 — "
-                    "「📥 取込」タブの「🚀 取込実行」ボタンで一括処理されます。"
-                )
-            elif n_processed > 0:
-                st.caption(
-                    f"🤖 処理済 {n_processed} 件 ／ 未処理 0 件"
-                )
-            # 孤立ファイル（_処理済みにあるが未OCR）の警告
-            if n_orphaned > 0:
-                st.warning(
-                    f"⚠️ **`_処理済み`フォルダ内に未OCRのファイルが {n_orphaned} 件あります。**\n\n"
-                    "これらは手動で移動されましたが、OCR＆Excel追記がまだ完了していません。\n"
-                    "各レシートカード下部の「🤖 OCRで解析 & Excel追記」ボタンから処理してください。"
-                )
-
-            # ---- フィルタ ----
-            st.markdown("#### 🔎 絞り込み")
-            fc1, fc2, fc3, fc4 = st.columns([2, 2, 2, 1])
-            with fc1:
-                sel_facilities = st.multiselect(
-                    "施設で絞り込み",
-                    options=facilities,
-                    default=[],
-                    placeholder="未選択 = 全施設",
-                    key='rcp_fac',
-                )
-            with fc2:
-                kind_filter = st.multiselect(
-                    "種別で絞り込み",
-                    options=['📸 写メ', '📄 PDF'],
-                    default=[],
-                    placeholder="未選択 = 全種別",
-                    key='rcp_kind',
-                )
-            with fc3:
-                status_options = ['（未振分）', '処理済み', '要確認']
-                status_filter = st.multiselect(
-                    "ステータスで絞り込み",
-                    options=status_options,
-                    default=[],
-                    placeholder="未選択 = 全て",
-                    key='rcp_status',
-                )
-            with fc4:
-                sort_mode = st.selectbox(
-                    "並び順",
-                    options=['新しい順', '古い順', '施設順', 'ファイル名順'],
-                    index=0,
-                    key='rcp_sort',
-                )
-
-            # フィルタ適用
-            filtered = list(receipts)
-            if sel_facilities:
-                filtered = [r for r in filtered if r['facility'] in sel_facilities]
-            if kind_filter:
-                kind_set = set()
-                if '📸 写メ' in kind_filter:
-                    kind_set.add('image')
-                if '📄 PDF' in kind_filter:
-                    kind_set.add('pdf')
-                filtered = [r for r in filtered if r['kind'] in kind_set]
-            if status_filter:
-                target_statuses = set()
-                if '（未振分）' in status_filter:
-                    target_statuses.add('')
-                if '処理済み' in status_filter:
-                    target_statuses.add('処理済み')
-                if '要確認' in status_filter:
-                    target_statuses.add('要確認')
-                filtered = [r for r in filtered if r.get('status', '') in target_statuses]
-
-            if sort_mode == '新しい順':
-                filtered.sort(key=lambda r: -r['mtime'])
-            elif sort_mode == '古い順':
-                filtered.sort(key=lambda r: r['mtime'])
-            elif sort_mode == '施設順':
-                filtered.sort(key=lambda r: (r['facility'], -r['mtime']))
-            else:
-                filtered.sort(key=lambda r: r['name'])
-
-            st.caption(f"表示中: {len(filtered):,} / 全 {n_total:,} 件")
-
-            # ---- 施設別レシート一覧テーブル ----
-            with st.expander("📋 施設別レシート集計", expanded=False):
-                fac_rows = []
-                for fac in facilities:
-                    fac_recs = [r for r in receipts if r['facility'] == fac]
-                    fac_rows.append({
-                        '施設': fac,
-                        '📸 写メ': sum(1 for r in fac_recs if r['kind'] == 'image'),
-                        '📄 PDF': sum(1 for r in fac_recs if r['kind'] == 'pdf'),
-                        '合計': len(fac_recs),
-                        '総容量': _format_size(sum(r['size'] for r in fac_recs)),
-                    })
-                fac_df = pd.DataFrame(fac_rows).sort_values('合計', ascending=False)
-                st.dataframe(fac_df, hide_index=True, width='stretch')
-
-            # ---- ギャラリー表示 ----
-            from datetime import datetime as _dt
-            st.markdown("#### 🖼️ レシート プレビュー")
-
-            page_size = st.select_slider(
-                "1ページの表示件数",
-                options=[6, 12, 24, 48, 96],
-                value=12,
-                key='rcp_page_size',
-            )
-
-            total_pages = max(1, (len(filtered) + page_size - 1) // page_size)
-            if total_pages > 1:
-                page = st.number_input(
-                    f"ページ (1〜{total_pages})", min_value=1,
-                    max_value=total_pages, value=1, step=1,
-                    key='rcp_page',
-                )
-            else:
-                page = 1
-
-            start = (page - 1) * page_size
-            end = start + page_size
-            page_items = filtered[start:end]
-
-            # ----- 1行に並べる枚数 (大きさ調整) -----
-            cols_per_row = st.select_slider(
-                "1行に並べる枚数 (写真の大きさ調整)",
-                options=[3, 4, 5, 6],
-                value=4,
-                key='rcp_cols_per_row',
-                help='大きい数字ほど 1枚が小さくコンパクトに並びます',
-            )
-            for i in range(0, len(page_items), cols_per_row):
-                row_items = page_items[i:i + cols_per_row]
-                cols = st.columns(cols_per_row)
-                for col, r in zip(cols, row_items):
-                    with col:
-                        with st.container(border=True):
-                            mtime_str = _dt.fromtimestamp(r['mtime']).strftime('%Y-%m-%d %H:%M')
-                            kind_icon = '📸' if r['kind'] == 'image' else '📄'
-                            status = r.get('status', '')
-                            status_badge = ''
-                            if status == '処理済み':
-                                status_badge = (
-                                    "<span style='background:#d1fae5; color:#065f46; "
-                                    "padding:1px 6px; border-radius:4px; font-size:10px; "
-                                    "font-weight:600; margin-left:6px;'>処理済</span>"
-                                )
-                            elif status == '要確認':
-                                status_badge = (
-                                    "<span style='background:#fee2e2; color:#991b1b; "
-                                    "padding:1px 6px; border-radius:4px; font-size:10px; "
-                                    "font-weight:600; margin-left:6px;'>要確認</span>"
-                                )
-                            ym_text = (f" ／ {r['year_month_folder']}"
-                                       if r.get('year_month_folder') else '')
-
-                            # 自動処理ステータス (receipt_processed) のバッジ
-                            proc = db.get_receipt_processed(str(r['path']))
-                            auto_badge = ''
-                            if proc:
-                                if proc['status'] == 'success':
-                                    auto_badge = (
-                                        "<span style='background:#dbeafe; color:#1e40af; "
-                                        "padding:1px 6px; border-radius:4px; font-size:10px; "
-                                        "font-weight:600; margin-left:6px;'>🤖 OCR済</span>"
-                                    )
-                                elif proc['status'] == 'manual_pending':
-                                    auto_badge = (
-                                        "<span style='background:#fef3c7; color:#78350f; "
-                                        "padding:1px 6px; border-radius:4px; font-size:10px; "
-                                        "font-weight:600; margin-left:6px;'>要確認</span>"
-                                    )
-                                elif proc['status'] == 'failed':
-                                    auto_badge = (
-                                        "<span style='background:#fee2e2; color:#991b1b; "
-                                        "padding:1px 6px; border-radius:4px; font-size:10px; "
-                                        "font-weight:600; margin-left:6px;'>OCR失敗</span>"
-                                    )
-
-                            st.markdown(
-                                f"**{kind_icon} {r['facility']}**{status_badge}{auto_badge}<br>"
-                                f"<span style='color:#64748b; font-size:11px;'>"
-                                f"{mtime_str}{ym_text} ／ {_format_size(r['size'])}"
-                                f"</span>",
-                                unsafe_allow_html=True,
-                            )
-
-                            try:
-                                with open(r['path'], 'rb') as fp:
-                                    file_bytes = fp.read()
-                            except Exception as e:
-                                st.error(f"読込失敗: {e}")
-                                continue
-
-                            if r['kind'] == 'image':
-                                if r['ext'] in ('.heic', '.heif'):
-                                    # HEIC/HEIF は JPEG に変換してプレビュー
-                                    jpg, err = _heic_to_jpeg_bytes(file_bytes)
-                                    if jpg is not None:
-                                        try:
-                                            st.image(jpg, width='stretch')
-                                        except Exception as e:
-                                            st.warning(f"HEIC表示失敗: {e}")
-                                    else:
-                                        st.warning(
-                                            f"🖼️ HEIC変換失敗: {err}\n\n"
-                                            "（DLしてご確認ください）"
-                                        )
-                                else:
-                                    try:
-                                        st.image(file_bytes, width='stretch')
-                                    except Exception as e:
-                                        st.warning(f"画像表示失敗: {e}")
-                            else:  # pdf
-                                # PDFは埋め込み (iframe with base64) で先頭ページ表示
-                                try:
-                                    b64 = base64.b64encode(file_bytes).decode('ascii')
-                                    pdf_html = (
-                                        f'<iframe src="data:application/pdf;base64,{b64}" '
-                                        f'width="100%" height="280" '
-                                        f'style="border:1px solid #cbd5e1; border-radius:6px;">'
-                                        f'</iframe>'
-                                    )
-                                    st.markdown(pdf_html, unsafe_allow_html=True)
-                                except Exception as e:
-                                    st.warning(f"PDFプレビュー失敗: {e}")
-
-                            st.caption(f"`{r['name']}`")
-
-                            # ダウンロード
-                            mime_map = {
-                                '.jpg': 'image/jpeg',
-                                '.jpeg': 'image/jpeg',
-                                '.png': 'image/png',
-                                '.heic': 'image/heic',
-                                '.heif': 'image/heic',
-                                '.webp': 'image/webp',
-                                '.bmp': 'image/bmp',
-                                '.gif': 'image/gif',
-                                '.tiff': 'image/tiff',
-                                '.tif': 'image/tiff',
-                                '.pdf': 'application/pdf',
-                            }
-                            st.download_button(
-                                f"⬇️ ダウンロード",
-                                data=file_bytes,
-                                file_name=r['name'],
-                                mime=mime_map.get(r['ext'], 'application/octet-stream'),
-                                key=f"rcp_dl_{start + page_items.index(r)}",
-                                width='stretch',
-                            )
-                            # OCR & Excel追記ポップオーバー (画像のみ)
-                            _render_ocr_popover(
-                                r, file_bytes,
-                                start + page_items.index(r),
-                            )
-
-            if total_pages > 1:
-                st.caption(
-                    f"📄 ページ {page} / {total_pages} "
-                    f"（{start + 1}〜{min(end, len(filtered))} 件目）"
-                )
+# 公開環境ではレシート画像/PDFの一覧プレビューが重いため、通常タブから外しています。
+# 原本確認は、取込実行後の確認テーブルに表示するDriveリンクから行います。
