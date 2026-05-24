@@ -28,6 +28,19 @@ def inject_global_css():
         background-color: #f8fafc;
     }
 
+    /* ===== 右上の処理中アイコン ===== */
+    [data-testid="stStatusWidget"] {
+        transform: scale(1.12);
+        transform-origin: center;
+    }
+    [data-testid="stStatusWidget"] svg,
+    [data-testid="stStatusWidget"] svg * {
+        color: #475569 !important;
+        stroke: #475569 !important;
+        animation-duration: 2.8s !important;
+        animation-timing-function: ease-in-out !important;
+    }
+
     /* ===== ヘッダ（タイトル） ===== */
     h1 {
         color: #1e40af;
