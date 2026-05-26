@@ -706,9 +706,8 @@ facilities = db.list_facilities()
 _is_admin = auth.is_admin()
 _top_titles = ["📥 CSV取込", "🔵 自己負担", "🟡 国保請求", "🔔 未入金確認"]
 if _is_admin:
-    _top_titles.append("📊 売上確認")
-    _top_titles.append("📣 報告確認")
     _top_titles.append("🧾 レセ確認・報告")
+    _top_titles.append("📣 報告確認")
     _top_titles.append("🕘 修正履歴")
 _top_tabs = st.tabs(_top_titles)
 
@@ -3149,8 +3148,9 @@ def render_sales_reset_admin():
             st.rerun()
 
 
-def render_dashboard():
-    render_sales_reset_admin()
+def render_dashboard(show_reset_admin=True):
+    if show_reset_admin:
+        render_sales_reset_admin()
 
     if not year_months:
         st.info("まだデータがありません。「**📥 CSV取込**」タブから取込んでください。")
@@ -3606,6 +3606,15 @@ def render_receipt_confirmation_and_report():
     render_receipt_report_list()
 
 
+def render_receipt_and_sales_dashboard():
+    render_receipt_confirmation_and_report()
+    st.markdown("---")
+    st.markdown("### 売上確認")
+    render_dashboard(show_reset_admin=False)
+    st.markdown("---")
+    render_sales_reset_admin()
+
+
 # ============================================================
 # ⑥ 報告確認タブ（管理者専用）
 # ============================================================
@@ -3834,10 +3843,8 @@ with _top_tabs[3]:
     render_unpaid()
 if _is_admin:
     with _top_tabs[4]:
-        render_dashboard()
+        render_receipt_and_sales_dashboard()
     with _top_tabs[5]:
         render_report_confirmation()
     with _top_tabs[6]:
-        render_receipt_confirmation_and_report()
-    with _top_tabs[7]:
         render_sales_change_history()
