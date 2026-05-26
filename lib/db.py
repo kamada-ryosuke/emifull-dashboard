@@ -331,6 +331,9 @@ def init_db():
             self_payment_method TEXT,
             self_payment_status TEXT DEFAULT '未入金',
             -- 国保請求の入金トラッキング
+            kokuho_addition_charge INTEGER DEFAULT 0,
+            kokuho_adjustment_charge INTEGER DEFAULT 0,
+            kokuho_other_charge INTEGER DEFAULT 0,
             kokuho_paid_amount INTEGER DEFAULT 0,
             kokuho_paid_date DATE,
             kokuho_payment_method TEXT,
@@ -429,6 +432,12 @@ def init_db():
             conn.execute("ALTER TABLE monthly_records ADD COLUMN self_exam_charge INTEGER DEFAULT 0")
         if 'self_other_charge' not in record_cols:
             conn.execute("ALTER TABLE monthly_records ADD COLUMN self_other_charge INTEGER DEFAULT 0")
+        if 'kokuho_addition_charge' not in record_cols:
+            conn.execute("ALTER TABLE monthly_records ADD COLUMN kokuho_addition_charge INTEGER DEFAULT 0")
+        if 'kokuho_adjustment_charge' not in record_cols:
+            conn.execute("ALTER TABLE monthly_records ADD COLUMN kokuho_adjustment_charge INTEGER DEFAULT 0")
+        if 'kokuho_other_charge' not in record_cols:
+            conn.execute("ALTER TABLE monthly_records ADD COLUMN kokuho_other_charge INTEGER DEFAULT 0")
 
         # === マイグレーション: 請求額0円の'未入金'を'対象外'へ修正 ===
         conn.execute("""
@@ -492,6 +501,9 @@ def ensure_sales_schema():
             'self_snack_charge': 'INTEGER DEFAULT 0',
             'self_exam_charge': 'INTEGER DEFAULT 0',
             'self_other_charge': 'INTEGER DEFAULT 0',
+            'kokuho_addition_charge': 'INTEGER DEFAULT 0',
+            'kokuho_adjustment_charge': 'INTEGER DEFAULT 0',
+            'kokuho_other_charge': 'INTEGER DEFAULT 0',
         }
         for col, col_type in optional_columns.items():
             if col not in record_cols:
@@ -621,7 +633,11 @@ def list_records(service_ym=None, facility_id=None):
                 + COALESCE(r.self_exam_charge, 0)
                 + COALESCE(r.self_other_charge, 0)
                 - COALESCE(r.self_paid_amount, 0)) AS self_diff,
-               (COALESCE(r.kokuho_charge, 0) - COALESCE(r.kokuho_paid_amount, 0)) AS kokuho_diff
+               (COALESCE(r.kokuho_charge, 0)
+                + COALESCE(r.kokuho_addition_charge, 0)
+                + COALESCE(r.kokuho_adjustment_charge, 0)
+                + COALESCE(r.kokuho_other_charge, 0)
+                - COALESCE(r.kokuho_paid_amount, 0)) AS kokuho_diff
         FROM monthly_records r
         JOIN facilities f ON f.id = r.facility_id
         WHERE 1=1
@@ -679,7 +695,8 @@ def _self_total_charge_from_values(base, snack=0, exam=0, other=0):
 def update_record(record_id, kbn,
                   charge=None, paid_amount=None, paid_date=None,
                   method=None, memo=None,
-                  snack_charge=None, exam_charge=None, other_charge=None):
+                  snack_charge=None, exam_charge=None, other_charge=None,
+                  addition_charge=None, adjustment_charge=None):
     """請求額・回収額・回収手段・入金日・備考を一括更新。
     kbn = 'self' or 'kokuho'。自己負担はおやつ代等を足した合計で状態判定する。"""
     if kbn not in ('self', 'kokuho'):
@@ -712,8 +729,21 @@ def update_record(record_id, kbn,
                 new_charge, new_snack, new_exam, new_other
             )
         else:
-            new_snack = new_exam = new_other = None
-            status_charge = new_charge
+            new_addition = (
+                addition_charge if addition_charge is not None
+                else rec['kokuho_addition_charge'] if 'kokuho_addition_charge' in rec.keys() else 0
+            )
+            new_adjustment = (
+                adjustment_charge if adjustment_charge is not None
+                else rec['kokuho_adjustment_charge'] if 'kokuho_adjustment_charge' in rec.keys() else 0
+            )
+            new_other = (
+                other_charge if other_charge is not None
+                else rec['kokuho_other_charge'] if 'kokuho_other_charge' in rec.keys() else 0
+            )
+            status_charge = _self_total_charge_from_values(
+                new_charge, new_addition, new_adjustment, new_other
+            )
         status = _compute_status(status_charge, new_paid)
         now = datetime.now().isoformat(sep=' ', timespec='seconds')
 
@@ -761,17 +791,27 @@ def update_record(record_id, kbn,
                 conn.execute("""
                     UPDATE monthly_records SET
                       kokuho_charge = ?,
+                      kokuho_addition_charge = ?,
+                      kokuho_adjustment_charge = ?,
+                      kokuho_other_charge = ?,
                       kokuho_paid_amount = ?,
                       kokuho_paid_date = ?,
                       kokuho_payment_method = ?,
                       kokuho_payment_status = ?,
                       updated_at = ?
                     WHERE id = ?
-                """, (new_charge or 0, new_paid or 0, paid_date, method, status, now, record_id))
+                """, (
+                    new_charge or 0, new_addition or 0, new_adjustment or 0,
+                    new_other or 0, new_paid or 0, paid_date, method, status,
+                    now, record_id,
+                ))
             else:
                 conn.execute("""
                     UPDATE monthly_records SET
                       kokuho_charge = ?,
+                      kokuho_addition_charge = ?,
+                      kokuho_adjustment_charge = ?,
+                      kokuho_other_charge = ?,
                       kokuho_paid_amount = ?,
                       kokuho_paid_date = ?,
                       kokuho_payment_method = ?,
@@ -780,7 +820,8 @@ def update_record(record_id, kbn,
                       updated_at = ?
                     WHERE id = ?
                 """, (
-                    new_charge or 0, new_paid or 0, paid_date, method, status,
+                    new_charge or 0, new_addition or 0, new_adjustment or 0,
+                    new_other or 0, new_paid or 0, paid_date, method, status,
                     memo_param, now, record_id,
                 ))
 
@@ -827,6 +868,48 @@ def add_manual_self_record(service_ym, facility_id, cert_number, child_name,
         ))
 
 
+def add_manual_kokuho_record(service_ym, facility_id, cert_number, child_name,
+                             kokuho_charge=0, addition_charge=0,
+                             adjustment_charge=0, other_charge=0,
+                             paid_amount=0, method=None, memo=None):
+    """CSVにない国保請求の利用者を1行追加する。既存行は上書きしない。"""
+    if not service_ym or not facility_id or not cert_number or not child_name:
+        raise ValueError("サービス年月、施設、受給者証番号、利用者氏名は必須です。")
+
+    base = int(kokuho_charge or 0)
+    addition = int(addition_charge or 0)
+    adjustment = int(adjustment_charge or 0)
+    other = int(other_charge or 0)
+    paid = int(paid_amount or 0)
+    paid_date = datetime.now(ZoneInfo("Asia/Tokyo")).date().isoformat() if paid > 0 else None
+    total_charge = _self_total_charge_from_values(base, addition, adjustment, other)
+    status = _compute_status(total_charge, paid)
+
+    with get_conn() as conn:
+        existing = conn.execute("""
+            SELECT id FROM monthly_records
+            WHERE service_year_month = ? AND facility_id = ? AND cert_number = ?
+        """, (service_ym, facility_id, cert_number.strip())).fetchone()
+        if existing:
+            raise ValueError(
+                "同じサービス年月・施設・受給者証番号の行が既にあります。既存行を編集してください。"
+            )
+
+        conn.execute("""
+            INSERT INTO monthly_records (
+                service_year_month, facility_id, cert_number, child_name,
+                self_charge, kokuho_charge,
+                kokuho_addition_charge, kokuho_adjustment_charge, kokuho_other_charge,
+                kokuho_paid_amount, kokuho_paid_date, kokuho_payment_method,
+                kokuho_payment_status, kokuho_memo
+            )
+            VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            service_ym, facility_id, cert_number.strip(), child_name.strip(),
+            base, addition, adjustment, other, paid, paid_date, method or None, status, memo,
+        ))
+
+
 def list_year_months():
     with get_conn() as conn:
         return [r['service_year_month'] for r in conn.execute(
@@ -843,7 +926,11 @@ def list_records_in_range(start_ym=None, end_ym=None, facility_id=None):
                 + COALESCE(r.self_exam_charge, 0)
                 + COALESCE(r.self_other_charge, 0)
                 - COALESCE(r.self_paid_amount, 0)) AS self_diff,
-               (COALESCE(r.kokuho_charge, 0) - COALESCE(r.kokuho_paid_amount, 0)) AS kokuho_diff
+               (COALESCE(r.kokuho_charge, 0)
+                + COALESCE(r.kokuho_addition_charge, 0)
+                + COALESCE(r.kokuho_adjustment_charge, 0)
+                + COALESCE(r.kokuho_other_charge, 0)
+                - COALESCE(r.kokuho_paid_amount, 0)) AS kokuho_diff
         FROM monthly_records r
         JOIN facilities f ON f.id = r.facility_id
         WHERE 1=1
@@ -2392,7 +2479,10 @@ def summary_by_method(service_ym=None):
             UNION ALL
             SELECT 'kokuho' AS kbn,
                    COALESCE(kokuho_payment_method, '(未設定)') AS method,
-                   COALESCE(kokuho_charge, 0) AS charge,
+                   COALESCE(kokuho_charge, 0)
+                   + COALESCE(kokuho_addition_charge, 0)
+                   + COALESCE(kokuho_adjustment_charge, 0)
+                   + COALESCE(kokuho_other_charge, 0) AS charge,
                    COALESCE(kokuho_paid_amount, 0) AS paid
             FROM monthly_records
             WHERE 1=1 {ym_filter}
