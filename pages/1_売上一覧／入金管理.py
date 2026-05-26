@@ -10,10 +10,204 @@ import pandas as pd
 
 from lib import db, csv_parser, styling, auth, notification
 
+
+def _row_value(row, key, default=None):
+    try:
+        if hasattr(row, 'keys') and key in row.keys():
+            return row[key]
+    except Exception:
+        pass
+    return default
+
+
+def _ensure_sales_schema():
+    """自己負担の手入力列を安全に用意する。既存データは変更しない。"""
+    if hasattr(db, 'ensure_sales_schema'):
+        try:
+            db.ensure_sales_schema()
+            return
+        except Exception:
+            pass
+
+    with db.get_conn() as conn:
+        try:
+            record_cols = {
+                r['name'] for r in conn.execute("PRAGMA table_info(monthly_records)").fetchall()
+            }
+        except Exception:
+            return
+
+        optional_columns = {
+            'self_memo': 'TEXT',
+            'kokuho_memo': 'TEXT',
+            'self_snack_charge': 'INTEGER DEFAULT 0',
+            'self_exam_charge': 'INTEGER DEFAULT 0',
+            'self_other_charge': 'INTEGER DEFAULT 0',
+        }
+        for col, col_type in optional_columns.items():
+            if col not in record_cols:
+                conn.execute(f"ALTER TABLE monthly_records ADD COLUMN {col} {col_type}")
+
+
+def _self_total_from_values(base, snack=0, exam=0, other=0):
+    return (base or 0) + (snack or 0) + (exam or 0) + (other or 0)
+
+
+def _update_sales_record(record_id, kbn, charge=None, paid_amount=None,
+                         paid_date=None, method=None, memo=None,
+                         snack_charge=None, exam_charge=None, other_charge=None):
+    """売上一覧ページ用の更新。古いdb.pyが公開中でも同じ処理で保存する。"""
+    if kbn not in ('self', 'kokuho'):
+        raise ValueError("区分は self または kokuho を指定してください。")
+
+    with db.get_conn() as conn:
+        rec = conn.execute(
+            "SELECT * FROM monthly_records WHERE id = ?", (record_id,)
+        ).fetchone()
+        if not rec:
+            raise ValueError(f"レコードが見つかりません: id={record_id}")
+
+        if kbn == 'self':
+            new_charge = charge if charge is not None else _row_value(rec, 'self_charge', 0)
+            new_snack = (
+                snack_charge if snack_charge is not None
+                else _row_value(rec, 'self_snack_charge', 0)
+            )
+            new_exam = (
+                exam_charge if exam_charge is not None
+                else _row_value(rec, 'self_exam_charge', 0)
+            )
+            new_other = (
+                other_charge if other_charge is not None
+                else _row_value(rec, 'self_other_charge', 0)
+            )
+            new_paid = (
+                paid_amount if paid_amount is not None
+                else _row_value(rec, 'self_paid_amount', 0)
+            )
+            status = _status_from_amounts(
+                _self_total_from_values(new_charge, new_snack, new_exam, new_other),
+                new_paid,
+            )
+            now = datetime.now().isoformat(sep=' ', timespec='seconds')
+
+            if memo is None:
+                conn.execute("""
+                    UPDATE monthly_records SET
+                      self_charge = ?,
+                      self_snack_charge = ?,
+                      self_exam_charge = ?,
+                      self_other_charge = ?,
+                      self_paid_amount = ?,
+                      self_paid_date = ?,
+                      self_payment_method = ?,
+                      self_payment_status = ?,
+                      updated_at = ?
+                    WHERE id = ?
+                """, (
+                    new_charge or 0, new_snack or 0, new_exam or 0, new_other or 0,
+                    new_paid or 0, paid_date, method, status, now, record_id,
+                ))
+            else:
+                conn.execute("""
+                    UPDATE monthly_records SET
+                      self_charge = ?,
+                      self_snack_charge = ?,
+                      self_exam_charge = ?,
+                      self_other_charge = ?,
+                      self_paid_amount = ?,
+                      self_paid_date = ?,
+                      self_payment_method = ?,
+                      self_payment_status = ?,
+                      self_memo = ?,
+                      updated_at = ?
+                    WHERE id = ?
+                """, (
+                    new_charge or 0, new_snack or 0, new_exam or 0, new_other or 0,
+                    new_paid or 0, paid_date, method, status, memo, now, record_id,
+                ))
+            return
+
+        new_charge = charge if charge is not None else _row_value(rec, 'kokuho_charge', 0)
+        new_paid = (
+            paid_amount if paid_amount is not None
+            else _row_value(rec, 'kokuho_paid_amount', 0)
+        )
+        status = _status_from_amounts(new_charge, new_paid)
+        now = datetime.now().isoformat(sep=' ', timespec='seconds')
+
+        if memo is None:
+            conn.execute("""
+                UPDATE monthly_records SET
+                  kokuho_charge = ?,
+                  kokuho_paid_amount = ?,
+                  kokuho_paid_date = ?,
+                  kokuho_payment_method = ?,
+                  kokuho_payment_status = ?,
+                  updated_at = ?
+                WHERE id = ?
+            """, (new_charge or 0, new_paid or 0, paid_date, method, status, now, record_id))
+        else:
+            conn.execute("""
+                UPDATE monthly_records SET
+                  kokuho_charge = ?,
+                  kokuho_paid_amount = ?,
+                  kokuho_paid_date = ?,
+                  kokuho_payment_method = ?,
+                  kokuho_payment_status = ?,
+                  kokuho_memo = ?,
+                  updated_at = ?
+                WHERE id = ?
+            """, (
+                new_charge or 0, new_paid or 0, paid_date, method, status,
+                memo, now, record_id,
+            ))
+
+
+def _add_manual_self_record(service_ym, facility_id, cert_number, child_name,
+                            self_charge=0, snack_charge=0, exam_charge=0,
+                            other_charge=0, paid_amount=0, method=None,
+                            memo=None):
+    if not service_ym or not facility_id or not cert_number or not child_name:
+        raise ValueError("サービス年月、施設、受給者証番号、利用者氏名は必須です。")
+
+    base = int(self_charge or 0)
+    snack = int(snack_charge or 0)
+    exam = int(exam_charge or 0)
+    other = int(other_charge or 0)
+    paid = int(paid_amount or 0)
+    paid_date = _today_jst().isoformat() if paid > 0 else None
+    status = _status_from_amounts(_self_total_from_values(base, snack, exam, other), paid)
+
+    with db.get_conn() as conn:
+        existing = conn.execute("""
+            SELECT id FROM monthly_records
+            WHERE service_year_month = ? AND facility_id = ? AND cert_number = ?
+        """, (service_ym, facility_id, cert_number.strip())).fetchone()
+        if existing:
+            raise ValueError(
+                "同じサービス年月・施設・受給者証番号の行が既にあります。既存行を編集してください。"
+            )
+
+        conn.execute("""
+            INSERT INTO monthly_records (
+                service_year_month, facility_id, cert_number, child_name,
+                self_charge, kokuho_charge,
+                self_snack_charge, self_exam_charge, self_other_charge,
+                self_paid_amount, self_paid_date, self_payment_method,
+                self_payment_status, self_memo
+            )
+            VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            service_ym, facility_id, cert_number.strip(), child_name.strip(),
+            base, snack, exam, other, paid, paid_date, method or None, status, memo,
+        ))
+
+
 styling.inject_global_css()
 auth.require_admin()
 auth.render_sidebar_navigation()
-db.ensure_sales_schema()
+_ensure_sales_schema()
 
 st.title("売上一覧 / 入金管理")
 
@@ -515,7 +709,7 @@ def render_uriage_main():
                 errors = []
                 for _, row in selected_bulk.iterrows():
                     try:
-                        db.update_record(
+                        _update_sales_record(
                             record_id=int(row['id']),
                             kbn='self',
                             charge=_as_int(row['自己負担額']),
@@ -582,7 +776,7 @@ def render_uriage_main():
                 submitted = st.form_submit_button("自己負担行を追加", type='primary')
                 if submitted:
                     try:
-                        db.add_manual_self_record(
+                        _add_manual_self_record(
                             service_ym=selected_ym,
                             facility_id=manual_facility_id,
                             cert_number=manual_cert,
@@ -690,7 +884,7 @@ def render_uriage_main():
                     paid_date_str = c['paid_date'].isoformat() if c['paid_date'] else None
                     method = c['method'] if c['method'] else None
                     memo_to_save = c['new_memo'] if c['memo_changed'] else None
-                    db.update_record(
+                    _update_sales_record(
                         record_id=c['id'],
                         kbn=c['kbn'],
                         charge=c['new_charge'],
@@ -929,7 +1123,7 @@ def render_uriage_main():
                     if not row['記録']:
                         continue
                     try:
-                        db.update_payment(
+                        _update_sales_record(
                             record_id=int(row['id']),
                             kbn=kbn_key,
                             paid_amount=int(row['入金額']),
