@@ -563,7 +563,9 @@ _is_admin = auth.is_admin()
 _top_titles = ["📥 CSV取込", "🔵 自己負担", "🟡 国保請求", "🔔 未入金確認"]
 if _is_admin:
     _top_titles.append("📊 売上確認")
+    _top_titles.append("🧾 実績報告")
     _top_titles.append("📣 報告確認")
+    _top_titles.append("📋 レセ報告")
 _top_tabs = st.tabs(_top_titles)
 
 
@@ -839,6 +841,56 @@ def _year_month_options_with_default(existing_months):
     if default_ym not in options:
         options.insert(0, default_ym)
     return options, options.index(default_ym)
+
+
+def _shift_year_month(yyyymm, offset):
+    year, month = [int(x) for x in str(yyyymm).split('-')]
+    month_index = (year * 12 + month - 1) + offset
+    return f"{month_index // 12:04d}-{month_index % 12 + 1:02d}"
+
+
+def _performance_year_month_options():
+    default_ym = _default_service_year_month()
+    option_set = set(year_months or [])
+
+    try:
+        option_set.update(db.list_pl_year_months())
+    except Exception:
+        pass
+    try:
+        option_set.update(db.list_receipt_performance_year_months())
+    except Exception:
+        pass
+
+    for offset in range(-12, 4):
+        option_set.add(_shift_year_month(default_ym, offset))
+
+    options = sorted(option_set, reverse=True)
+    if default_ym not in options:
+        options.insert(0, default_ym)
+    return options, options.index(default_ym)
+
+
+def _pl_subunit_options():
+    try:
+        subunits = db.list_pl_subunits()
+    except Exception:
+        subunits = []
+
+    options = {}
+    for s in subunits:
+        group = f"{s.get('group_code')}: {s.get('group_name')}"
+        sub_name = s.get('display_name') or s.get('excel_name') or ''
+        label = f"{group} / {sub_name}"
+        options[label] = s
+    return options
+
+
+def _truncate_second_decimal(value):
+    try:
+        return int(float(value) * 10) / 10
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _auto_paid_date(orig_paid, new_paid, current_date):
@@ -3156,7 +3208,229 @@ def render_dashboard():
 
 
 # ============================================================
-# ⑤ 報告確認タブ（管理者専用）
+# ⑤ 実績報告タブ（管理者専用）
+# ============================================================
+def _existing_receipt_report(service_ym, subunit_id):
+    try:
+        return db.get_receipt_performance_report(service_ym, subunit_id) or {}
+    except Exception:
+        return {}
+
+
+def _receipt_report_facility_label(subunit):
+    group = f"{subunit.get('group_code')}: {subunit.get('group_name')}"
+    sub_name = subunit.get('display_name') or subunit.get('excel_name') or ''
+    return f"{group} / {sub_name}"
+
+
+def render_performance_report_entry():
+    st.markdown(
+        "サービス提供月と施設を選び、実績の数字を入力します。"
+        "同じ月・同じ施設で再度レセ報告すると、前回分を上書きします。"
+    )
+
+    ym_options, ym_index = _performance_year_month_options()
+    subunit_options = _pl_subunit_options()
+    if not subunit_options:
+        st.error("財務／経理の施設マスタが見つかりません。先に財務／経理のマスタ初期化を確認してください。")
+        return
+
+    c1, c2 = st.columns(2)
+    with c1:
+        selected_ym = st.selectbox(
+            "サービス提供月",
+            ym_options,
+            index=ym_index,
+            key='receipt_perf_ym',
+        )
+    with c2:
+        selected_facility_label = st.selectbox(
+            "施設名",
+            list(subunit_options.keys()),
+            key='receipt_perf_facility',
+        )
+    selected_subunit = subunit_options[selected_facility_label]
+    selected_subunit_id = selected_subunit['id']
+    existing = _existing_receipt_report(selected_ym, selected_subunit_id)
+
+    if existing:
+        st.info("この月・施設は登録済みです。数字を変更してレセ報告すると、前回分を上書きします。")
+
+    with st.form("receipt_performance_form", clear_on_submit=False):
+        st.markdown("#### 実績入力")
+        row1 = st.columns(4)
+        with row1[0]:
+            sales_report = st.number_input(
+                "売上報告",
+                min_value=0,
+                value=_as_int(existing.get('sales_report_amount')),
+                step=1000,
+            )
+        with row1[1]:
+            treatment_improvement = st.number_input(
+                "処遇改善（内）",
+                min_value=0,
+                value=_as_int(existing.get('treatment_improvement_amount')),
+                step=1000,
+            )
+        with row1[2]:
+            self_pay = st.number_input(
+                "自己負担",
+                min_value=0,
+                value=_as_int(existing.get('self_pay_amount')),
+                step=1000,
+            )
+        with row1[3]:
+            production_revenue = st.number_input(
+                "生産活動収益",
+                min_value=0,
+                value=_as_int(existing.get('production_activity_revenue')),
+                step=1000,
+            )
+
+        row2 = st.columns(3)
+        with row2[0]:
+            business_days = st.number_input(
+                "営業日数",
+                min_value=0,
+                value=_as_int(existing.get('business_days')),
+                step=1,
+            )
+        with row2[1]:
+            monthly_usage = st.number_input(
+                "延べ利用回数／月",
+                min_value=0,
+                value=_as_int(existing.get('monthly_usage_count')),
+                step=1,
+            )
+        with row2[2]:
+            avg_users = _truncate_second_decimal(
+                (monthly_usage / business_days) if business_days else 0
+            )
+            st.metric("1日平均利用者数", f"{avg_users:.1f} 人")
+
+        submitted = st.form_submit_button("レセ報告", type='primary')
+
+    if submitted:
+        current = auth.current_user() or {}
+        db.upsert_receipt_performance_report({
+            'service_year_month': selected_ym,
+            'pl_subunit_id': selected_subunit_id,
+            'facility_label': _receipt_report_facility_label(selected_subunit),
+            'sales_report_amount': sales_report,
+            'treatment_improvement_amount': treatment_improvement,
+            'self_pay_amount': self_pay,
+            'production_activity_revenue': production_revenue,
+            'business_days': business_days,
+            'monthly_usage_count': monthly_usage,
+            'reported_by_email': current.get('email'),
+            'reported_by_name': current.get('name'),
+        })
+        st.success("レセ報告として保存しました。右の「レセ報告」タブで確認できます。")
+        st.rerun()
+
+
+def render_receipt_report_list():
+    st.markdown(
+        "実績報告タブでレセ報告した内容を、施設ごとに一覧で確認できます。"
+        "1日平均利用者数は「延べ利用回数／月 ÷ 営業日数」で計算し、小数点第2位を切り捨てて表示します。"
+    )
+
+    month_options = ['（すべて）']
+    try:
+        month_options += db.list_receipt_performance_year_months()
+    except Exception:
+        pass
+    if len(month_options) == 1:
+        ym_options, _ = _performance_year_month_options()
+        month_options += ym_options[:6]
+
+    subunit_options = {'（すべて）': None}
+    subunit_options.update(_pl_subunit_options())
+
+    c1, c2 = st.columns(2)
+    with c1:
+        selected_ym = st.selectbox("サービス提供月", month_options, key='receipt_report_ym')
+        ym_filter = None if selected_ym == '（すべて）' else selected_ym
+    with c2:
+        selected_facility_label = st.selectbox(
+            "施設名",
+            list(subunit_options.keys()),
+            key='receipt_report_facility',
+        )
+        selected_subunit = subunit_options[selected_facility_label]
+        subunit_filter = selected_subunit['id'] if selected_subunit else None
+
+    rows = db.list_receipt_performance_reports(
+        service_ym=ym_filter,
+        pl_subunit_id=subunit_filter,
+    )
+
+    if not rows:
+        st.info("まだレセ報告がありません。左の「実績報告」タブで入力し、レセ報告ボタンを押してください。")
+        return
+
+    display_rows = []
+    for r in rows:
+        business_days = _as_int(r.get('business_days'))
+        monthly_usage = _as_int(r.get('monthly_usage_count'))
+        avg_users = _truncate_second_decimal(
+            (monthly_usage / business_days) if business_days else 0
+        )
+        facility_label = (
+            f"{r.get('group_code')}: {r.get('group_name')} / {r.get('subunit_name')}"
+            if r.get('group_code') and r.get('subunit_name')
+            else r.get('facility_label') or ''
+        )
+        display_rows.append({
+            'サービス提供月': r.get('service_year_month'),
+            '施設名': facility_label,
+            '売上報告': _as_int(r.get('sales_report_amount')),
+            '処遇改善（内）': _as_int(r.get('treatment_improvement_amount')),
+            '自己負担': _as_int(r.get('self_pay_amount')),
+            '生産活動収益': _as_int(r.get('production_activity_revenue')),
+            '営業日数': business_days,
+            '延べ利用回数／月': monthly_usage,
+            '1日平均利用者数': avg_users,
+            '報告者': r.get('reported_by_name') or r.get('reported_by_email') or '',
+            '更新日': r.get('updated_at') or r.get('reported_at') or '',
+        })
+
+    df = pd.DataFrame(display_rows)
+    metric_cols = st.columns(4)
+    metric_cols[0].metric("報告施設数", f"{len(df)} 件")
+    metric_cols[1].metric("売上報告 合計", f"{df['売上報告'].sum():,} 円")
+    metric_cols[2].metric("自己負担 合計", f"{df['自己負担'].sum():,} 円")
+    metric_cols[3].metric("延べ利用回数 合計", f"{df['延べ利用回数／月'].sum():,} 回")
+
+    st.dataframe(
+        df,
+        width='stretch',
+        hide_index=True,
+        height=560,
+        column_config={
+            '施設名': st.column_config.TextColumn('施設名', width='large'),
+            '売上報告': st.column_config.NumberColumn('売上報告', format='localized'),
+            '処遇改善（内）': st.column_config.NumberColumn('処遇改善（内）', format='localized'),
+            '自己負担': st.column_config.NumberColumn('自己負担', format='localized'),
+            '生産活動収益': st.column_config.NumberColumn('生産活動収益', format='localized'),
+            '営業日数': st.column_config.NumberColumn('営業日数', format='%d'),
+            '延べ利用回数／月': st.column_config.NumberColumn('延べ利用回数／月', format='%d'),
+            '1日平均利用者数': st.column_config.NumberColumn('1日平均利用者数', format='%.1f'),
+        },
+    )
+
+    csv = df.to_csv(index=False).encode('utf-8-sig')
+    st.download_button(
+        "レセ報告をCSVで出力",
+        data=csv,
+        file_name=f"レセ報告_{date.today().isoformat()}.csv",
+        mime='text/csv',
+    )
+
+
+# ============================================================
+# ⑥ 報告確認タブ（管理者専用）
 # ============================================================
 def _report_rows_from_records(records, report_kbn):
     rows = []
@@ -3275,4 +3549,8 @@ if _is_admin:
     with _top_tabs[4]:
         render_dashboard()
     with _top_tabs[5]:
+        render_performance_report_entry()
+    with _top_tabs[6]:
         render_report_confirmation()
+    with _top_tabs[7]:
+        render_receipt_report_list()

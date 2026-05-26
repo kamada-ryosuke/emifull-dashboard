@@ -556,6 +556,7 @@ def init_db():
 
     # 損益スキーマ初期化（with get_conn() を抜けてから別トランザクションで実行）
     init_pl_schema()
+    init_receipt_performance_schema()
     init_journal_schema()
     init_payroll_schema()
     init_debit_schema()
@@ -593,6 +594,8 @@ def ensure_sales_schema():
         for col, col_type in optional_columns.items():
             if col not in record_cols:
                 conn.execute(f"ALTER TABLE monthly_records ADD COLUMN {col} {col_type}")
+
+    init_receipt_performance_schema()
 
 
 # === 施設マスタ ===
@@ -2382,6 +2385,137 @@ def list_pl_year_months():
         return [r['year_month'] for r in conn.execute(
             "SELECT DISTINCT year_month FROM pl_entries ORDER BY year_month DESC"
         ).fetchall()]
+
+
+# === 実績報告 / レセ報告 ===
+
+def init_receipt_performance_schema():
+    """実績報告の保存テーブルを用意する。既存の売上明細は変更しない。"""
+    with get_conn() as conn:
+        conn.executescript("""
+        CREATE TABLE IF NOT EXISTS receipt_performance_reports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            service_year_month TEXT NOT NULL,
+            pl_subunit_id INTEGER NOT NULL REFERENCES pl_subunits(id),
+            facility_label TEXT NOT NULL,
+            sales_report_amount INTEGER NOT NULL DEFAULT 0,
+            treatment_improvement_amount INTEGER NOT NULL DEFAULT 0,
+            self_pay_amount INTEGER NOT NULL DEFAULT 0,
+            production_activity_revenue INTEGER NOT NULL DEFAULT 0,
+            business_days INTEGER NOT NULL DEFAULT 0,
+            monthly_usage_count INTEGER NOT NULL DEFAULT 0,
+            reported_by_email TEXT,
+            reported_by_name TEXT,
+            reported_at TEXT,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (service_year_month, pl_subunit_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_receipt_perf_ym
+            ON receipt_performance_reports(service_year_month);
+        CREATE INDEX IF NOT EXISTS idx_receipt_perf_subunit
+            ON receipt_performance_reports(pl_subunit_id);
+        """)
+
+
+def list_receipt_performance_year_months():
+    init_receipt_performance_schema()
+    with get_conn() as conn:
+        return [r['service_year_month'] for r in conn.execute(
+            """
+            SELECT DISTINCT service_year_month
+            FROM receipt_performance_reports
+            ORDER BY service_year_month DESC
+            """
+        ).fetchall()]
+
+
+def get_receipt_performance_report(service_ym, pl_subunit_id):
+    init_receipt_performance_schema()
+    with get_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT *
+            FROM receipt_performance_reports
+            WHERE service_year_month = ? AND pl_subunit_id = ?
+            """,
+            (service_ym, pl_subunit_id),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def upsert_receipt_performance_report(record):
+    """サービス提供月×施設ごとに1件保存。再報告時は同じ行を上書きする。"""
+    init_receipt_performance_schema()
+    now = datetime.now().isoformat(sep=' ', timespec='seconds')
+    payload = {
+        'service_year_month': record.get('service_year_month'),
+        'pl_subunit_id': int(record.get('pl_subunit_id')),
+        'facility_label': record.get('facility_label') or '',
+        'sales_report_amount': int(record.get('sales_report_amount') or 0),
+        'treatment_improvement_amount': int(record.get('treatment_improvement_amount') or 0),
+        'self_pay_amount': int(record.get('self_pay_amount') or 0),
+        'production_activity_revenue': int(record.get('production_activity_revenue') or 0),
+        'business_days': int(record.get('business_days') or 0),
+        'monthly_usage_count': int(record.get('monthly_usage_count') or 0),
+        'reported_by_email': record.get('reported_by_email'),
+        'reported_by_name': record.get('reported_by_name'),
+        'reported_at': now,
+        'updated_at': now,
+    }
+    with get_conn() as conn:
+        cur = conn.execute("""
+            INSERT INTO receipt_performance_reports (
+                service_year_month, pl_subunit_id, facility_label,
+                sales_report_amount, treatment_improvement_amount, self_pay_amount,
+                production_activity_revenue, business_days, monthly_usage_count,
+                reported_by_email, reported_by_name, reported_at, updated_at
+            )
+            VALUES (
+                :service_year_month, :pl_subunit_id, :facility_label,
+                :sales_report_amount, :treatment_improvement_amount, :self_pay_amount,
+                :production_activity_revenue, :business_days, :monthly_usage_count,
+                :reported_by_email, :reported_by_name, :reported_at, :updated_at
+            )
+            ON CONFLICT(service_year_month, pl_subunit_id) DO UPDATE SET
+                facility_label = excluded.facility_label,
+                sales_report_amount = excluded.sales_report_amount,
+                treatment_improvement_amount = excluded.treatment_improvement_amount,
+                self_pay_amount = excluded.self_pay_amount,
+                production_activity_revenue = excluded.production_activity_revenue,
+                business_days = excluded.business_days,
+                monthly_usage_count = excluded.monthly_usage_count,
+                reported_by_email = excluded.reported_by_email,
+                reported_by_name = excluded.reported_by_name,
+                reported_at = excluded.reported_at,
+                updated_at = excluded.updated_at
+        """, payload)
+        return cur.lastrowid
+
+
+def list_receipt_performance_reports(service_ym=None, pl_subunit_id=None):
+    init_receipt_performance_schema()
+    sql = """
+        SELECT r.*,
+               s.display_name AS subunit_name,
+               s.excel_name AS subunit_excel_name,
+               g.code AS group_code,
+               g.name AS group_name
+        FROM receipt_performance_reports r
+        LEFT JOIN pl_subunits s ON s.id = r.pl_subunit_id
+        LEFT JOIN pl_groups g ON g.id = s.group_id
+        WHERE 1=1
+    """
+    params = []
+    if service_ym:
+        sql += " AND r.service_year_month = ?"
+        params.append(service_ym)
+    if pl_subunit_id:
+        sql += " AND r.pl_subunit_id = ?"
+        params.append(pl_subunit_id)
+    sql += " ORDER BY r.service_year_month DESC, g.display_order, s.display_order, r.id"
+    with get_conn() as conn:
+        return [dict(r) for r in conn.execute(sql, params).fetchall()]
 
 
 # === 損益用の会計年度ユーティリティ ===
