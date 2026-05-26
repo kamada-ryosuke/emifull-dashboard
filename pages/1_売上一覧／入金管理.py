@@ -11,6 +11,64 @@ import pandas as pd
 from lib import db, csv_parser, styling, auth, notification
 
 
+SELF_EXTRA_COLUMNS = {
+    'self_refund_charge': 'INTEGER DEFAULT 0',
+    'self_unpaid_charge': 'INTEGER DEFAULT 0',
+    'self_rent_charge': 'INTEGER DEFAULT 0',
+    'self_utilities_charge': 'INTEGER DEFAULT 0',
+    'self_daily_supplies_charge': 'INTEGER DEFAULT 0',
+    'self_breakfast_charge': 'INTEGER DEFAULT 0',
+    'self_lunch_charge': 'INTEGER DEFAULT 0',
+    'self_dinner_charge': 'INTEGER DEFAULT 0',
+    'self_rice_charge': 'INTEGER DEFAULT 0',
+    'self_special_benefit_charge': 'INTEGER DEFAULT 0',
+    'self_housing_subsidy_charge': 'INTEGER DEFAULT 0',
+}
+
+SELF_FIELD_PARAMS = {
+    'self_charge': 'charge',
+    'self_snack_charge': 'snack_charge',
+    'self_exam_charge': 'exam_charge',
+    'self_other_charge': 'other_charge',
+    'self_refund_charge': 'refund_charge',
+    'self_unpaid_charge': 'unpaid_charge',
+    'self_rent_charge': 'rent_charge',
+    'self_utilities_charge': 'utilities_charge',
+    'self_daily_supplies_charge': 'daily_supplies_charge',
+    'self_breakfast_charge': 'breakfast_charge',
+    'self_lunch_charge': 'lunch_charge',
+    'self_dinner_charge': 'dinner_charge',
+    'self_rice_charge': 'rice_charge',
+    'self_special_benefit_charge': 'special_benefit_charge',
+    'self_housing_subsidy_charge': 'housing_subsidy_charge',
+}
+
+NORMAL_SELF_ITEMS = [
+    ('自己負担額', 'self_charge', 1),
+    ('おやつ代', 'self_snack_charge', 1),
+    ('検査代', 'self_exam_charge', 1),
+    ('その他', 'self_other_charge', 1),
+    ('返金', 'self_refund_charge', -1),
+    ('未収金', 'self_unpaid_charge', 1),
+]
+
+SHARE_SELF_ITEMS = [
+    ('サービス料', 'self_charge', 1),
+    ('家賃', 'self_rent_charge', 1),
+    ('水光熱費', 'self_utilities_charge', 1),
+    ('日用品費', 'self_daily_supplies_charge', 1),
+    ('朝食', 'self_breakfast_charge', 1),
+    ('昼食', 'self_lunch_charge', 1),
+    ('夕食', 'self_dinner_charge', 1),
+    ('白米', 'self_rice_charge', 1),
+    ('特別給付費', 'self_special_benefit_charge', -1),
+    ('住宅補助', 'self_housing_subsidy_charge', -1),
+    ('その他', 'self_other_charge', 1),
+    ('返金', 'self_refund_charge', -1),
+    ('未収金', 'self_unpaid_charge', 1),
+]
+
+
 def _row_value(row, key, default=None):
     try:
         if hasattr(row, 'keys') and key in row.keys():
@@ -43,6 +101,7 @@ def _ensure_sales_schema():
             'self_snack_charge': 'INTEGER DEFAULT 0',
             'self_exam_charge': 'INTEGER DEFAULT 0',
             'self_other_charge': 'INTEGER DEFAULT 0',
+            **SELF_EXTRA_COLUMNS,
             'kokuho_addition_charge': 'INTEGER DEFAULT 0',
             'kokuho_adjustment_charge': 'INTEGER DEFAULT 0',
             'kokuho_other_charge': 'INTEGER DEFAULT 0',
@@ -52,8 +111,67 @@ def _ensure_sales_schema():
                 conn.execute(f"ALTER TABLE monthly_records ADD COLUMN {col} {col_type}")
 
 
-def _self_total_from_values(base, snack=0, exam=0, other=0):
-    return (base or 0) + (snack or 0) + (exam or 0) + (other or 0)
+def _is_share_facility_label(label):
+    return 'シェア' in str(label or '')
+
+
+def _is_share_facility_record(record):
+    return _is_share_facility_label(record.get('facility_name') if isinstance(record, dict) else '')
+
+
+def _self_items(is_share_layout=False):
+    return SHARE_SELF_ITEMS if is_share_layout else NORMAL_SELF_ITEMS
+
+
+def _self_total_from_values(
+    base=0, snack=0, exam=0, other=0, refund=0, unpaid=0,
+    rent=0, utilities=0, daily_supplies=0, breakfast=0, lunch=0, dinner=0,
+    rice=0, special_benefit=0, housing_subsidy=0,
+):
+    return (
+        (base or 0)
+        + (snack or 0)
+        + (exam or 0)
+        + (other or 0)
+        + (rent or 0)
+        + (utilities or 0)
+        + (daily_supplies or 0)
+        + (breakfast or 0)
+        + (lunch or 0)
+        + (dinner or 0)
+        + (rice or 0)
+        - (special_benefit or 0)
+        - (housing_subsidy or 0)
+        - (refund or 0)
+        + (unpaid or 0)
+    )
+
+
+def _self_total_from_labels(row, items):
+    total = 0
+    for label, _field, sign in items:
+        total += sign * _as_int(row.get(label, 0))
+    return total
+
+
+def _self_total_from_record_values(record):
+    return _self_total_from_values(
+        base=record.get('self_charge') or 0,
+        snack=record.get('self_snack_charge') or 0,
+        exam=record.get('self_exam_charge') or 0,
+        other=record.get('self_other_charge') or 0,
+        refund=record.get('self_refund_charge') or 0,
+        unpaid=record.get('self_unpaid_charge') or 0,
+        rent=record.get('self_rent_charge') or 0,
+        utilities=record.get('self_utilities_charge') or 0,
+        daily_supplies=record.get('self_daily_supplies_charge') or 0,
+        breakfast=record.get('self_breakfast_charge') or 0,
+        lunch=record.get('self_lunch_charge') or 0,
+        dinner=record.get('self_dinner_charge') or 0,
+        rice=record.get('self_rice_charge') or 0,
+        special_benefit=record.get('self_special_benefit_charge') or 0,
+        housing_subsidy=record.get('self_housing_subsidy_charge') or 0,
+    )
 
 
 def _charge_total(base=0, extra1=0, extra2=0, extra3=0):
@@ -63,6 +181,11 @@ def _charge_total(base=0, extra1=0, extra2=0, extra3=0):
 def _update_sales_record(record_id, kbn, charge=None, paid_amount=None,
                          paid_date=None, method=None, memo=None,
                          snack_charge=None, exam_charge=None, other_charge=None,
+                         refund_charge=None, unpaid_charge=None,
+                         rent_charge=None, utilities_charge=None,
+                         daily_supplies_charge=None, breakfast_charge=None,
+                         lunch_charge=None, dinner_charge=None, rice_charge=None,
+                         special_benefit_charge=None, housing_subsidy_charge=None,
                          addition_charge=None, adjustment_charge=None):
     """売上一覧ページ用の更新。古いdb.pyが公開中でも同じ処理で保存する。"""
     if kbn not in ('self', 'kokuho'):
@@ -89,12 +212,61 @@ def _update_sales_record(record_id, kbn, charge=None, paid_amount=None,
                 other_charge if other_charge is not None
                 else _row_value(rec, 'self_other_charge', 0)
             )
+            new_refund = (
+                refund_charge if refund_charge is not None
+                else _row_value(rec, 'self_refund_charge', 0)
+            )
+            new_unpaid = (
+                unpaid_charge if unpaid_charge is not None
+                else _row_value(rec, 'self_unpaid_charge', 0)
+            )
+            new_rent = (
+                rent_charge if rent_charge is not None
+                else _row_value(rec, 'self_rent_charge', 0)
+            )
+            new_utilities = (
+                utilities_charge if utilities_charge is not None
+                else _row_value(rec, 'self_utilities_charge', 0)
+            )
+            new_daily_supplies = (
+                daily_supplies_charge if daily_supplies_charge is not None
+                else _row_value(rec, 'self_daily_supplies_charge', 0)
+            )
+            new_breakfast = (
+                breakfast_charge if breakfast_charge is not None
+                else _row_value(rec, 'self_breakfast_charge', 0)
+            )
+            new_lunch = (
+                lunch_charge if lunch_charge is not None
+                else _row_value(rec, 'self_lunch_charge', 0)
+            )
+            new_dinner = (
+                dinner_charge if dinner_charge is not None
+                else _row_value(rec, 'self_dinner_charge', 0)
+            )
+            new_rice = (
+                rice_charge if rice_charge is not None
+                else _row_value(rec, 'self_rice_charge', 0)
+            )
+            new_special_benefit = (
+                special_benefit_charge if special_benefit_charge is not None
+                else _row_value(rec, 'self_special_benefit_charge', 0)
+            )
+            new_housing_subsidy = (
+                housing_subsidy_charge if housing_subsidy_charge is not None
+                else _row_value(rec, 'self_housing_subsidy_charge', 0)
+            )
             new_paid = (
                 paid_amount if paid_amount is not None
                 else _row_value(rec, 'self_paid_amount', 0)
             )
             status = _status_from_amounts(
-                _self_total_from_values(new_charge, new_snack, new_exam, new_other),
+                _self_total_from_values(
+                    new_charge, new_snack, new_exam, new_other,
+                    new_refund, new_unpaid, new_rent, new_utilities,
+                    new_daily_supplies, new_breakfast, new_lunch, new_dinner,
+                    new_rice, new_special_benefit, new_housing_subsidy,
+                ),
                 new_paid,
             )
             now = datetime.now().isoformat(sep=' ', timespec='seconds')
@@ -106,6 +278,17 @@ def _update_sales_record(record_id, kbn, charge=None, paid_amount=None,
                       self_snack_charge = ?,
                       self_exam_charge = ?,
                       self_other_charge = ?,
+                      self_refund_charge = ?,
+                      self_unpaid_charge = ?,
+                      self_rent_charge = ?,
+                      self_utilities_charge = ?,
+                      self_daily_supplies_charge = ?,
+                      self_breakfast_charge = ?,
+                      self_lunch_charge = ?,
+                      self_dinner_charge = ?,
+                      self_rice_charge = ?,
+                      self_special_benefit_charge = ?,
+                      self_housing_subsidy_charge = ?,
                       self_paid_amount = ?,
                       self_paid_date = ?,
                       self_payment_method = ?,
@@ -114,6 +297,10 @@ def _update_sales_record(record_id, kbn, charge=None, paid_amount=None,
                     WHERE id = ?
                 """, (
                     new_charge or 0, new_snack or 0, new_exam or 0, new_other or 0,
+                    new_refund or 0, new_unpaid or 0, new_rent or 0,
+                    new_utilities or 0, new_daily_supplies or 0, new_breakfast or 0,
+                    new_lunch or 0, new_dinner or 0, new_rice or 0,
+                    new_special_benefit or 0, new_housing_subsidy or 0,
                     new_paid or 0, paid_date, method, status, now, record_id,
                 ))
             else:
@@ -123,6 +310,17 @@ def _update_sales_record(record_id, kbn, charge=None, paid_amount=None,
                       self_snack_charge = ?,
                       self_exam_charge = ?,
                       self_other_charge = ?,
+                      self_refund_charge = ?,
+                      self_unpaid_charge = ?,
+                      self_rent_charge = ?,
+                      self_utilities_charge = ?,
+                      self_daily_supplies_charge = ?,
+                      self_breakfast_charge = ?,
+                      self_lunch_charge = ?,
+                      self_dinner_charge = ?,
+                      self_rice_charge = ?,
+                      self_special_benefit_charge = ?,
+                      self_housing_subsidy_charge = ?,
                       self_paid_amount = ?,
                       self_paid_date = ?,
                       self_payment_method = ?,
@@ -132,6 +330,10 @@ def _update_sales_record(record_id, kbn, charge=None, paid_amount=None,
                     WHERE id = ?
                 """, (
                     new_charge or 0, new_snack or 0, new_exam or 0, new_other or 0,
+                    new_refund or 0, new_unpaid or 0, new_rent or 0,
+                    new_utilities or 0, new_daily_supplies or 0, new_breakfast or 0,
+                    new_lunch or 0, new_dinner or 0, new_rice or 0,
+                    new_special_benefit or 0, new_housing_subsidy or 0,
                     new_paid or 0, paid_date, method, status, memo, now, record_id,
                 ))
             return
@@ -197,7 +399,11 @@ def _update_sales_record(record_id, kbn, charge=None, paid_amount=None,
 
 def _add_manual_self_record(service_ym, facility_id, cert_number, child_name,
                             self_charge=0, snack_charge=0, exam_charge=0,
-                            other_charge=0, paid_amount=0, method=None,
+                            other_charge=0, refund_charge=0, unpaid_charge=0,
+                            rent_charge=0, utilities_charge=0, daily_supplies_charge=0,
+                            breakfast_charge=0, lunch_charge=0, dinner_charge=0,
+                            rice_charge=0, special_benefit_charge=0,
+                            housing_subsidy_charge=0, paid_amount=0, method=None,
                             memo=None):
     if not service_ym or not facility_id or not cert_number or not child_name:
         raise ValueError("サービス年月、施設、受給者証番号、利用者氏名は必須です。")
@@ -206,9 +412,27 @@ def _add_manual_self_record(service_ym, facility_id, cert_number, child_name,
     snack = int(snack_charge or 0)
     exam = int(exam_charge or 0)
     other = int(other_charge or 0)
+    refund = int(refund_charge or 0)
+    unpaid = int(unpaid_charge or 0)
+    rent = int(rent_charge or 0)
+    utilities = int(utilities_charge or 0)
+    daily_supplies = int(daily_supplies_charge or 0)
+    breakfast = int(breakfast_charge or 0)
+    lunch = int(lunch_charge or 0)
+    dinner = int(dinner_charge or 0)
+    rice = int(rice_charge or 0)
+    special_benefit = int(special_benefit_charge or 0)
+    housing_subsidy = int(housing_subsidy_charge or 0)
     paid = int(paid_amount or 0)
     paid_date = _today_jst().isoformat() if paid > 0 else None
-    status = _status_from_amounts(_self_total_from_values(base, snack, exam, other), paid)
+    status = _status_from_amounts(
+        _self_total_from_values(
+            base, snack, exam, other, refund, unpaid, rent, utilities,
+            daily_supplies, breakfast, lunch, dinner, rice, special_benefit,
+            housing_subsidy,
+        ),
+        paid,
+    )
 
     with db.get_conn() as conn:
         existing = conn.execute("""
@@ -225,13 +449,19 @@ def _add_manual_self_record(service_ym, facility_id, cert_number, child_name,
                 service_year_month, facility_id, cert_number, child_name,
                 self_charge, kokuho_charge,
                 self_snack_charge, self_exam_charge, self_other_charge,
+                self_refund_charge, self_unpaid_charge,
+                self_rent_charge, self_utilities_charge, self_daily_supplies_charge,
+                self_breakfast_charge, self_lunch_charge, self_dinner_charge,
+                self_rice_charge, self_special_benefit_charge, self_housing_subsidy_charge,
                 self_paid_amount, self_paid_date, self_payment_method,
                 self_payment_status, self_memo
             )
-            VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             service_ym, facility_id, cert_number.strip(), child_name.strip(),
-            base, snack, exam, other, paid, paid_date, method or None, status, memo,
+            base, snack, exam, other, refund, unpaid, rent, utilities,
+            daily_supplies, breakfast, lunch, dinner, rice, special_benefit,
+            housing_subsidy, paid, paid_date, method or None, status, memo,
         ))
 
 
@@ -482,12 +712,7 @@ def _as_int(value):
 
 
 def _self_total_from_record(r):
-    return (
-        (r.get('self_charge') or 0)
-        + (r.get('self_snack_charge') or 0)
-        + (r.get('self_exam_charge') or 0)
-        + (r.get('self_other_charge') or 0)
-    )
+    return _self_total_from_record_values(r)
 
 
 def _kokuho_total_from_record(r):
@@ -550,22 +775,21 @@ def _apply_paid_date_for_display(df, paid_col, date_col):
     return df
 
 
-def _recompute_self_invoice_totals(df):
-    """自己負担4項目の合計を、画面表示用DataFrameへ即時反映する。"""
+def _recompute_self_invoice_totals(df, is_share_layout=False):
+    """自己負担の入力項目から、画面表示用DataFrameへ合計を即時反映する。"""
     if df is None or df.empty:
         return df
 
     df = df.copy()
-    for col in ['自己負担額', 'おやつ代', '検査代', 'その他', '回収額']:
+    item_labels = [label for label, _field, _sign in _self_items(is_share_layout)]
+    for col in item_labels + ['回収額']:
         if col not in df.columns:
             df[col] = 0
         df[col] = df[col].fillna(0).map(_as_int)
 
-    df['合計請求額'] = (
-        df['自己負担額']
-        + df['おやつ代']
-        + df['検査代']
-        + df['その他']
+    df['合計請求額'] = df.apply(
+        lambda row: _self_total_from_labels(row, _self_items(is_share_layout)),
+        axis=1,
     )
     df['差'] = df['合計請求額'] - df['回収額']
     df['ステータス'] = df.apply(
@@ -576,7 +800,7 @@ def _recompute_self_invoice_totals(df):
     return df
 
 
-def _apply_editor_state_to_self_df(df, editor_key):
+def _apply_editor_state_to_self_df(df, editor_key, is_share_layout=False):
     """data_editorの未保存編集を反映してから合計請求額を再計算する。"""
     df = df.copy()
     editor_state = st.session_state.get(editor_key)
@@ -597,7 +821,7 @@ def _apply_editor_state_to_self_df(df, editor_key):
                         paid_changed = True
             if paid_changed and '入金日' in df.columns:
                 df.at[row_idx, '入金日'] = _today_jst() if _as_int(df.at[row_idx, '回収額']) > 0 else None
-    return _recompute_self_invoice_totals(df)
+    return _recompute_self_invoice_totals(df, is_share_layout)
 
 
 def _recompute_kokuho_invoice_totals(df):
@@ -658,15 +882,38 @@ def _build_split_df(records_list, show_diff_only=False):
         snack_charge = r.get('self_snack_charge') or 0
         exam_charge = r.get('self_exam_charge') or 0
         other_charge = r.get('self_other_charge') or 0
-        s_total = s_charge + snack_charge + exam_charge + other_charge
+        refund_charge = r.get('self_refund_charge') or 0
+        unpaid_charge = r.get('self_unpaid_charge') or 0
+        rent_charge = r.get('self_rent_charge') or 0
+        utilities_charge = r.get('self_utilities_charge') or 0
+        daily_supplies_charge = r.get('self_daily_supplies_charge') or 0
+        breakfast_charge = r.get('self_breakfast_charge') or 0
+        lunch_charge = r.get('self_lunch_charge') or 0
+        dinner_charge = r.get('self_dinner_charge') or 0
+        rice_charge = r.get('self_rice_charge') or 0
+        special_benefit_charge = r.get('self_special_benefit_charge') or 0
+        housing_subsidy_charge = r.get('self_housing_subsidy_charge') or 0
+        s_total = _self_total_from_record_values(r)
         s_paid = r['self_paid_amount'] or 0
         s_status = _status_from_amounts(s_total, s_paid)
         rows_self.append({
             **base,
             '自己負担額': s_charge,
+            'サービス料': s_charge,
             'おやつ代': snack_charge,
             '検査代': exam_charge,
             'その他': other_charge,
+            '返金': refund_charge,
+            '未収金': unpaid_charge,
+            '家賃': rent_charge,
+            '水光熱費': utilities_charge,
+            '日用品費': daily_supplies_charge,
+            '朝食': breakfast_charge,
+            '昼食': lunch_charge,
+            '夕食': dinner_charge,
+            '白米': rice_charge,
+            '特別給付費': special_benefit_charge,
+            '住宅補助': housing_subsidy_charge,
             '合計請求額': s_total,
             '回収額': s_paid,
             '差': s_total - s_paid if (s_total > 0 or s_paid > 0) else 0,
@@ -695,7 +942,7 @@ def _build_split_df(records_list, show_diff_only=False):
     return self_df, kokuho_df
 
 
-def _detect_changes(edited, original, kbn_key):
+def _detect_changes(edited, original, kbn_key, is_share_layout=False):
     changes = []
     for i in range(len(edited)):
         if i >= len(original):
@@ -703,16 +950,12 @@ def _detect_changes(edited, original, kbn_key):
         orig = original.iloc[i]
         new = edited.iloc[i]
         if kbn_key == 'self':
-            charge_col = '自己負担額'
-            extra_cols = ['おやつ代', '検査代', 'その他']
+            items = _self_items(is_share_layout)
+            charge_col = 'サービス料' if is_share_layout else '自己負担額'
+            extra_cols = [label for label, _field, _sign in items if label != charge_col]
             date_col = '入金日'
             old_total = _as_int(orig['合計請求額'])
-            new_total = (
-                _as_int(new['自己負担額'])
-                + _as_int(new['おやつ代'])
-                + _as_int(new['検査代'])
-                + _as_int(new['その他'])
-            )
+            new_total = _self_total_from_labels(new, items)
             extra_changed = any(_as_int(orig[c]) != _as_int(new[c]) for c in extra_cols)
             method_changed = (orig['回収方法'] or '') != (new['回収方法'] or '')
             new_method = new['回収方法']
@@ -745,9 +988,11 @@ def _detect_changes(edited, original, kbn_key):
                 'new_paid': new_paid,
                 'paid_date': auto_paid_date,
                 'method': new_method,
-                'snack_charge': _as_int(new['おやつ代']) if kbn_key == 'self' else None,
-                'exam_charge': _as_int(new['検査代']) if kbn_key == 'self' else None,
-                'other_charge': _as_int(new['その他']) if kbn_key == 'self' else None,
+                'self_values': {
+                    SELF_FIELD_PARAMS[field]: _as_int(new[label])
+                    for label, field, _sign in _self_items(is_share_layout)
+                    if kbn_key == 'self'
+                },
                 'addition_charge': None,
                 'adjustment_charge': None,
                 'old_memo': orig.get('備考') or '',
@@ -1546,6 +1791,20 @@ def _payment_method_choices(kbn):
     return list(dict.fromkeys(choices))
 
 
+def _self_kwargs_from_row(row, is_share_layout=False):
+    return {
+        SELF_FIELD_PARAMS[field]: _as_int(row.get(label, 0))
+        for label, field, _sign in _self_items(is_share_layout)
+    }
+
+
+def _copy_record_values_to_labels(record, is_share_layout=False):
+    values = {}
+    for label, field, _sign in _self_items(is_share_layout):
+        values[label] = record.get(field) or 0
+    return values
+
+
 def _set_bulk_selection(selection_key, editor_version_key, record_ids):
     st.session_state[selection_key] = [int(rid) for rid in record_ids]
     st.session_state[editor_version_key] = st.session_state.get(editor_version_key, 0) + 1
@@ -1583,7 +1842,8 @@ def _render_bulk_selection_buttons(kbn, area_key, selection_key, editor_version_
 
 
 def _render_payment_tools(kbn, label, edited_df, selected_ym, selected_facility_id,
-                          state_key, selection_key, editor_version_key):
+                          state_key, selection_key, editor_version_key,
+                          is_share_layout=False):
     selected_rows = edited_df[edited_df['一括対象'] == True].copy()
     method_choices = _payment_method_choices(kbn)
     record_ids = [int(rid) for rid in edited_df['id'].tolist()] if 'id' in edited_df.columns else []
@@ -1625,18 +1885,18 @@ def _render_payment_tools(kbn, label, edited_df, selected_ym, selected_facility_
                         kwargs = {
                             'record_id': int(row['id']),
                             'kbn': kbn,
-                            'charge': _as_int(row['自己負担額'] if kbn == 'self' else row['国保請求額']),
+                            'charge': _as_int(
+                                row['サービス料'] if kbn == 'self' and is_share_layout
+                                else row['自己負担額'] if kbn == 'self'
+                                else row['国保請求額']
+                            ),
                             'paid_amount': _as_int(row['合計請求額'] if kbn == 'self' else row['国保請求額']),
                             'paid_date': _today_jst().isoformat(),
                             'method': bulk_method,
                             'memo': row.get('備考') or None,
-                            'other_charge': _as_int(row['その他']) if kbn == 'self' else None,
                         }
                         if kbn == 'self':
-                            kwargs.update({
-                                'snack_charge': _as_int(row['おやつ代']),
-                                'exam_charge': _as_int(row['検査代']),
-                            })
+                            kwargs.update(_self_kwargs_from_row(row, is_share_layout))
                         else:
                             kwargs.update({
                                 'addition_charge': None,
@@ -1694,10 +1954,12 @@ def _render_payment_tools(kbn, label, edited_df, selected_ym, selected_facility_
                             'paid_date': None,
                             'method': None,
                             'memo': row.get('備考') or None,
-                            'other_charge': 0,
                         }
                         if kbn == 'self':
-                            kwargs.update({'snack_charge': 0, 'exam_charge': 0})
+                            kwargs.update({
+                                param: 0
+                                for param in SELF_FIELD_PARAMS.values()
+                            })
                         else:
                             kwargs.update({'addition_charge': 0, 'adjustment_charge': 0})
                         _update_sales_record(**kwargs)
@@ -1713,7 +1975,21 @@ def _render_payment_tools(kbn, label, edited_df, selected_ym, selected_facility_
                 st.rerun()
 
 
-def _render_manual_add(kbn, label, selected_ym, selected_facility_id, selected_facility_label, state_key):
+def _render_money_inputs(item_labels, key_prefix, columns=4):
+    values = {}
+    for start in range(0, len(item_labels), columns):
+        cols = st.columns(min(columns, len(item_labels) - start))
+        for idx, item_label in enumerate(item_labels[start:start + columns]):
+            with cols[idx]:
+                values[item_label] = st.number_input(
+                    item_label, min_value=0, step=1,
+                    key=f"{key_prefix}_{start + idx}",
+                )
+    return values
+
+
+def _render_manual_add(kbn, label, selected_ym, selected_facility_id,
+                       selected_facility_label, state_key, is_share_layout=False):
     with st.expander(f"{label}の行を追加", expanded=False):
         st.caption("CSVに出てこない利用者や追加請求を、選択中のサービス年月に1行追加します。")
         manual_facility_options = {
@@ -1747,14 +2023,12 @@ def _render_manual_add(kbn, label, selected_ym, selected_facility_id, selected_f
                     st.caption("国保請求は回収方法を使いません。")
 
             if kbn == 'self':
-                m_cols3 = st.columns(5)
-                labels = ["自己負担額", "おやつ代", "検査代", "その他"]
-                values = []
-                for idx, col in enumerate(m_cols3[:4]):
-                    with col:
-                        values.append(st.number_input(labels[idx], min_value=0, step=1, key=f"manual_{kbn}_{idx}"))
-                with m_cols3[4]:
-                    manual_paid = st.number_input("回収額", min_value=0, step=1, key=f"manual_paid_{kbn}")
+                item_labels = [item[0] for item in _self_items(is_share_layout)]
+                values = _render_money_inputs(
+                    item_labels,
+                    f"manual_{kbn}_{selected_ym}_{selected_facility_id}_{'share' if is_share_layout else 'normal'}",
+                )
+                manual_paid = st.number_input("回収額", min_value=0, step=1, key=f"manual_paid_{kbn}")
             else:
                 m_cols3 = st.columns(2)
                 values = [0, 0, 0, 0]
@@ -1773,10 +2047,10 @@ def _render_manual_add(kbn, label, selected_ym, selected_facility_id, selected_f
                             facility_id=manual_facility_id,
                             cert_number=manual_cert,
                             child_name=manual_name,
-                            self_charge=values[0],
-                            snack_charge=values[1],
-                            exam_charge=values[2],
-                            other_charge=values[3],
+                            **{
+                                SELF_FIELD_PARAMS[field]: _as_int(values.get(item_label, 0))
+                                for item_label, field, _sign in _self_items(is_share_layout)
+                            },
                             paid_amount=manual_paid,
                             method=manual_method or None,
                             memo=manual_memo or None,
@@ -1800,6 +2074,139 @@ def _render_manual_add(kbn, label, selected_ym, selected_facility_id, selected_f
                     st.rerun()
                 except Exception as e:
                     st.error(f"追加できませんでした: {e}")
+
+
+def _previous_year_month(ym):
+    try:
+        year, month = [int(part) for part in ym.split('-')]
+    except Exception:
+        return None
+    month -= 1
+    if month == 0:
+        year -= 1
+        month = 12
+    return f"{year:04d}-{month:02d}"
+
+
+def _render_previous_month_copy(selected_ym, selected_facility_id, selected_facility_label,
+                                state_key, is_share_layout=False):
+    with st.expander("前月項目のコピー", expanded=False):
+        st.caption("前月の固定費などを、同じ利用者の今月行へコピーします。入金額・入金日はコピーしません。")
+        if selected_facility_id is None:
+            st.info("前月コピーを使う場合は、先に施設を1つ選んでください。")
+            return
+
+        prev_ym = _previous_year_month(selected_ym)
+        if not prev_ym:
+            st.warning("サービス提供年月を確認してください。")
+            return
+
+        current_records = db.list_records(service_ym=selected_ym, facility_id=selected_facility_id)
+        prev_records = db.list_records(service_ym=prev_ym, facility_id=selected_facility_id)
+        if not current_records:
+            st.info("今月の行がありません。先にCSV取込または行追加をしてください。")
+            return
+        if not prev_records:
+            st.info(f"{prev_ym} の前月データがありません。")
+            return
+
+        prev_by_cert = {str(r.get('cert_number')): r for r in prev_records}
+        current_by_id = {int(r['id']): r for r in current_records}
+        item_labels = [label for label, _field, _sign in _self_items(is_share_layout)]
+        total_label = "利用者請求額合計" if is_share_layout else "合計請求額"
+
+        rows = []
+        for current in current_records:
+            previous = prev_by_cert.get(str(current.get('cert_number')))
+            if not previous:
+                continue
+            row = {
+                'コピー対象': False,
+                'id': int(current['id']),
+                '利用者氏名': current.get('child_name') or '',
+                '受給者証番号': current.get('cert_number') or '',
+            }
+            row.update(_copy_record_values_to_labels(previous, is_share_layout))
+            row[total_label] = _self_total_from_labels(row, _self_items(is_share_layout))
+            rows.append(row)
+
+        if not rows:
+            st.info("前月と今月で一致する利用者がありません。")
+            return
+
+        copy_df = pd.DataFrame(rows)
+        copy_selection_key = f"prev_copy_select_{selected_ym}_{selected_facility_id}_{'share' if is_share_layout else 'normal'}"
+        copy_version_key = f"{copy_selection_key}_version"
+        copy_version = st.session_state.get(copy_version_key, 0)
+        if copy_selection_key in st.session_state:
+            selected_ids = {int(rid) for rid in st.session_state.get(copy_selection_key, [])}
+            copy_df['コピー対象'] = copy_df['id'].map(lambda rid: int(rid) in selected_ids)
+
+        record_ids = [int(rid) for rid in copy_df['id'].tolist()]
+        _render_bulk_selection_buttons(
+            'self_copy', 'prev', copy_selection_key, copy_version_key,
+            record_ids, selected_ym, selected_facility_id,
+        )
+
+        column_config = {
+            'コピー対象': st.column_config.CheckboxColumn('コピー対象', width='small'),
+            'id': st.column_config.NumberColumn('id', disabled=True, width='small'),
+            '利用者氏名': st.column_config.TextColumn('利用者氏名', disabled=True),
+            '受給者証番号': st.column_config.TextColumn('受給者証番号', disabled=True),
+            total_label: st.column_config.NumberColumn(total_label, format='localized', disabled=True),
+        }
+        for item_label in item_labels:
+            column_config[item_label] = st.column_config.NumberColumn(
+                item_label, format='localized', disabled=True,
+            )
+
+        edited_copy = st.data_editor(
+            copy_df,
+            column_config=column_config,
+            column_order=['コピー対象', 'id', '利用者氏名', '受給者証番号', *item_labels, total_label],
+            hide_index=True,
+            width='stretch',
+            height=320,
+            key=f"prev_copy_editor_{selected_ym}_{selected_facility_id}_{copy_version}",
+        )
+        selected_copy = edited_copy[edited_copy['コピー対象'] == True].copy()
+        st.session_state[copy_selection_key] = [
+            int(row['id']) for _, row in selected_copy.iterrows()
+        ]
+        st.metric("コピー対象", f"{len(selected_copy)} 行")
+
+        if st.button(
+            "前月項目をコピー",
+            type='primary',
+            disabled=selected_copy.empty,
+            width='stretch',
+            key=f"prev_copy_btn_{selected_ym}_{selected_facility_id}_{'share' if is_share_layout else 'normal'}",
+        ):
+            success = 0
+            errors = []
+            for _, row in selected_copy.iterrows():
+                try:
+                    current = current_by_id[int(row['id'])]
+                    kwargs = {
+                        'record_id': int(row['id']),
+                        'kbn': 'self',
+                        'paid_amount': current.get('self_paid_amount') or 0,
+                        'paid_date': current.get('self_paid_date'),
+                        'method': current.get('self_payment_method'),
+                        'memo': None,
+                    }
+                    kwargs.update(_self_kwargs_from_row(row, is_share_layout))
+                    _update_sales_record(**kwargs)
+                    success += 1
+                except Exception as e:
+                    errors.append(f"id={row.get('id')}: {e}")
+            if success:
+                st.success(f"前月項目をコピーしました: {success}行")
+                st.session_state.pop(state_key, None)
+                _clear_bulk_selection(copy_selection_key, copy_version_key)
+                st.rerun()
+            if errors:
+                st.error("エラー:\n" + "\n".join(errors))
 
 
 def render_payment_page(kbn):
@@ -1840,6 +2247,7 @@ def render_payment_page(kbn):
             key=f'{kbn}_fac',
         )
         selected_facility_id = facility_options[selected_facility_label]
+    is_share_layout = kbn == 'self' and selected_facility_id is not None and _is_share_facility_label(selected_facility_label)
 
     records = db.list_records(service_ym=selected_ym, facility_id=selected_facility_id)
     if not records:
@@ -1850,13 +2258,8 @@ def render_payment_page(kbn):
     if kbn == 'self':
         df = self_df
         editor_base_key = f"top_editor_self_{selected_ym}_{selected_facility_id}"
-        column_labels = {
-            '自己負担額': '自己負担額',
-            'おやつ代': 'おやつ代',
-            '検査代': '検査代',
-            'その他': 'その他',
-        }
-        total_label = "自己負担 合計請求"
+        column_labels = {label: label for label, _field, _sign in _self_items(is_share_layout)}
+        total_label = "利用者請求額合計" if is_share_layout else "合計請求額"
     else:
         df = kokuho_df
         editor_base_key = f"top_editor_kokuho_{selected_ym}_{selected_facility_id}"
@@ -1883,7 +2286,7 @@ def render_payment_page(kbn):
         df['一括対象'] = df['id'].map(lambda rid: int(rid) in selected_ids)
 
     display_df = (
-        _apply_editor_state_to_self_df(df, editor_key)
+        _apply_editor_state_to_self_df(df, editor_key, is_share_layout)
         if kbn == 'self'
         else _apply_editor_state_to_kokuho_df(df, editor_key)
     )
@@ -1920,7 +2323,7 @@ def render_payment_page(kbn):
     }
     if kbn == 'self':
         base_columns.update({
-            '合計請求額': st.column_config.NumberColumn('合計請求額', format='localized', disabled=True),
+            '合計請求額': st.column_config.NumberColumn(total_label, format='localized', disabled=True),
             '回収額': st.column_config.NumberColumn('回収額', format='localized', step=1, min_value=0),
             '差': st.column_config.NumberColumn('差', format='localized', disabled=True),
             '入金日': st.column_config.DateColumn('入金日', format='YYYY-MM-DD', disabled=True),
@@ -1947,16 +2350,30 @@ def render_payment_page(kbn):
             '備考': st.column_config.TextColumn('備考', width='medium'),
         })
 
+    if kbn == 'self':
+        item_order = [label for label, _field, _sign in _self_items(is_share_layout)]
+        column_order = [
+            'id', '一括対象', '利用者氏名', '受給者証番号', '施設',
+            *item_order, '合計請求額', '回収額', '差', '回収方法',
+            '入金日', 'ステータス', '備考',
+        ]
+    else:
+        column_order = [
+            'id', '一括対象', '利用者氏名', '受給者証番号', '施設',
+            '国保請求額', '回収額', '差', '記載日', 'ステータス', '備考',
+        ]
+
     edited_df = st.data_editor(
         styling.style_editor_df(display_df),
         column_config=base_columns,
+        column_order=[col for col in column_order if col in display_df.columns],
         hide_index=True,
         width='stretch',
         height=430,
         key=editor_key,
     )
     edited_df = (
-        _recompute_self_invoice_totals(edited_df)
+        _recompute_self_invoice_totals(edited_df, is_share_layout)
         if kbn == 'self'
         else _recompute_kokuho_invoice_totals(edited_df)
     )
@@ -1968,11 +2385,27 @@ def render_payment_page(kbn):
 
     _render_payment_tools(
         kbn, label, edited_df, selected_ym, selected_facility_id,
-        state_key, selection_key, editor_version_key
+        state_key, selection_key, editor_version_key, is_share_layout
     )
-    _render_manual_add(kbn, label, selected_ym, selected_facility_id, selected_facility_label, state_key)
+    if kbn == 'self':
+        add_col, copy_col = st.columns(2)
+        with add_col:
+            _render_manual_add(
+                kbn, label, selected_ym, selected_facility_id,
+                selected_facility_label, state_key, is_share_layout
+            )
+        with copy_col:
+            _render_previous_month_copy(
+                selected_ym, selected_facility_id, selected_facility_label,
+                state_key, is_share_layout
+            )
+    else:
+        _render_manual_add(
+            kbn, label, selected_ym, selected_facility_id,
+            selected_facility_label, state_key, is_share_layout
+        )
 
-    changes = _detect_changes(edited_df, original_df, kbn)
+    changes = _detect_changes(edited_df, original_df, kbn, is_share_layout)
     risky_changes = [c for c in changes if c['risky']]
     st.markdown("---")
     save_cols = st.columns([1, 4])
@@ -2016,10 +2449,7 @@ def render_payment_page(kbn):
                     'other_charge': c.get('other_charge'),
                 }
                 if kbn == 'self':
-                    kwargs.update({
-                        'snack_charge': c.get('snack_charge'),
-                        'exam_charge': c.get('exam_charge'),
-                    })
+                    kwargs.update(c.get('self_values') or {})
                 else:
                     kwargs.update({
                         'addition_charge': c.get('addition_charge'),

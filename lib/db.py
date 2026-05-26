@@ -249,6 +249,20 @@ PAYMENT_METHODS_SELF = ["SMBC", "振込", "現金", "その他"]    # 自己負�
 PAYMENT_METHODS_KOKUHO = ["国保", "自己"]                    # 国保請求用
 PAYMENT_METHODS = PAYMENT_METHODS_SELF + PAYMENT_METHODS_KOKUHO  # 全選択肢
 
+SELF_EXTRA_CHARGE_COLUMNS = {
+    'self_refund_charge': 'INTEGER DEFAULT 0',
+    'self_unpaid_charge': 'INTEGER DEFAULT 0',
+    'self_rent_charge': 'INTEGER DEFAULT 0',
+    'self_utilities_charge': 'INTEGER DEFAULT 0',
+    'self_daily_supplies_charge': 'INTEGER DEFAULT 0',
+    'self_breakfast_charge': 'INTEGER DEFAULT 0',
+    'self_lunch_charge': 'INTEGER DEFAULT 0',
+    'self_dinner_charge': 'INTEGER DEFAULT 0',
+    'self_rice_charge': 'INTEGER DEFAULT 0',
+    'self_special_benefit_charge': 'INTEGER DEFAULT 0',
+    'self_housing_subsidy_charge': 'INTEGER DEFAULT 0',
+}
+
 
 def get_payment_methods(kbn):
     """区分(kbn)に応じた回収手段の選択肢を返す。
@@ -349,6 +363,17 @@ def init_db():
             self_snack_charge INTEGER DEFAULT 0,
             self_exam_charge INTEGER DEFAULT 0,
             self_other_charge INTEGER DEFAULT 0,
+            self_refund_charge INTEGER DEFAULT 0,
+            self_unpaid_charge INTEGER DEFAULT 0,
+            self_rent_charge INTEGER DEFAULT 0,
+            self_utilities_charge INTEGER DEFAULT 0,
+            self_daily_supplies_charge INTEGER DEFAULT 0,
+            self_breakfast_charge INTEGER DEFAULT 0,
+            self_lunch_charge INTEGER DEFAULT 0,
+            self_dinner_charge INTEGER DEFAULT 0,
+            self_rice_charge INTEGER DEFAULT 0,
+            self_special_benefit_charge INTEGER DEFAULT 0,
+            self_housing_subsidy_charge INTEGER DEFAULT 0,
             self_paid_amount INTEGER DEFAULT 0,
             self_paid_date DATE,
             self_payment_method TEXT,
@@ -455,6 +480,9 @@ def init_db():
             conn.execute("ALTER TABLE monthly_records ADD COLUMN self_exam_charge INTEGER DEFAULT 0")
         if 'self_other_charge' not in record_cols:
             conn.execute("ALTER TABLE monthly_records ADD COLUMN self_other_charge INTEGER DEFAULT 0")
+        for col, col_type in SELF_EXTRA_CHARGE_COLUMNS.items():
+            if col not in record_cols:
+                conn.execute(f"ALTER TABLE monthly_records ADD COLUMN {col} {col_type}")
         if 'kokuho_addition_charge' not in record_cols:
             conn.execute("ALTER TABLE monthly_records ADD COLUMN kokuho_addition_charge INTEGER DEFAULT 0")
         if 'kokuho_adjustment_charge' not in record_cols:
@@ -466,7 +494,23 @@ def init_db():
         conn.execute("""
             UPDATE monthly_records
             SET self_payment_status = '対象外'
-            WHERE (self_charge IS NULL OR self_charge <= 0)
+            WHERE (
+                COALESCE(self_charge, 0)
+                + COALESCE(self_snack_charge, 0)
+                + COALESCE(self_exam_charge, 0)
+                + COALESCE(self_other_charge, 0)
+                + COALESCE(self_unpaid_charge, 0)
+                + COALESCE(self_rent_charge, 0)
+                + COALESCE(self_utilities_charge, 0)
+                + COALESCE(self_daily_supplies_charge, 0)
+                + COALESCE(self_breakfast_charge, 0)
+                + COALESCE(self_lunch_charge, 0)
+                + COALESCE(self_dinner_charge, 0)
+                + COALESCE(self_rice_charge, 0)
+                - COALESCE(self_special_benefit_charge, 0)
+                - COALESCE(self_housing_subsidy_charge, 0)
+                - COALESCE(self_refund_charge, 0)
+            ) <= 0
               AND (self_payment_status = '未入金' OR self_payment_status IS NULL)
         """)
         conn.execute("""
@@ -524,6 +568,7 @@ def ensure_sales_schema():
             'self_snack_charge': 'INTEGER DEFAULT 0',
             'self_exam_charge': 'INTEGER DEFAULT 0',
             'self_other_charge': 'INTEGER DEFAULT 0',
+            **SELF_EXTRA_CHARGE_COLUMNS,
             'kokuho_addition_charge': 'INTEGER DEFAULT 0',
             'kokuho_adjustment_charge': 'INTEGER DEFAULT 0',
             'kokuho_other_charge': 'INTEGER DEFAULT 0',
@@ -655,6 +700,17 @@ def list_records(service_ym=None, facility_id=None):
                 + COALESCE(r.self_snack_charge, 0)
                 + COALESCE(r.self_exam_charge, 0)
                 + COALESCE(r.self_other_charge, 0)
+                + COALESCE(r.self_unpaid_charge, 0)
+                + COALESCE(r.self_rent_charge, 0)
+                + COALESCE(r.self_utilities_charge, 0)
+                + COALESCE(r.self_daily_supplies_charge, 0)
+                + COALESCE(r.self_breakfast_charge, 0)
+                + COALESCE(r.self_lunch_charge, 0)
+                + COALESCE(r.self_dinner_charge, 0)
+                + COALESCE(r.self_rice_charge, 0)
+                - COALESCE(r.self_special_benefit_charge, 0)
+                - COALESCE(r.self_housing_subsidy_charge, 0)
+                - COALESCE(r.self_refund_charge, 0)
                 - COALESCE(r.self_paid_amount, 0)) AS self_diff,
                (COALESCE(r.kokuho_charge, 0)
                 - COALESCE(r.kokuho_paid_amount, 0)) AS kokuho_diff
@@ -708,14 +764,39 @@ def update_payment(record_id, kbn, paid_amount, paid_date, method, memo=None):
                   method=method, memo=memo)
 
 
-def _self_total_charge_from_values(base, snack=0, exam=0, other=0):
-    return (base or 0) + (snack or 0) + (exam or 0) + (other or 0)
+def _self_total_charge_from_values(
+    base, snack=0, exam=0, other=0, refund=0, unpaid=0,
+    rent=0, utilities=0, daily_supplies=0, breakfast=0, lunch=0, dinner=0,
+    rice=0, special_benefit=0, housing_subsidy=0,
+):
+    return (
+        (base or 0)
+        + (snack or 0)
+        + (exam or 0)
+        + (other or 0)
+        + (unpaid or 0)
+        + (rent or 0)
+        + (utilities or 0)
+        + (daily_supplies or 0)
+        + (breakfast or 0)
+        + (lunch or 0)
+        + (dinner or 0)
+        + (rice or 0)
+        - (special_benefit or 0)
+        - (housing_subsidy or 0)
+        - (refund or 0)
+    )
 
 
 def update_record(record_id, kbn,
                   charge=None, paid_amount=None, paid_date=None,
                   method=None, memo=None,
                   snack_charge=None, exam_charge=None, other_charge=None,
+                  refund_charge=None, unpaid_charge=None,
+                  rent_charge=None, utilities_charge=None,
+                  daily_supplies_charge=None, breakfast_charge=None,
+                  lunch_charge=None, dinner_charge=None, rice_charge=None,
+                  special_benefit_charge=None, housing_subsidy_charge=None,
                   addition_charge=None, adjustment_charge=None):
     """請求額・回収額・回収手段・入金日・備考を一括更新。
     kbn = 'self' or 'kokuho'。自己負担はおやつ代等を足した合計で状態判定する。"""
@@ -745,8 +826,55 @@ def update_record(record_id, kbn,
                 other_charge if other_charge is not None
                 else rec['self_other_charge'] if 'self_other_charge' in rec.keys() else 0
             )
+            new_refund = (
+                refund_charge if refund_charge is not None
+                else rec['self_refund_charge'] if 'self_refund_charge' in rec.keys() else 0
+            )
+            new_unpaid = (
+                unpaid_charge if unpaid_charge is not None
+                else rec['self_unpaid_charge'] if 'self_unpaid_charge' in rec.keys() else 0
+            )
+            new_rent = (
+                rent_charge if rent_charge is not None
+                else rec['self_rent_charge'] if 'self_rent_charge' in rec.keys() else 0
+            )
+            new_utilities = (
+                utilities_charge if utilities_charge is not None
+                else rec['self_utilities_charge'] if 'self_utilities_charge' in rec.keys() else 0
+            )
+            new_daily_supplies = (
+                daily_supplies_charge if daily_supplies_charge is not None
+                else rec['self_daily_supplies_charge'] if 'self_daily_supplies_charge' in rec.keys() else 0
+            )
+            new_breakfast = (
+                breakfast_charge if breakfast_charge is not None
+                else rec['self_breakfast_charge'] if 'self_breakfast_charge' in rec.keys() else 0
+            )
+            new_lunch = (
+                lunch_charge if lunch_charge is not None
+                else rec['self_lunch_charge'] if 'self_lunch_charge' in rec.keys() else 0
+            )
+            new_dinner = (
+                dinner_charge if dinner_charge is not None
+                else rec['self_dinner_charge'] if 'self_dinner_charge' in rec.keys() else 0
+            )
+            new_rice = (
+                rice_charge if rice_charge is not None
+                else rec['self_rice_charge'] if 'self_rice_charge' in rec.keys() else 0
+            )
+            new_special_benefit = (
+                special_benefit_charge if special_benefit_charge is not None
+                else rec['self_special_benefit_charge'] if 'self_special_benefit_charge' in rec.keys() else 0
+            )
+            new_housing_subsidy = (
+                housing_subsidy_charge if housing_subsidy_charge is not None
+                else rec['self_housing_subsidy_charge'] if 'self_housing_subsidy_charge' in rec.keys() else 0
+            )
             status_charge = _self_total_charge_from_values(
-                new_charge, new_snack, new_exam, new_other
+                new_charge, new_snack, new_exam, new_other,
+                new_refund, new_unpaid, new_rent, new_utilities,
+                new_daily_supplies, new_breakfast, new_lunch, new_dinner,
+                new_rice, new_special_benefit, new_housing_subsidy,
             )
         else:
             new_addition = (
@@ -776,6 +904,17 @@ def update_record(record_id, kbn,
                       self_snack_charge = ?,
                       self_exam_charge = ?,
                       self_other_charge = ?,
+                      self_refund_charge = ?,
+                      self_unpaid_charge = ?,
+                      self_rent_charge = ?,
+                      self_utilities_charge = ?,
+                      self_daily_supplies_charge = ?,
+                      self_breakfast_charge = ?,
+                      self_lunch_charge = ?,
+                      self_dinner_charge = ?,
+                      self_rice_charge = ?,
+                      self_special_benefit_charge = ?,
+                      self_housing_subsidy_charge = ?,
                       self_paid_amount = ?,
                       self_paid_date = ?,
                       self_payment_method = ?,
@@ -784,6 +923,10 @@ def update_record(record_id, kbn,
                     WHERE id = ?
                 """, (
                     new_charge or 0, new_snack or 0, new_exam or 0, new_other or 0,
+                    new_refund or 0, new_unpaid or 0, new_rent or 0,
+                    new_utilities or 0, new_daily_supplies or 0, new_breakfast or 0,
+                    new_lunch or 0, new_dinner or 0, new_rice or 0,
+                    new_special_benefit or 0, new_housing_subsidy or 0,
                     new_paid or 0, paid_date, method, status, now, record_id,
                 ))
             else:
@@ -793,6 +936,17 @@ def update_record(record_id, kbn,
                       self_snack_charge = ?,
                       self_exam_charge = ?,
                       self_other_charge = ?,
+                      self_refund_charge = ?,
+                      self_unpaid_charge = ?,
+                      self_rent_charge = ?,
+                      self_utilities_charge = ?,
+                      self_daily_supplies_charge = ?,
+                      self_breakfast_charge = ?,
+                      self_lunch_charge = ?,
+                      self_dinner_charge = ?,
+                      self_rice_charge = ?,
+                      self_special_benefit_charge = ?,
+                      self_housing_subsidy_charge = ?,
                       self_paid_amount = ?,
                       self_paid_date = ?,
                       self_payment_method = ?,
@@ -802,6 +956,10 @@ def update_record(record_id, kbn,
                     WHERE id = ?
                 """, (
                     new_charge or 0, new_snack or 0, new_exam or 0, new_other or 0,
+                    new_refund or 0, new_unpaid or 0, new_rent or 0,
+                    new_utilities or 0, new_daily_supplies or 0, new_breakfast or 0,
+                    new_lunch or 0, new_dinner or 0, new_rice or 0,
+                    new_special_benefit or 0, new_housing_subsidy or 0,
                     new_paid or 0, paid_date, method, status, memo_param, now, record_id,
                 ))
         else:
@@ -846,7 +1004,11 @@ def update_record(record_id, kbn,
 
 def add_manual_self_record(service_ym, facility_id, cert_number, child_name,
                            self_charge=0, snack_charge=0, exam_charge=0,
-                           other_charge=0, paid_amount=0, method=None,
+                           other_charge=0, refund_charge=0, unpaid_charge=0,
+                           rent_charge=0, utilities_charge=0, daily_supplies_charge=0,
+                           breakfast_charge=0, lunch_charge=0, dinner_charge=0,
+                           rice_charge=0, special_benefit_charge=0,
+                           housing_subsidy_charge=0, paid_amount=0, method=None,
                            memo=None):
     """CSVにない自己負担のみの利用者を1行追加する。既存行は上書きしない。"""
     if not service_ym or not facility_id or not cert_number or not child_name:
@@ -856,9 +1018,24 @@ def add_manual_self_record(service_ym, facility_id, cert_number, child_name,
     snack = int(snack_charge or 0)
     exam = int(exam_charge or 0)
     other = int(other_charge or 0)
+    refund = int(refund_charge or 0)
+    unpaid = int(unpaid_charge or 0)
+    rent = int(rent_charge or 0)
+    utilities = int(utilities_charge or 0)
+    daily_supplies = int(daily_supplies_charge or 0)
+    breakfast = int(breakfast_charge or 0)
+    lunch = int(lunch_charge or 0)
+    dinner = int(dinner_charge or 0)
+    rice = int(rice_charge or 0)
+    special_benefit = int(special_benefit_charge or 0)
+    housing_subsidy = int(housing_subsidy_charge or 0)
     paid = int(paid_amount or 0)
     paid_date = datetime.now(ZoneInfo("Asia/Tokyo")).date().isoformat() if paid > 0 else None
-    total_charge = _self_total_charge_from_values(base, snack, exam, other)
+    total_charge = _self_total_charge_from_values(
+        base, snack, exam, other, refund, unpaid, rent, utilities,
+        daily_supplies, breakfast, lunch, dinner, rice, special_benefit,
+        housing_subsidy,
+    )
     status = _compute_status(total_charge, paid)
 
     with get_conn() as conn:
@@ -876,13 +1053,19 @@ def add_manual_self_record(service_ym, facility_id, cert_number, child_name,
                 service_year_month, facility_id, cert_number, child_name,
                 self_charge, kokuho_charge,
                 self_snack_charge, self_exam_charge, self_other_charge,
+                self_refund_charge, self_unpaid_charge,
+                self_rent_charge, self_utilities_charge, self_daily_supplies_charge,
+                self_breakfast_charge, self_lunch_charge, self_dinner_charge,
+                self_rice_charge, self_special_benefit_charge, self_housing_subsidy_charge,
                 self_paid_amount, self_paid_date, self_payment_method,
                 self_payment_status, self_memo
             )
-            VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             service_ym, facility_id, cert_number.strip(), child_name.strip(),
-            base, snack, exam, other, paid, paid_date, method or None, status, memo,
+            base, snack, exam, other, refund, unpaid, rent, utilities,
+            daily_supplies, breakfast, lunch, dinner, rice, special_benefit,
+            housing_subsidy, paid, paid_date, method or None, status, memo,
         ))
 
 
@@ -942,6 +1125,17 @@ def list_records_in_range(start_ym=None, end_ym=None, facility_id=None):
                 + COALESCE(r.self_snack_charge, 0)
                 + COALESCE(r.self_exam_charge, 0)
                 + COALESCE(r.self_other_charge, 0)
+                + COALESCE(r.self_unpaid_charge, 0)
+                + COALESCE(r.self_rent_charge, 0)
+                + COALESCE(r.self_utilities_charge, 0)
+                + COALESCE(r.self_daily_supplies_charge, 0)
+                + COALESCE(r.self_breakfast_charge, 0)
+                + COALESCE(r.self_lunch_charge, 0)
+                + COALESCE(r.self_dinner_charge, 0)
+                + COALESCE(r.self_rice_charge, 0)
+                - COALESCE(r.self_special_benefit_charge, 0)
+                - COALESCE(r.self_housing_subsidy_charge, 0)
+                - COALESCE(r.self_refund_charge, 0)
                 - COALESCE(r.self_paid_amount, 0)) AS self_diff,
                (COALESCE(r.kokuho_charge, 0)
                 - COALESCE(r.kokuho_paid_amount, 0)) AS kokuho_diff
@@ -1223,7 +1417,21 @@ def summary_by_facility(service_ym=None):
     sql = """
         SELECT f.short_code, f.facility_name,
                COUNT(*) AS count,
-               SUM(COALESCE(r.self_charge, 0)) AS self_charge_total,
+               SUM(COALESCE(r.self_charge, 0)
+                   + COALESCE(r.self_snack_charge, 0)
+                   + COALESCE(r.self_exam_charge, 0)
+                   + COALESCE(r.self_other_charge, 0)
+                   + COALESCE(r.self_unpaid_charge, 0)
+                   + COALESCE(r.self_rent_charge, 0)
+                   + COALESCE(r.self_utilities_charge, 0)
+                   + COALESCE(r.self_daily_supplies_charge, 0)
+                   + COALESCE(r.self_breakfast_charge, 0)
+                   + COALESCE(r.self_lunch_charge, 0)
+                   + COALESCE(r.self_dinner_charge, 0)
+                   + COALESCE(r.self_rice_charge, 0)
+                   - COALESCE(r.self_special_benefit_charge, 0)
+                   - COALESCE(r.self_housing_subsidy_charge, 0)
+                   - COALESCE(r.self_refund_charge, 0)) AS self_charge_total,
                SUM(COALESCE(r.self_paid_amount, 0)) AS self_paid_total,
                SUM(COALESCE(r.kokuho_charge, 0)) AS kokuho_charge_total,
                SUM(COALESCE(r.kokuho_paid_amount, 0)) AS kokuho_paid_total
@@ -2486,7 +2694,18 @@ def summary_by_method(service_ym=None):
                    COALESCE(self_charge, 0)
                    + COALESCE(self_snack_charge, 0)
                    + COALESCE(self_exam_charge, 0)
-                   + COALESCE(self_other_charge, 0) AS charge,
+                   + COALESCE(self_other_charge, 0)
+                   + COALESCE(self_unpaid_charge, 0)
+                   + COALESCE(self_rent_charge, 0)
+                   + COALESCE(self_utilities_charge, 0)
+                   + COALESCE(self_daily_supplies_charge, 0)
+                   + COALESCE(self_breakfast_charge, 0)
+                   + COALESCE(self_lunch_charge, 0)
+                   + COALESCE(self_dinner_charge, 0)
+                   + COALESCE(self_rice_charge, 0)
+                   - COALESCE(self_special_benefit_charge, 0)
+                   - COALESCE(self_housing_subsidy_charge, 0)
+                   - COALESCE(self_refund_charge, 0) AS charge,
                    COALESCE(self_paid_amount, 0) AS paid
             FROM monthly_records
             WHERE 1=1 {ym_filter}
