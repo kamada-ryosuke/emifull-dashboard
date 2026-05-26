@@ -942,6 +942,25 @@ def _build_split_df(records_list, show_diff_only=False):
     return self_df, kokuho_df
 
 
+def _empty_payment_df(kbn):
+    base_columns = ['id', '一括対象', '利用者氏名', '受給者証番号', '施設']
+    if kbn == 'self':
+        item_columns = [
+            '自己負担額', 'サービス料', 'おやつ代', '検査代', 'その他', '返金', '未収金',
+            '家賃', '水光熱費', '日用品費', '朝食', '昼食', '夕食', '白米',
+            '特別給付費', '住宅補助',
+        ]
+        return pd.DataFrame(columns=[
+            *base_columns,
+            *item_columns,
+            '合計請求額', '回収額', '差', '回収方法', '入金日', 'ステータス', '備考',
+        ])
+    return pd.DataFrame(columns=[
+        *base_columns,
+        '国保請求額', '回収額', '差', '記載日', 'ステータス', '備考',
+    ])
+
+
 def _detect_changes(edited, original, kbn_key, is_share_layout=False):
     changes = []
     for i in range(len(edited)):
@@ -1989,8 +2008,9 @@ def _render_money_inputs(item_labels, key_prefix, columns=4):
 
 
 def _render_manual_add(kbn, label, selected_ym, selected_facility_id,
-                       selected_facility_label, state_key, is_share_layout=False):
-    with st.expander(f"{label}の行を追加", expanded=False):
+                       selected_facility_label, state_key, is_share_layout=False,
+                       expanded=False):
+    with st.expander(f"{label}の行を追加", expanded=expanded):
         st.caption("CSVに出てこない利用者や追加請求を、選択中のサービス年月に1行追加します。")
         manual_facility_options = {
             f"{f['short_code']}: {f['facility_name']}": f['id']
@@ -2211,9 +2231,9 @@ def _render_previous_month_copy(selected_ym, selected_facility_id, selected_faci
 
 def render_payment_page(kbn):
     label = '自己負担' if kbn == 'self' else '国保請求'
+    ym_options = year_months or [_today_jst().strftime('%Y-%m')]
     if not year_months:
-        st.info("まだデータがありません。「CSV取込」タブから取り込んでください。")
-        return
+        st.info("まだCSVデータはありません。手入力で始める場合は、この画面下の「行を追加」から登録できます。")
 
     page_help = (
         "一覧の金額を編集すると、合計請求額と差額がその場で再計算されます。"
@@ -2233,7 +2253,7 @@ def render_payment_page(kbn):
     with filter_cols[0]:
         selected_ym = st.selectbox(
             "サービス提供年月",
-            year_months,
+            ym_options,
             index=0,
             key=f'{kbn}_ym',
         )
@@ -2250,11 +2270,14 @@ def render_payment_page(kbn):
     is_share_layout = kbn == 'self' and selected_facility_id is not None and _is_share_facility_label(selected_facility_label)
 
     records = db.list_records(service_ym=selected_ym, facility_id=selected_facility_id)
-    if not records:
-        st.warning("条件に合うレコードがありません。")
-        return
+    has_records = bool(records)
+    if has_records:
+        self_df, kokuho_df = _build_split_df(records)
+    else:
+        st.info("この条件の行はまだありません。下に未入力の一覧枠と行追加フォームを表示しています。")
+        self_df = _empty_payment_df('self')
+        kokuho_df = _empty_payment_df('kokuho')
 
-    self_df, kokuho_df = _build_split_df(records)
     if kbn == 'self':
         df = self_df
         editor_base_key = f"top_editor_self_{selected_ym}_{selected_facility_id}"
@@ -2279,6 +2302,7 @@ def render_payment_page(kbn):
     ].reset_index(drop=True)
     if df.empty:
         st.info(f"{label}の対象行はありません。必要な場合は下の「{label}の行を追加」から登録できます。")
+    manual_add_expanded = df.empty
 
     if selection_key in st.session_state and '一括対象' in df.columns and 'id' in df.columns:
         selected_ids = {int(rid) for rid in st.session_state.get(selection_key, [])}
@@ -2392,7 +2416,8 @@ def render_payment_page(kbn):
         with add_col:
             _render_manual_add(
                 kbn, label, selected_ym, selected_facility_id,
-                selected_facility_label, state_key, is_share_layout
+                selected_facility_label, state_key, is_share_layout,
+                expanded=manual_add_expanded,
             )
         with copy_col:
             _render_previous_month_copy(
@@ -2402,7 +2427,8 @@ def render_payment_page(kbn):
     else:
         _render_manual_add(
             kbn, label, selected_ym, selected_facility_id,
-            selected_facility_label, state_key, is_share_layout
+            selected_facility_label, state_key, is_share_layout,
+            expanded=manual_add_expanded,
         )
 
     changes = _detect_changes(edited_df, original_df, kbn, is_share_layout)
