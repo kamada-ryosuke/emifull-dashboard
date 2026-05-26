@@ -254,13 +254,14 @@ def _ensure_user_position_presets(conn):
 
 @contextmanager
 def get_conn():
-    if _use_cloud_db():
+    use_cloud = _use_cloud_db()
+    if use_cloud:
         conn = _connect_cloud()
     else:
         conn = sqlite3.connect(str(DB_PATH))
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode = WAL")
-    conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("PRAGMA foreign_keys = ON")
     try:
         yield conn
         conn.commit()
@@ -268,7 +269,7 @@ def get_conn():
         conn.rollback()
         raise
     finally:
-        if not _use_cloud_db():
+        if not use_cloud:
             conn.close()
 
 
