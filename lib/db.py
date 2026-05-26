@@ -2474,10 +2474,10 @@ def upsert_receipt_performance_report(record):
                 reported_by_email, reported_by_name, reported_at, updated_at
             )
             VALUES (
-                :service_year_month, :pl_subunit_id, :facility_label,
-                :sales_report_amount, :treatment_improvement_amount, :self_pay_amount,
-                :production_activity_revenue, :business_days, :monthly_usage_count,
-                :reported_by_email, :reported_by_name, :reported_at, :updated_at
+                ?, ?, ?,
+                ?, ?, ?,
+                ?, ?, ?,
+                ?, ?, ?, ?
             )
             ON CONFLICT(service_year_month, pl_subunit_id) DO UPDATE SET
                 facility_label = excluded.facility_label,
@@ -2491,7 +2491,21 @@ def upsert_receipt_performance_report(record):
                 reported_by_name = excluded.reported_by_name,
                 reported_at = excluded.reported_at,
                 updated_at = excluded.updated_at
-        """, payload)
+        """, (
+            payload['service_year_month'],
+            payload['pl_subunit_id'],
+            payload['facility_label'],
+            payload['sales_report_amount'],
+            payload['treatment_improvement_amount'],
+            payload['self_pay_amount'],
+            payload['production_activity_revenue'],
+            payload['business_days'],
+            payload['monthly_usage_count'],
+            payload['reported_by_email'],
+            payload['reported_by_name'],
+            payload['reported_at'],
+            payload['updated_at'],
+        ))
         return cur.lastrowid
 
 
@@ -2562,23 +2576,23 @@ def record_sales_change_logs(logs):
 
     rows = []
     for log in logs:
-        rows.append({
-            'changed_at': log.get('changed_at') or datetime.now().isoformat(sep=' ', timespec='seconds'),
-            'service_year_month': log.get('service_year_month'),
-            'facility_id': log.get('facility_id'),
-            'record_id': log.get('record_id'),
-            'kbn': log.get('kbn'),
-            'field_name': log.get('field_name'),
-            'field_label': log.get('field_label'),
-            'old_value': log.get('old_value'),
-            'new_value': log.get('new_value'),
-            'old_amount': log.get('old_amount'),
-            'new_amount': log.get('new_amount'),
-            'cert_number': log.get('cert_number'),
-            'child_name': log.get('child_name'),
-            'changed_by_email': log.get('changed_by_email'),
-            'changed_by_name': log.get('changed_by_name'),
-        })
+        rows.append((
+            log.get('changed_at') or datetime.now().isoformat(sep=' ', timespec='seconds'),
+            log.get('service_year_month'),
+            log.get('facility_id'),
+            log.get('record_id'),
+            log.get('kbn'),
+            log.get('field_name'),
+            log.get('field_label'),
+            log.get('old_value'),
+            log.get('new_value'),
+            log.get('old_amount'),
+            log.get('new_amount'),
+            log.get('cert_number'),
+            log.get('child_name'),
+            log.get('changed_by_email'),
+            log.get('changed_by_name'),
+        ))
 
     with get_conn() as conn:
         conn.executemany("""
@@ -2589,10 +2603,10 @@ def record_sales_change_logs(logs):
                 changed_by_email, changed_by_name
             )
             VALUES (
-                :changed_at, :service_year_month, :facility_id, :record_id, :kbn,
-                :field_name, :field_label, :old_value, :new_value,
-                :old_amount, :new_amount, :cert_number, :child_name,
-                :changed_by_email, :changed_by_name
+                ?, ?, ?, ?, ?,
+                ?, ?, ?, ?,
+                ?, ?, ?, ?,
+                ?, ?
             )
         """, rows)
     return len(rows)

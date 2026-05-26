@@ -332,6 +332,23 @@ def _build_sales_change_logs(rec, kbn, new_values, changed_at):
 def _insert_sales_change_logs(conn, logs):
     if not logs:
         return
+    rows = [(
+        log.get('changed_at'),
+        log.get('service_year_month'),
+        log.get('facility_id'),
+        log.get('record_id'),
+        log.get('kbn'),
+        log.get('field_name'),
+        log.get('field_label'),
+        log.get('old_value'),
+        log.get('new_value'),
+        log.get('old_amount'),
+        log.get('new_amount'),
+        log.get('cert_number'),
+        log.get('child_name'),
+        log.get('changed_by_email'),
+        log.get('changed_by_name'),
+    ) for log in logs]
     conn.executemany("""
         INSERT INTO sales_change_logs (
             changed_at, service_year_month, facility_id, record_id, kbn,
@@ -340,12 +357,12 @@ def _insert_sales_change_logs(conn, logs):
             changed_by_email, changed_by_name
         )
         VALUES (
-            :changed_at, :service_year_month, :facility_id, :record_id, :kbn,
-            :field_name, :field_label, :old_value, :new_value,
-            :old_amount, :new_amount, :cert_number, :child_name,
-            :changed_by_email, :changed_by_name
+            ?, ?, ?, ?, ?,
+            ?, ?, ?, ?,
+            ?, ?, ?, ?,
+            ?, ?
         )
-    """, logs)
+    """, rows)
 
 
 def _update_sales_record(record_id, kbn, charge=None, paid_amount=None,
