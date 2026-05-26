@@ -997,7 +997,13 @@ def _detect_changes(edited, original, kbn_key, is_share_layout=False):
         auto_paid_date = _auto_paid_date(old_paid, new_paid, orig[date_col])
         date_changed = orig[date_col] != auto_paid_date
         memo_changed = (orig.get('備考') or '') != (new.get('備考') or '')
-        if charge_changed or extra_changed or paid_changed or method_changed or date_changed or memo_changed:
+        old_report = bool(orig.get('上司報告', False))
+        new_report = bool(new.get('上司報告', False))
+        report_changed = old_report != new_report
+        if (
+            charge_changed or extra_changed or paid_changed or method_changed
+            or date_changed or memo_changed or report_changed
+        ):
             changes.append({
                 'id': int(orig['id']),
                 'name': orig['利用者氏名'],
@@ -1021,7 +1027,9 @@ def _detect_changes(edited, original, kbn_key, is_share_layout=False):
                 'old_memo': orig.get('備考') or '',
                 'new_memo': new.get('備考') or '',
                 'memo_changed': memo_changed,
-                'old_report_to_supervisor': bool(orig.get('上司報告', False)),
+                'old_report_to_supervisor': old_report,
+                'new_report_to_supervisor': new_report,
+                'report_changed': report_changed,
                 'amount_changed': charge_changed or extra_changed or paid_changed,
                 'risky': (charge_changed or extra_changed) and old_paid > 0,
             })
@@ -1032,14 +1040,18 @@ def _render_report_prompt(changes, kbn, selected_ym, selected_facility_id):
     memo_changes = [c for c in changes if c.get('memo_changed')]
     if not memo_changes:
         for c in changes:
-            c['report_to_supervisor'] = None
+            c['report_to_supervisor'] = (
+                c.get('new_report_to_supervisor') if c.get('report_changed') else None
+            )
         return
 
     st.markdown("#### 備考の報告確認")
     st.info("備考欄を変更した行があります。上司に報告しますか？ 報告する行だけ「はい、上司に報告します」にチェックしてください。")
     for c in changes:
         if not c.get('memo_changed'):
-            c['report_to_supervisor'] = None
+            c['report_to_supervisor'] = (
+                c.get('new_report_to_supervisor') if c.get('report_changed') else None
+            )
             continue
 
         memo_text = str(c.get('new_memo') or '').strip()
@@ -1048,7 +1060,7 @@ def _render_report_prompt(changes, kbn, selected_ym, selected_facility_id):
             st.caption(f"{c['kbn_label']} / {c['name']}：備考が空になったため、報告確認から外します。")
             continue
 
-        default_report = bool(c.get('old_report_to_supervisor'))
+        default_report = bool(c.get('new_report_to_supervisor'))
         st.markdown(
             f"**{c['kbn_label']} / {c['name']}**  \n"
             f"{memo_text}"
@@ -1058,6 +1070,71 @@ def _render_report_prompt(changes, kbn, selected_ym, selected_facility_id):
             value=default_report,
             key=f"report_confirm_{kbn}_{selected_ym}_{selected_facility_id}_{c['id']}",
         )
+
+
+def _render_payment_save_section(kbn, label, changes, selected_ym, selected_facility_id,
+                                 state_key):
+    risky_changes = [c for c in changes if c['risky']]
+    st.markdown("---")
+    _render_report_prompt(changes, kbn, selected_ym, selected_facility_id)
+    save_cols = st.columns([1, 4])
+    with save_cols[1]:
+        if changes:
+            st.info(f"未保存の編集: **{len(changes)}行**")
+        else:
+            st.caption("編集はまだありません。")
+
+    supervisor_ok = True
+    if risky_changes:
+        st.warning("入金済み行の請求額変更が含まれます。保存前に許可確認をしてください。")
+        supervisor_ok = st.checkbox(
+            "許可を得たので保存する",
+            value=False,
+            key=f"approval_{kbn}_{selected_ym}_{selected_facility_id}",
+        )
+
+    with save_cols[0]:
+        save_clicked = st.button(
+            "保存",
+            type='primary',
+            disabled=(not changes) or (bool(risky_changes) and not supervisor_ok),
+            width='stretch',
+            key=f"save_{kbn}_{selected_ym}_{selected_facility_id}",
+        )
+
+    if save_clicked:
+        success = 0
+        errors = []
+        for c in changes:
+            try:
+                kwargs = {
+                    'record_id': c['id'],
+                    'kbn': kbn,
+                    'charge': c['new_charge'],
+                    'paid_amount': c['new_paid'],
+                    'paid_date': c['paid_date'].isoformat() if c['paid_date'] else None,
+                    'method': c['method'] if c['method'] else None,
+                    'memo': c['new_memo'] if c['memo_changed'] else None,
+                    'other_charge': c.get('other_charge'),
+                    'report_to_supervisor': c.get('report_to_supervisor'),
+                }
+                if kbn == 'self':
+                    kwargs.update(c.get('self_values') or {})
+                else:
+                    kwargs.update({
+                        'addition_charge': c.get('addition_charge'),
+                        'adjustment_charge': c.get('adjustment_charge'),
+                    })
+                _update_sales_record(**kwargs)
+                success += 1
+            except Exception as e:
+                errors.append(f"id={c['id']}: {e}")
+        if success:
+            st.success(f"{label}を保存しました: {success}行")
+            st.session_state.pop(state_key, None)
+            st.rerun()
+        if errors:
+            st.error("エラー:\n" + "\n".join(errors))
 
 
 def render_uriage_main():
@@ -2388,6 +2465,11 @@ def render_payment_page(kbn):
         '利用者氏名': st.column_config.TextColumn('利用者氏名', disabled=True),
         '受給者証番号': st.column_config.TextColumn('受給者証番号', disabled=True),
         '施設': st.column_config.TextColumn('施設', disabled=True),
+        '上司報告': st.column_config.CheckboxColumn(
+            '上司報告',
+            help='備考を報告確認タブへ表示する場合はチェック',
+            width='small',
+        ),
     }
     if kbn == 'self':
         base_columns.update({
@@ -2423,12 +2505,12 @@ def render_payment_page(kbn):
         column_order = [
             'id', '一括対象', '利用者氏名', '受給者証番号', '施設',
             *item_order, '合計請求額', '回収額', '差', '回収方法',
-            '入金日', 'ステータス', '備考',
+            '入金日', 'ステータス', '上司報告', '備考',
         ]
     else:
         column_order = [
             'id', '一括対象', '利用者氏名', '受給者証番号', '施設',
-            '国保請求額', '回収額', '差', '記載日', 'ステータス', '備考',
+            '国保請求額', '回収額', '差', '記載日', 'ステータス', '上司報告', '備考',
         ]
 
     edited_df = st.data_editor(
@@ -2450,6 +2532,11 @@ def render_payment_page(kbn):
             int(row['id'])
             for _, row in edited_df[edited_df['一括対象'] == True].iterrows()
         ]
+
+    changes = _detect_changes(edited_df, original_df, kbn, is_share_layout)
+    _render_payment_save_section(
+        kbn, label, changes, selected_ym, selected_facility_id, state_key
+    )
 
     _render_payment_tools(
         kbn, label, edited_df, selected_ym, selected_facility_id,
@@ -2474,69 +2561,6 @@ def render_payment_page(kbn):
             selected_facility_label, state_key, is_share_layout,
             expanded=manual_add_expanded,
         )
-
-    changes = _detect_changes(edited_df, original_df, kbn, is_share_layout)
-    risky_changes = [c for c in changes if c['risky']]
-    st.markdown("---")
-    _render_report_prompt(changes, kbn, selected_ym, selected_facility_id)
-    save_cols = st.columns([1, 4])
-    with save_cols[1]:
-        if changes:
-            st.info(f"未保存の編集: **{len(changes)}行**")
-        else:
-            st.caption("編集はまだありません。")
-
-    supervisor_ok = True
-    if risky_changes:
-        st.warning("入金済み行の請求額変更が含まれます。保存前に許可確認をしてください。")
-        supervisor_ok = st.checkbox(
-            "許可を得たので保存する",
-            value=False,
-            key=f"approval_{kbn}_{selected_ym}_{selected_facility_id}",
-        )
-
-    with save_cols[0]:
-        save_clicked = st.button(
-            "保存",
-            type='primary',
-            disabled=(not changes) or (bool(risky_changes) and not supervisor_ok),
-            width='stretch',
-            key=f"save_{kbn}_{selected_ym}_{selected_facility_id}",
-        )
-
-    if save_clicked:
-        success = 0
-        errors = []
-        for c in changes:
-            try:
-                kwargs = {
-                    'record_id': c['id'],
-                    'kbn': kbn,
-                    'charge': c['new_charge'],
-                    'paid_amount': c['new_paid'],
-                    'paid_date': c['paid_date'].isoformat() if c['paid_date'] else None,
-                    'method': c['method'] if c['method'] else None,
-                    'memo': c['new_memo'] if c['memo_changed'] else None,
-                    'other_charge': c.get('other_charge'),
-                    'report_to_supervisor': c.get('report_to_supervisor'),
-                }
-                if kbn == 'self':
-                    kwargs.update(c.get('self_values') or {})
-                else:
-                    kwargs.update({
-                        'addition_charge': c.get('addition_charge'),
-                        'adjustment_charge': c.get('adjustment_charge'),
-                    })
-                _update_sales_record(**kwargs)
-                success += 1
-            except Exception as e:
-                errors.append(f"id={c['id']}: {e}")
-        if success:
-            st.success(f"{label}を保存しました: {success}行")
-            st.session_state.pop(state_key, None)
-            st.rerun()
-        if errors:
-            st.error("エラー:\n" + "\n".join(errors))
 
 
 # ============================================================
