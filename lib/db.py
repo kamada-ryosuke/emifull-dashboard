@@ -298,6 +298,7 @@ def _ensure_user_position_presets(conn):
 
 @contextmanager
 def get_conn():
+    global _CLOUD_CONNECTION, _CLOUD_CONNECTION_KEY
     use_cloud = _use_cloud_db()
     if use_cloud:
         conn = _connect_cloud()
@@ -310,7 +311,17 @@ def get_conn():
         yield conn
         conn.commit()
     except Exception:
-        conn.rollback()
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        if use_cloud:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            _CLOUD_CONNECTION = None
+            _CLOUD_CONNECTION_KEY = None
         raise
     finally:
         if not use_cloud:
