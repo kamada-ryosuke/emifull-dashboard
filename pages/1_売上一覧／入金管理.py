@@ -823,6 +823,24 @@ def _today_jst():
     return datetime.now(ZoneInfo("Asia/Tokyo")).date()
 
 
+def _default_service_year_month():
+    today = _today_jst()
+    year = today.year
+    month = today.month - 1
+    if month == 0:
+        year -= 1
+        month = 12
+    return f"{year:04d}-{month:02d}"
+
+
+def _year_month_options_with_default(existing_months):
+    default_ym = _default_service_year_month()
+    options = list(existing_months or [])
+    if default_ym not in options:
+        options.insert(0, default_ym)
+    return options, options.index(default_ym)
+
+
 def _auto_paid_date(orig_paid, new_paid, current_date):
     orig_paid = _as_int(orig_paid)
     new_paid = _as_int(new_paid)
@@ -2453,7 +2471,7 @@ def _render_previous_month_copy(selected_ym, selected_facility_id, selected_faci
 
 def render_payment_page(kbn):
     label = '自己負担' if kbn == 'self' else '国保請求'
-    ym_options = year_months or [_today_jst().strftime('%Y-%m')]
+    ym_options, ym_default_index = _year_month_options_with_default(year_months)
     if not year_months:
         st.info("まだCSVデータはありません。手入力で始める場合は、この画面下の「行を追加」から登録できます。")
 
@@ -2476,7 +2494,7 @@ def render_payment_page(kbn):
         selected_ym = st.selectbox(
             "サービス提供年月",
             ym_options,
-            index=0,
+            index=ym_default_index,
             key=f'{kbn}_ym',
         )
     with filter_cols[1]:
