@@ -235,6 +235,119 @@ def _update_report_fields(record_id, kbn, memo, report_to_supervisor):
         """, (new_memo, new_report, new_reported_at, now, record_id))
 
 
+SALES_CHANGE_FIELD_LABELS = {
+    'self': {
+        'self_charge': '自己負担額／サービス料',
+        'self_snack_charge': 'おやつ代',
+        'self_exam_charge': '検査代',
+        'self_other_charge': 'その他',
+        'self_refund_charge': '返金',
+        'self_unpaid_charge': '未収金',
+        'self_rent_charge': '家賃',
+        'self_utilities_charge': '水光熱費',
+        'self_daily_supplies_charge': '日用品費',
+        'self_breakfast_charge': '朝食',
+        'self_lunch_charge': '昼食',
+        'self_dinner_charge': '夕食',
+        'self_rice_charge': '白米',
+        'self_special_benefit_charge': '特別給付費',
+        'self_housing_subsidy_charge': '住宅補助',
+        'self_paid_amount': '回収額',
+        'self_paid_date': '入金日',
+        'self_payment_method': '回収方法',
+        'self_memo': '備考',
+        'self_report_to_supervisor': '上司報告',
+    },
+    'kokuho': {
+        'kokuho_charge': '国保請求額',
+        'kokuho_paid_amount': '回収額',
+        'kokuho_paid_date': '記載日',
+        'kokuho_memo': '備考',
+        'kokuho_report_to_supervisor': '上司報告',
+    },
+}
+
+SALES_AMOUNT_FIELDS = {
+    'self_charge', 'self_snack_charge', 'self_exam_charge', 'self_other_charge',
+    'self_refund_charge', 'self_unpaid_charge', 'self_rent_charge',
+    'self_utilities_charge', 'self_daily_supplies_charge', 'self_breakfast_charge',
+    'self_lunch_charge', 'self_dinner_charge', 'self_rice_charge',
+    'self_special_benefit_charge', 'self_housing_subsidy_charge',
+    'self_paid_amount', 'kokuho_charge', 'kokuho_paid_amount',
+}
+
+
+def _normalize_log_value(value, is_amount=False):
+    if is_amount:
+        return str(_as_int(value))
+    if value is None:
+        return ''
+    try:
+        if pd.isna(value):
+            return ''
+    except Exception:
+        pass
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, bool):
+        return '1' if value else '0'
+    return str(value)
+
+
+def _build_sales_change_logs(rec, kbn, new_values, changed_at):
+    labels = SALES_CHANGE_FIELD_LABELS.get(kbn, {})
+    current = auth.current_user() or {}
+    logs = []
+    for field, label in labels.items():
+        if field not in new_values:
+            continue
+        is_amount = field in SALES_AMOUNT_FIELDS
+        old_value = _normalize_log_value(_row_value(rec, field, None), is_amount)
+        new_value = _normalize_log_value(new_values.get(field), is_amount)
+        if old_value == new_value:
+            continue
+
+        old_amount = _as_int(old_value) if is_amount else None
+        new_amount = _as_int(new_value) if is_amount else None
+        logs.append({
+            'changed_at': changed_at,
+            'service_year_month': _row_value(rec, 'service_year_month', ''),
+            'facility_id': _row_value(rec, 'facility_id', None),
+            'record_id': _row_value(rec, 'id', None),
+            'kbn': kbn,
+            'field_name': field,
+            'field_label': label,
+            'old_value': old_value,
+            'new_value': new_value,
+            'old_amount': old_amount,
+            'new_amount': new_amount,
+            'cert_number': _row_value(rec, 'cert_number', ''),
+            'child_name': _row_value(rec, 'child_name', ''),
+            'changed_by_email': current.get('email'),
+            'changed_by_name': current.get('name'),
+        })
+    return logs
+
+
+def _insert_sales_change_logs(conn, logs):
+    if not logs:
+        return
+    conn.executemany("""
+        INSERT INTO sales_change_logs (
+            changed_at, service_year_month, facility_id, record_id, kbn,
+            field_name, field_label, old_value, new_value,
+            old_amount, new_amount, cert_number, child_name,
+            changed_by_email, changed_by_name
+        )
+        VALUES (
+            :changed_at, :service_year_month, :facility_id, :record_id, :kbn,
+            :field_name, :field_label, :old_value, :new_value,
+            :old_amount, :new_amount, :cert_number, :child_name,
+            :changed_by_email, :changed_by_name
+        )
+    """, logs)
+
+
 def _update_sales_record(record_id, kbn, charge=None, paid_amount=None,
                          paid_date=None, method=None, memo=None,
                          snack_charge=None, exam_charge=None, other_charge=None,
@@ -331,6 +444,28 @@ def _update_sales_record(record_id, kbn, charge=None, paid_amount=None,
             new_memo, new_report, new_reported_at = _report_state_from_input(
                 rec, 'self', memo, report_to_supervisor, now
             )
+            change_logs = _build_sales_change_logs(rec, 'self', {
+                'self_charge': new_charge or 0,
+                'self_snack_charge': new_snack or 0,
+                'self_exam_charge': new_exam or 0,
+                'self_other_charge': new_other or 0,
+                'self_refund_charge': new_refund or 0,
+                'self_unpaid_charge': new_unpaid or 0,
+                'self_rent_charge': new_rent or 0,
+                'self_utilities_charge': new_utilities or 0,
+                'self_daily_supplies_charge': new_daily_supplies or 0,
+                'self_breakfast_charge': new_breakfast or 0,
+                'self_lunch_charge': new_lunch or 0,
+                'self_dinner_charge': new_dinner or 0,
+                'self_rice_charge': new_rice or 0,
+                'self_special_benefit_charge': new_special_benefit or 0,
+                'self_housing_subsidy_charge': new_housing_subsidy or 0,
+                'self_paid_amount': new_paid or 0,
+                'self_paid_date': paid_date,
+                'self_payment_method': method,
+                'self_memo': new_memo,
+                'self_report_to_supervisor': new_report,
+            }, now)
             conn.execute("""
                 UPDATE monthly_records SET
                   self_charge = ?,
@@ -366,6 +501,7 @@ def _update_sales_record(record_id, kbn, charge=None, paid_amount=None,
                 new_paid or 0, paid_date, method, status, new_memo,
                 new_report, new_reported_at, now, record_id,
             ))
+            _insert_sales_change_logs(conn, change_logs)
             return
 
         new_charge = charge if charge is not None else _row_value(rec, 'kokuho_charge', 0)
@@ -390,6 +526,13 @@ def _update_sales_record(record_id, kbn, charge=None, paid_amount=None,
         new_memo, new_report, new_reported_at = _report_state_from_input(
             rec, 'kokuho', memo, report_to_supervisor, now
         )
+        change_logs = _build_sales_change_logs(rec, 'kokuho', {
+            'kokuho_charge': new_charge or 0,
+            'kokuho_paid_amount': new_paid or 0,
+            'kokuho_paid_date': paid_date,
+            'kokuho_memo': new_memo,
+            'kokuho_report_to_supervisor': new_report,
+        }, now)
         conn.execute("""
             UPDATE monthly_records SET
               kokuho_charge = ?,
@@ -410,6 +553,7 @@ def _update_sales_record(record_id, kbn, charge=None, paid_amount=None,
             new_other or 0, new_paid or 0, paid_date, method, status,
             new_memo, new_report, new_reported_at, now, record_id,
         ))
+        _insert_sales_change_logs(conn, change_logs)
 
 
 def _add_manual_self_record(service_ym, facility_id, cert_number, child_name,
@@ -563,9 +707,9 @@ _is_admin = auth.is_admin()
 _top_titles = ["📥 CSV取込", "🔵 自己負担", "🟡 国保請求", "🔔 未入金確認"]
 if _is_admin:
     _top_titles.append("📊 売上確認")
-    _top_titles.append("🧾 実績報告")
     _top_titles.append("📣 報告確認")
-    _top_titles.append("📋 レセ報告")
+    _top_titles.append("🧾 レセ確認・報告")
+    _top_titles.append("🕘 修正履歴")
 _top_tabs = st.tabs(_top_titles)
 
 
@@ -3321,9 +3465,22 @@ def render_performance_report_entry():
             )
             st.metric("1日平均利用者数", f"{avg_users:.1f} 人")
 
+        st.markdown("#### 報告前の確認")
+        facility_checked = st.checkbox(
+            "施設の選択に間違いありません",
+            key='receipt_perf_facility_checked',
+        )
+        amount_checked = st.checkbox(
+            "入力した金額・営業日数・延べ利用回数に間違いありません",
+            key='receipt_perf_amount_checked',
+        )
         submitted = st.form_submit_button("レセ報告", type='primary')
 
     if submitted:
+        if not facility_checked or not amount_checked:
+            st.error("レセ報告前に、施設確認と金額確認の2つにチェックしてください。")
+            return
+
         current = auth.current_user() or {}
         db.upsert_receipt_performance_report({
             'service_year_month': selected_ym,
@@ -3338,13 +3495,13 @@ def render_performance_report_entry():
             'reported_by_email': current.get('email'),
             'reported_by_name': current.get('name'),
         })
-        st.success("レセ報告として保存しました。右の「レセ報告」タブで確認できます。")
+        st.success("レセ報告として保存しました。下の一覧で確認できます。")
         st.rerun()
 
 
 def render_receipt_report_list():
     st.markdown(
-        "実績報告タブでレセ報告した内容を、施設ごとに一覧で確認できます。"
+        "上の実績報告でレセ報告した内容を、施設ごとに一覧で確認できます。"
         "1日平均利用者数は「延べ利用回数／月 ÷ 営業日数」で計算し、小数点第2位を切り捨てて表示します。"
     )
 
@@ -3379,7 +3536,7 @@ def render_receipt_report_list():
     )
 
     if not rows:
-        st.info("まだレセ報告がありません。左の「実績報告」タブで入力し、レセ報告ボタンを押してください。")
+        st.info("まだレセ報告がありません。上の実績報告で入力し、レセ報告ボタンを押してください。")
         return
 
     display_rows = []
@@ -3439,6 +3596,14 @@ def render_receipt_report_list():
         file_name=f"レセ報告_{date.today().isoformat()}.csv",
         mime='text/csv',
     )
+
+
+def render_receipt_confirmation_and_report():
+    st.markdown("### 実績報告")
+    render_performance_report_entry()
+    st.markdown("---")
+    st.markdown("### レセ報告一覧")
+    render_receipt_report_list()
 
 
 # ============================================================
@@ -3547,6 +3712,116 @@ def render_report_confirmation():
 
 
 # ============================================================
+# ⑦ 修正履歴タブ（管理者専用）
+# ============================================================
+def _format_change_value(row):
+    if row.get('old_amount') is not None and row.get('new_amount') is not None:
+        return f"{_as_int(row.get('old_amount')):,}円 → {_as_int(row.get('new_amount')):,}円"
+    old_value = str(row.get('old_value') or '（空欄）')
+    new_value = str(row.get('new_value') or '（空欄）')
+    return f"{old_value} → {new_value}"
+
+
+def render_sales_change_history():
+    st.markdown(
+        "自己負担・国保請求で保存した修正履歴を確認できます。"
+        "金額変更は「変更前 → 変更後」の形で残ります。"
+    )
+
+    default_ym = _default_service_year_month()
+    try:
+        history_months = db.list_sales_change_log_year_months()
+    except Exception:
+        history_months = []
+    month_options = list(dict.fromkeys(history_months + (year_months or []) + [default_ym]))
+    month_options = sorted(month_options, reverse=True)
+    selected_index = month_options.index(default_ym) if default_ym in month_options else 0
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        selected_ym = st.selectbox(
+            "対象月",
+            month_options,
+            index=selected_index,
+            key='change_history_ym',
+        )
+    with c2:
+        facility_options = {"全施設": None}
+        for f in facilities:
+            facility_options[f"{f['short_code']}: {f['facility_name']}"] = f['id']
+        selected_facility_label = st.selectbox(
+            "施設",
+            list(facility_options.keys()),
+            key='change_history_facility',
+        )
+        selected_facility_id = facility_options[selected_facility_label]
+    with c3:
+        kbn_options = {"両方": None, "自己負担": "self", "国保請求": "kokuho"}
+        selected_kbn_label = st.selectbox(
+            "区分",
+            list(kbn_options.keys()),
+            key='change_history_kbn',
+        )
+        selected_kbn = kbn_options[selected_kbn_label]
+
+    rows = db.list_sales_change_logs(
+        service_ym=selected_ym,
+        facility_id=selected_facility_id,
+        kbn=selected_kbn,
+        limit=1000,
+    )
+
+    if not rows:
+        st.info("この条件の修正履歴はまだありません。今後、自己負担・国保請求で保存した変更がここに残ります。")
+        return
+
+    display_rows = []
+    for r in rows:
+        kbn_label = "自己負担" if r.get('kbn') == 'self' else "国保請求"
+        facility_label = (
+            f"{r.get('facility_short_code')}: {r.get('facility_name')}"
+            if r.get('facility_short_code') else ''
+        )
+        display_rows.append({
+            '変更日時': r.get('changed_at') or '',
+            'サービス年月': r.get('service_year_month') or '',
+            '区分': kbn_label,
+            '施設': facility_label,
+            '利用者氏名': r.get('child_name') or '',
+            '受給者証番号': r.get('cert_number') or '',
+            '項目': r.get('field_label') or '',
+            '修正内容': _format_change_value(r),
+            '変更者': r.get('changed_by_name') or r.get('changed_by_email') or '',
+        })
+
+    df = pd.DataFrame(display_rows)
+    amount_changes = sum(1 for r in rows if r.get('old_amount') is not None)
+    metric_cols = st.columns(3)
+    metric_cols[0].metric("履歴件数", f"{len(df)} 件")
+    metric_cols[1].metric("金額変更", f"{amount_changes} 件")
+    metric_cols[2].metric("対象月", selected_ym)
+
+    st.dataframe(
+        df,
+        width='stretch',
+        hide_index=True,
+        height=560,
+        column_config={
+            '修正内容': st.column_config.TextColumn('修正内容', width='large'),
+            '施設': st.column_config.TextColumn('施設', width='medium'),
+        },
+    )
+
+    csv = df.to_csv(index=False).encode('utf-8-sig')
+    st.download_button(
+        "修正履歴をCSVで出力",
+        data=csv,
+        file_name=f"修正履歴_{selected_ym}.csv",
+        mime='text/csv',
+    )
+
+
+# ============================================================
 # タブ呼び出し
 # ============================================================
 with _top_tabs[0]:
@@ -3561,8 +3836,8 @@ if _is_admin:
     with _top_tabs[4]:
         render_dashboard()
     with _top_tabs[5]:
-        render_performance_report_entry()
-    with _top_tabs[6]:
         render_report_confirmation()
+    with _top_tabs[6]:
+        render_receipt_confirmation_and_report()
     with _top_tabs[7]:
-        render_receipt_report_list()
+        render_sales_change_history()

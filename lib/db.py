@@ -557,6 +557,7 @@ def init_db():
     # 損益スキーマ初期化（with get_conn() を抜けてから別トランザクションで実行）
     init_pl_schema()
     init_receipt_performance_schema()
+    init_sales_change_log_schema()
     init_journal_schema()
     init_payroll_schema()
     init_debit_schema()
@@ -596,6 +597,7 @@ def ensure_sales_schema():
                 conn.execute(f"ALTER TABLE monthly_records ADD COLUMN {col} {col_type}")
 
     init_receipt_performance_schema()
+    init_sales_change_log_schema()
 
 
 # === 施設マスタ ===
@@ -2514,6 +2516,118 @@ def list_receipt_performance_reports(service_ym=None, pl_subunit_id=None):
         sql += " AND r.pl_subunit_id = ?"
         params.append(pl_subunit_id)
     sql += " ORDER BY r.service_year_month DESC, g.display_order, s.display_order, r.id"
+    with get_conn() as conn:
+        return [dict(r) for r in conn.execute(sql, params).fetchall()]
+
+
+# === 売上・入金管理 修正履歴 ===
+
+def init_sales_change_log_schema():
+    """自己負担・国保請求の編集履歴テーブルを用意する。"""
+    with get_conn() as conn:
+        conn.executescript("""
+        CREATE TABLE IF NOT EXISTS sales_change_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            changed_at TEXT NOT NULL,
+            service_year_month TEXT NOT NULL,
+            facility_id INTEGER REFERENCES facilities(id),
+            record_id INTEGER REFERENCES monthly_records(id),
+            kbn TEXT NOT NULL,
+            field_name TEXT NOT NULL,
+            field_label TEXT NOT NULL,
+            old_value TEXT,
+            new_value TEXT,
+            old_amount INTEGER,
+            new_amount INTEGER,
+            cert_number TEXT,
+            child_name TEXT,
+            changed_by_email TEXT,
+            changed_by_name TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_sales_change_logs_ym
+            ON sales_change_logs(service_year_month);
+        CREATE INDEX IF NOT EXISTS idx_sales_change_logs_facility
+            ON sales_change_logs(facility_id);
+        CREATE INDEX IF NOT EXISTS idx_sales_change_logs_record
+            ON sales_change_logs(record_id);
+        """)
+
+
+def record_sales_change_logs(logs):
+    init_sales_change_log_schema()
+    if not logs:
+        return 0
+
+    rows = []
+    for log in logs:
+        rows.append({
+            'changed_at': log.get('changed_at') or datetime.now().isoformat(sep=' ', timespec='seconds'),
+            'service_year_month': log.get('service_year_month'),
+            'facility_id': log.get('facility_id'),
+            'record_id': log.get('record_id'),
+            'kbn': log.get('kbn'),
+            'field_name': log.get('field_name'),
+            'field_label': log.get('field_label'),
+            'old_value': log.get('old_value'),
+            'new_value': log.get('new_value'),
+            'old_amount': log.get('old_amount'),
+            'new_amount': log.get('new_amount'),
+            'cert_number': log.get('cert_number'),
+            'child_name': log.get('child_name'),
+            'changed_by_email': log.get('changed_by_email'),
+            'changed_by_name': log.get('changed_by_name'),
+        })
+
+    with get_conn() as conn:
+        conn.executemany("""
+            INSERT INTO sales_change_logs (
+                changed_at, service_year_month, facility_id, record_id, kbn,
+                field_name, field_label, old_value, new_value,
+                old_amount, new_amount, cert_number, child_name,
+                changed_by_email, changed_by_name
+            )
+            VALUES (
+                :changed_at, :service_year_month, :facility_id, :record_id, :kbn,
+                :field_name, :field_label, :old_value, :new_value,
+                :old_amount, :new_amount, :cert_number, :child_name,
+                :changed_by_email, :changed_by_name
+            )
+        """, rows)
+    return len(rows)
+
+
+def list_sales_change_log_year_months():
+    init_sales_change_log_schema()
+    with get_conn() as conn:
+        return [r['service_year_month'] for r in conn.execute("""
+            SELECT DISTINCT service_year_month
+            FROM sales_change_logs
+            ORDER BY service_year_month DESC
+        """).fetchall()]
+
+
+def list_sales_change_logs(service_ym=None, facility_id=None, kbn=None, limit=500):
+    init_sales_change_log_schema()
+    sql = """
+        SELECT l.*, f.short_code AS facility_short_code, f.facility_name
+        FROM sales_change_logs l
+        LEFT JOIN facilities f ON f.id = l.facility_id
+        WHERE 1=1
+    """
+    params = []
+    if service_ym:
+        sql += " AND l.service_year_month = ?"
+        params.append(service_ym)
+    if facility_id:
+        sql += " AND l.facility_id = ?"
+        params.append(facility_id)
+    if kbn:
+        sql += " AND l.kbn = ?"
+        params.append(kbn)
+    sql += " ORDER BY l.changed_at DESC, l.id DESC LIMIT ?"
+    params.append(int(limit or 500))
     with get_conn() as conn:
         return [dict(r) for r in conn.execute(sql, params).fetchall()]
 
