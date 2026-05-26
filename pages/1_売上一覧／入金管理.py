@@ -194,9 +194,9 @@ def _report_state_from_input(rec, kbn, memo, report_to_supervisor, now):
     if report_to_supervisor is None:
         flag = 1 if _as_int(_row_value(rec, flag_col, 0)) else 0
         reported_at = _row_value(rec, reported_at_col, None)
-    elif report_to_supervisor and str(effective_memo or '').strip():
+    elif report_to_supervisor:
         flag = 1
-        reported_at = now
+        reported_at = now if str(effective_memo or '').strip() else _row_value(rec, reported_at_col, None)
     else:
         flag = 0
         reported_at = None
@@ -1030,59 +1030,87 @@ def _detect_changes(edited, original, kbn_key, is_share_layout=False):
                 'old_report_to_supervisor': old_report,
                 'new_report_to_supervisor': new_report,
                 'report_changed': report_changed,
+                'method_changed': method_changed,
+                'date_changed': date_changed,
                 'amount_changed': charge_changed or extra_changed or paid_changed,
                 'risky': (charge_changed or extra_changed) and old_paid > 0,
             })
     return changes
 
 
-def _render_report_prompt(changes, kbn, selected_ym, selected_facility_id):
-    memo_changes = [c for c in changes if c.get('memo_changed')]
-    if not memo_changes:
-        for c in changes:
-            c['report_to_supervisor'] = (
-                c.get('new_report_to_supervisor') if c.get('report_changed') else None
-            )
-        return
+def _change_update_kwargs(c, kbn):
+    kwargs = {
+        'record_id': c['id'],
+        'kbn': kbn,
+        'charge': c['new_charge'],
+        'paid_amount': c['new_paid'],
+        'paid_date': c['paid_date'].isoformat() if c['paid_date'] else None,
+        'method': c['method'] if c['method'] else None,
+        'memo': c['new_memo'] if c.get('memo_changed') else None,
+        'other_charge': c.get('other_charge'),
+        'report_to_supervisor': (
+            c.get('new_report_to_supervisor')
+            if c.get('memo_changed') or c.get('report_changed')
+            else None
+        ),
+    }
+    if kbn == 'self':
+        kwargs.update(c.get('self_values') or {})
+    else:
+        kwargs.update({
+            'addition_charge': c.get('addition_charge'),
+            'adjustment_charge': c.get('adjustment_charge'),
+        })
+    return kwargs
 
-    st.markdown("#### 備考の報告確認")
-    st.info("備考欄を変更した行があります。上司に報告しますか？ 報告する行だけ「はい、上司に報告します」にチェックしてください。")
-    for c in changes:
-        if not c.get('memo_changed'):
-            c['report_to_supervisor'] = (
-                c.get('new_report_to_supervisor') if c.get('report_changed') else None
-            )
-            continue
 
-        memo_text = str(c.get('new_memo') or '').strip()
-        if not memo_text:
-            c['report_to_supervisor'] = False
-            st.caption(f"{c['kbn_label']} / {c['name']}：備考が空になったため、報告確認から外します。")
-            continue
+def _is_report_only_change(c):
+    return (
+        (c.get('memo_changed') or c.get('report_changed'))
+        and not c.get('amount_changed')
+        and not c.get('method_changed')
+        and not c.get('date_changed')
+    )
 
-        default_report = bool(c.get('new_report_to_supervisor'))
-        st.markdown(
-            f"**{c['kbn_label']} / {c['name']}**  \n"
-            f"{memo_text}"
-        )
-        c['report_to_supervisor'] = st.checkbox(
-            "はい、上司に報告します",
-            value=default_report,
-            key=f"report_confirm_{kbn}_{selected_ym}_{selected_facility_id}_{c['id']}",
-        )
+
+def _autosave_report_changes(changes, active_df, original_df, state_key, kbn):
+    report_changes = [c for c in changes if _is_report_only_change(c)]
+    if not report_changes:
+        return 0
+
+    updated_original = original_df.copy()
+    success = 0
+    errors = []
+    for c in report_changes:
+        try:
+            _update_sales_record(**_change_update_kwargs(c, kbn))
+            if 'id' in active_df.columns and 'id' in updated_original.columns:
+                src_rows = active_df.index[active_df['id'].astype(str) == str(c['id'])].tolist()
+                dst_rows = updated_original.index[updated_original['id'].astype(str) == str(c['id'])].tolist()
+                if src_rows and dst_rows:
+                    updated_original.loc[dst_rows[0], :] = active_df.loc[src_rows[0], updated_original.columns]
+            success += 1
+        except Exception as e:
+            errors.append(f"id={c['id']}: {e}")
+
+    if success:
+        st.session_state[state_key] = updated_original
+        st.caption(f"備考・上司報告を自動更新しました: {success}行")
+    if errors:
+        st.error("備考・上司報告の自動更新でエラー:\n" + "\n".join(errors))
+    return success
 
 
 def _render_payment_save_section(kbn, label, changes, selected_ym, selected_facility_id,
                                  state_key):
+    if not changes:
+        return
+
     risky_changes = [c for c in changes if c['risky']]
     st.markdown("---")
-    _render_report_prompt(changes, kbn, selected_ym, selected_facility_id)
     save_cols = st.columns([1, 4])
     with save_cols[1]:
-        if changes:
-            st.info(f"未保存の編集: **{len(changes)}行**")
-        else:
-            st.caption("編集はまだありません。")
+        st.info(f"金額・入金情報の未保存編集: **{len(changes)}行**")
 
     supervisor_ok = True
     if risky_changes:
@@ -1107,25 +1135,7 @@ def _render_payment_save_section(kbn, label, changes, selected_ym, selected_faci
         errors = []
         for c in changes:
             try:
-                kwargs = {
-                    'record_id': c['id'],
-                    'kbn': kbn,
-                    'charge': c['new_charge'],
-                    'paid_amount': c['new_paid'],
-                    'paid_date': c['paid_date'].isoformat() if c['paid_date'] else None,
-                    'method': c['method'] if c['method'] else None,
-                    'memo': c['new_memo'] if c['memo_changed'] else None,
-                    'other_charge': c.get('other_charge'),
-                    'report_to_supervisor': c.get('report_to_supervisor'),
-                }
-                if kbn == 'self':
-                    kwargs.update(c.get('self_values') or {})
-                else:
-                    kwargs.update({
-                        'addition_charge': c.get('addition_charge'),
-                        'adjustment_charge': c.get('adjustment_charge'),
-                    })
-                _update_sales_record(**kwargs)
+                _update_sales_record(**_change_update_kwargs(c, kbn))
                 success += 1
             except Exception as e:
                 errors.append(f"id={c['id']}: {e}")
@@ -2467,6 +2477,8 @@ def render_payment_page(kbn):
         ]
 
     changes = _detect_changes(active_df, original_df, kbn, is_share_layout)
+    _autosave_report_changes(changes, active_df, original_df, state_key, kbn)
+    changes = [c for c in changes if not _is_report_only_change(c)]
     _render_payment_save_section(
         kbn, label, changes, selected_ym, selected_facility_id, state_key
     )
@@ -3050,7 +3062,7 @@ def render_report_confirmation():
     metric_cols[2].metric("国保請求", f"{sum(1 for row in rows if row['区分'] == '国保請求')} 件")
 
     if not rows:
-        st.info("報告対象の備考はありません。備考を保存するときに「はい、上司に報告します」を選ぶとここに表示されます。")
+        st.info("報告対象の備考はありません。一覧で備考を入力し、「上司報告」にチェックするとここに表示されます。")
         return
 
     df = pd.DataFrame(rows)
