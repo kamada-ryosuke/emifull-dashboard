@@ -2907,9 +2907,14 @@ def render_sales_reset_admin():
             and understood
             and confirm_text.strip() == '売上CSVデータを初期化します'
         )
+        if reset_disabled:
+            st.info("上の2つのチェックと確認文の入力がそろうと、赤い実行ボタンを押せます。")
+        else:
+            st.warning("準備が完了しました。赤いボタンを押すと、売上明細と取込履歴を初期化します。")
+
         if st.button(
             f"売上CSVデータを初期化する（売上明細 {record_count:,}件 / 取込履歴 {import_count:,}件）",
-            type='secondary',
+            type='primary',
             disabled=reset_disabled,
             key='sales_reset_execute',
         ):
