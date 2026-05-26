@@ -2823,6 +2823,8 @@ def render_unpaid():
             return "6か月未満"
         return "12か月未満"
 
+    dunning_rows = [r for r in rows if r['経過月数'] >= 4]
+
     if aging_filter != 'すべて':
         rows = [r for r in rows if aging_bucket(r['経過月数']) == aging_filter]
 
@@ -2911,17 +2913,27 @@ def render_unpaid():
 
     st.markdown("---")
     st.markdown("#### 督促リスト出力")
-    st.caption("表示中の未入金一覧をExcelファイルでダウンロードできます。")
+    st.caption("上の施設・区分の絞り込みを反映し、経過月数が4か月以上の方だけをExcelに出力します。")
 
-    buf = io.BytesIO()
-    df.to_excel(buf, index=False, engine='openpyxl')
-    st.download_button(
-        label="📥 督促リストをExcelでダウンロード",
-        data=buf.getvalue(),
-        file_name=f"督促リスト_{date.today().isoformat()}.xlsx",
-        mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-        type='primary',
-    )
+    if not dunning_rows:
+        st.info("督促リストの対象者（4か月以上経過）はありません。")
+    else:
+        dunning_rows.sort(key=lambda r: (-r['経過月数'], r['施設'], r['利用者氏名']))
+        dunning_df = pd.DataFrame(dunning_rows)
+        st.markdown(
+            f"**出力対象：{len(dunning_df)} 件 / "
+            f"{dunning_df['差額（未収）'].sum():,} 円**"
+        )
+
+        buf = io.BytesIO()
+        dunning_df.to_excel(buf, index=False, engine='openpyxl')
+        st.download_button(
+            label="📥 督促リストをExcelでダウンロード",
+            data=buf.getvalue(),
+            file_name=f"督促リスト_4か月以上_{date.today().isoformat()}.xlsx",
+            mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            type='primary',
+        )
 
     st.info(
         "💡 入金確認後の入金登録は **「自己負担」または「国保請求」タブ** の"
