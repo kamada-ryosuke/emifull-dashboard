@@ -88,8 +88,22 @@ def init_login_schema():
 class _CloudRow:
     def __init__(self, columns, values):
         self._columns = list(columns)
-        self._values = tuple(values)
+        self._values = self._normalize_values(values)
         self._index = {name: idx for idx, name in enumerate(self._columns)}
+
+    def _normalize_values(self, values):
+        normalized = []
+        for idx, column in enumerate(self._columns):
+            try:
+                normalized.append(values[column])
+                continue
+            except Exception:
+                pass
+            try:
+                normalized.append(values[idx])
+            except Exception:
+                normalized.append(None)
+        return tuple(normalized)
 
     def __getitem__(self, key):
         if isinstance(key, str):
@@ -104,6 +118,15 @@ class _CloudRow:
 
     def keys(self):
         return list(self._columns)
+
+    def get(self, key, default=None):
+        try:
+            return self[key]
+        except (KeyError, IndexError):
+            return default
+
+    def items(self):
+        return zip(self._columns, self._values)
 
     def __repr__(self):
         return repr(dict(zip(self._columns, self._values)))
