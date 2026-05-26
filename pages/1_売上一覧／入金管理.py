@@ -2455,6 +2455,48 @@ def render_payment_page(kbn):
     metric_cols[2].metric(f"{label} 入金", f"{sum_paid:,} 円")
     metric_cols[3].metric("差額", f"{sum_charge - sum_paid:,} 円", delta_color="inverse")
 
+    active_df = (
+        _recompute_self_invoice_totals(display_df.copy(), is_share_layout)
+        if kbn == 'self'
+        else _recompute_kokuho_invoice_totals(display_df.copy())
+    )
+    if '一括対象' in active_df.columns and 'id' in active_df.columns:
+        st.session_state[selection_key] = [
+            int(row['id'])
+            for _, row in active_df[active_df['一括対象'] == True].iterrows()
+        ]
+
+    changes = _detect_changes(active_df, original_df, kbn, is_share_layout)
+    _render_payment_save_section(
+        kbn, label, changes, selected_ym, selected_facility_id, state_key
+    )
+
+    _render_payment_tools(
+        kbn, label, active_df, selected_ym, selected_facility_id,
+        state_key, selection_key, editor_version_key, is_share_layout
+    )
+    if kbn == 'self':
+        add_col, copy_col = st.columns(2)
+        with add_col:
+            _render_manual_add(
+                kbn, label, selected_ym, selected_facility_id,
+                selected_facility_label, state_key, is_share_layout,
+                expanded=manual_add_expanded,
+            )
+        with copy_col:
+            _render_previous_month_copy(
+                selected_ym, selected_facility_id, selected_facility_label,
+                state_key, is_share_layout
+            )
+    else:
+        _render_manual_add(
+            kbn, label, selected_ym, selected_facility_id,
+            selected_facility_label, state_key, is_share_layout,
+            expanded=manual_add_expanded,
+        )
+
+    st.markdown("---")
+
     base_columns = {
         '一括対象': st.column_config.CheckboxColumn(
             '一括対象',
@@ -2513,7 +2555,7 @@ def render_payment_page(kbn):
             '国保請求額', '回収額', '差', '記載日', 'ステータス', '上司報告', '備考',
         ]
 
-    edited_df = st.data_editor(
+    st.data_editor(
         styling.style_editor_df(display_df),
         column_config=base_columns,
         column_order=[col for col in column_order if col in display_df.columns],
@@ -2522,45 +2564,6 @@ def render_payment_page(kbn):
         height=430,
         key=editor_key,
     )
-    edited_df = (
-        _recompute_self_invoice_totals(edited_df, is_share_layout)
-        if kbn == 'self'
-        else _recompute_kokuho_invoice_totals(edited_df)
-    )
-    if '一括対象' in edited_df.columns and 'id' in edited_df.columns:
-        st.session_state[selection_key] = [
-            int(row['id'])
-            for _, row in edited_df[edited_df['一括対象'] == True].iterrows()
-        ]
-
-    changes = _detect_changes(edited_df, original_df, kbn, is_share_layout)
-    _render_payment_save_section(
-        kbn, label, changes, selected_ym, selected_facility_id, state_key
-    )
-
-    _render_payment_tools(
-        kbn, label, edited_df, selected_ym, selected_facility_id,
-        state_key, selection_key, editor_version_key, is_share_layout
-    )
-    if kbn == 'self':
-        add_col, copy_col = st.columns(2)
-        with add_col:
-            _render_manual_add(
-                kbn, label, selected_ym, selected_facility_id,
-                selected_facility_label, state_key, is_share_layout,
-                expanded=manual_add_expanded,
-            )
-        with copy_col:
-            _render_previous_month_copy(
-                selected_ym, selected_facility_id, selected_facility_label,
-                state_key, is_share_layout
-            )
-    else:
-        _render_manual_add(
-            kbn, label, selected_ym, selected_facility_id,
-            selected_facility_label, state_key, is_share_layout,
-            expanded=manual_add_expanded,
-        )
 
 
 # ============================================================
