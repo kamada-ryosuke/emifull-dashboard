@@ -203,6 +203,32 @@ def _report_state_from_input(rec, kbn, memo, report_to_supervisor, now):
     return effective_memo, flag, reported_at
 
 
+def _update_report_fields(record_id, kbn, memo, report_to_supervisor):
+    """備考・上司報告だけを軽く更新する。金額や入金情報は触らない。"""
+    if kbn not in ('self', 'kokuho'):
+        raise ValueError("区分は self または kokuho を指定してください。")
+
+    with db.get_conn() as conn:
+        rec = conn.execute(
+            "SELECT * FROM monthly_records WHERE id = ?", (record_id,)
+        ).fetchone()
+        if not rec:
+            raise ValueError(f"レコードが見つかりません: id={record_id}")
+
+        now = datetime.now().isoformat(sep=' ', timespec='seconds')
+        new_memo, new_report, new_reported_at = _report_state_from_input(
+            rec, kbn, memo, report_to_supervisor, now
+        )
+        conn.execute(f"""
+            UPDATE monthly_records SET
+              {kbn}_memo = ?,
+              {kbn}_report_to_supervisor = ?,
+              {kbn}_reported_at = ?,
+              updated_at = ?
+            WHERE id = ?
+        """, (new_memo, new_report, new_reported_at, now, record_id))
+
+
 def _update_sales_record(record_id, kbn, charge=None, paid_amount=None,
                          paid_date=None, method=None, memo=None,
                          snack_charge=None, exam_charge=None, other_charge=None,
@@ -1083,7 +1109,10 @@ def _autosave_report_changes(changes, active_df, original_df, state_key, kbn):
     errors = []
     for c in report_changes:
         try:
-            _update_sales_record(**_change_update_kwargs(c, kbn))
+            _update_report_fields(
+                c['id'], kbn, c.get('new_memo') or '',
+                bool(c.get('new_report_to_supervisor')),
+            )
             if 'id' in active_df.columns and 'id' in updated_original.columns:
                 src_rows = active_df.index[active_df['id'].astype(str) == str(c['id'])].tolist()
                 dst_rows = updated_original.index[updated_original['id'].astype(str) == str(c['id'])].tolist()
@@ -3036,12 +3065,12 @@ def render_report_confirmation():
 
     st.markdown(
         "自己負担・国保請求の備考欄で「上司に報告します」を選んだ内容だけを確認できます。"
-        "備考を修正して保存すると、この画面の内容も最新の備考で上書き表示されます。"
+        "備考を修正すると、この画面の内容も最新の備考で上書き表示されます。"
     )
 
     c1, c2, c3 = st.columns(3)
     with c1:
-        ym_options = ['（すべて）'] + year_months
+        ym_options = year_months + ['（すべて）']
         selected_ym = st.selectbox("サービス提供年月", ym_options, key='report_ym')
         ym_filter = None if selected_ym == '（すべて）' else selected_ym
     with c2:
