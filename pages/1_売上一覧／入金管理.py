@@ -186,6 +186,12 @@ def _charge_total(base=0, extra1=0, extra2=0, extra3=0):
     return (base or 0) + (extra1 or 0) + (extra2 or 0) + (extra3 or 0)
 
 
+def _count_import_rows():
+    with db.get_conn() as conn:
+        row = conn.execute("SELECT COUNT(*) AS c FROM imports").fetchone()
+        return _as_int(_row_value(row, 'c', 0))
+
+
 def _report_state_from_input(rec, kbn, memo, report_to_supervisor, now):
     memo_col = f'{kbn}_memo'
     flag_col = f'{kbn}_report_to_supervisor'
@@ -593,9 +599,18 @@ def render_csv_import():
     selected_facility = facility_options[selected_facility_label]
     facility_id = selected_facility['id']
 
-    st.info(
-        f"このCSVは **{selected_facility_label}** の "
-        "**自己負担・国保請求** として取り込みます。"
+    st.markdown(
+        f"<div style='background:#fff7ed; border:2px solid #fb923c; "
+        f"border-left:8px solid #ea580c; padding:14px 18px; border-radius:8px; "
+        f"margin:12px 0;'>"
+        f"<div style='font-size:14px; font-weight:700; color:#9a3412;'>取込先の施設を必ず確認してください</div>"
+        f"<div style='font-size:24px; font-weight:800; color:#0f172a; margin-top:6px;'>"
+        f"{selected_facility_label}</div>"
+        f"<div style='font-size:13px; color:#7c2d12; margin-top:6px;'>"
+        f"このCSVは、上の施設の自己負担・国保請求として保存されます。"
+        f"施設を間違えると、別施設の売上データとして登録されます。</div>"
+        f"</div>",
+        unsafe_allow_html=True,
     )
 
     uploaded = st.file_uploader("CSVファイル", type=['csv'], key='csv_uploader')
@@ -635,16 +650,19 @@ def render_csv_import():
 
     mapped_facility = db.get_facility_by_csv_code(csv_code)
     if mapped_facility and mapped_facility['id'] != facility_id:
+        facility_code_mismatch = True
         st.warning(
             f"CSV内の事業所コード `{csv_code}` は、施設マスタでは "
             f"**{mapped_facility['short_code']}: {mapped_facility['facility_name']}** に紐付いています。  \n"
             f"いま選んでいる施設は **{selected_facility_label}** です。"
         )
     elif mapped_facility:
+        facility_code_mismatch = False
         st.success(
             f"CSV内の事業所コード `{csv_code}` は、選択中の施設と一致しています。"
         )
     else:
+        facility_code_mismatch = False
         st.warning(
             f"CSV内の事業所コード `{csv_code}` は、まだ施設マスタに紐付いていません。"
         )
@@ -676,6 +694,45 @@ def render_csv_import():
     c2.metric("国保請求合計", f"{df_preview['国保請求(請求額)'].sum():,} 円")
     c3.metric("総費用額合計", f"{df_preview['総費用額'].sum():,} 円")
 
+    st.markdown("#### 取込前の最終確認")
+    st.markdown(
+        f"<div style='background:#fef2f2; border:2px solid #ef4444; "
+        f"border-radius:8px; padding:14px 18px; margin:8px 0;'>"
+        f"<div style='font-size:14px; font-weight:800; color:#991b1b;'>保存前にもう一度確認してください</div>"
+        f"<ul style='margin:8px 0 0 20px; color:#450a0a; font-size:14px;'>"
+        f"<li>取込先施設：<b>{selected_facility_label}</b></li>"
+        f"<li>サービス提供年月：<b>{parsed['service_year_month'] or '-'}</b></li>"
+        f"<li>CSV事業所番号：<b>{csv_code}</b></li>"
+        f"<li>取込件数：<b>{parsed['row_count']}名分</b></li>"
+        f"</ul></div>",
+        unsafe_allow_html=True,
+    )
+    if facility_code_mismatch:
+        mismatch_ok = st.checkbox(
+            "CSVの事業所コードと選択施設が違いますが、管理者としてこの施設に取り込みます",
+            value=False,
+            key=f"csv_mismatch_ok_{facility_id}_{parsed['file_hash']}",
+        )
+    else:
+        mismatch_ok = True
+
+    pre_confirm_key = f"csv_pre_confirm_{facility_id}_{parsed['file_hash']}"
+    if st.button(
+        "取込前確認：この施設・この年月で取り込む",
+        type='secondary',
+        key=f"{pre_confirm_key}_btn",
+        disabled=not mismatch_ok,
+    ):
+        st.session_state[pre_confirm_key] = True
+    pre_confirmed = bool(st.session_state.get(pre_confirm_key))
+    import_ready = pre_confirmed and mismatch_ok
+    if import_ready:
+        st.success("取込前確認が完了しました。下の保存ボタンから取り込めます。")
+    elif pre_confirmed and not mismatch_ok:
+        st.warning("CSVの事業所コードと選択施設が違います。保存するには、確認チェックが必要です。")
+    else:
+        st.info("保存するには、先に取込前確認ボタンを押してください。")
+
     existing_records = db.get_existing_records(facility_id, parsed['service_year_month'])
     if existing_records:
         st.warning(
@@ -693,7 +750,12 @@ def render_csv_import():
             for err in parsed['errors']:
                 st.text(err)
 
-    if st.button(confirm_label, type='primary', key='csv_save_btn'):
+    if st.button(
+        confirm_label,
+        type='primary',
+        key='csv_save_btn',
+        disabled=not import_ready,
+    ):
         import_id = db.create_import(
             facility_id=facility_id,
             service_ym=parsed['service_year_month'],
@@ -2800,7 +2862,65 @@ def render_unpaid():
 # ============================================================
 # ④ 売上確認タブ（管理者専用）
 # ============================================================
+def render_sales_reset_admin():
+    st.markdown("#### 売上CSVデータ初期化（管理者専用）")
+    record_count = db.count_records()
+    import_count = _count_import_rows()
+
+    st.markdown(
+        f"<div style='background:#fff7ed; border:2px solid #fb923c; "
+        f"border-left:8px solid #ea580c; padding:14px 18px; border-radius:8px; "
+        f"margin:10px 0 16px;'>"
+        f"<div style='font-size:14px; font-weight:800; color:#9a3412;'>運用開始前の初期化</div>"
+        f"<div style='font-size:18px; font-weight:800; color:#0f172a; margin-top:6px;'>"
+        f"削除対象：売上明細 {record_count:,}件 / 取込履歴 {import_count:,}件</div>"
+        f"<div style='font-size:13px; color:#7c2d12; margin-top:6px;'>"
+        f"施設マスタ、ユーザー、職員、給与、車両、損益などは削除しません。"
+        f"CSV取込で作られた売上・入金管理データだけを空にします。</div>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+
+    with st.expander("初期化を実行する", expanded=False):
+        st.error(
+            "この操作は取り消せません。新しいCSVを取り込む前に、過去に取り込んだ売上明細と取込履歴だけを空にします。"
+        )
+        if record_count == 0 and import_count == 0:
+            st.info("現在、初期化対象の売上CSVデータはありません。")
+            return
+
+        approval = st.checkbox(
+            "管理者として、売上明細と取込履歴だけを初期化する許可を得ています",
+            key='sales_reset_approval',
+        )
+        understood = st.checkbox(
+            "施設マスタ・ユーザー等は残し、売上CSVデータだけを空にすることを理解しています",
+            key='sales_reset_understood',
+        )
+        confirm_text = st.text_input(
+            "確認のため `売上CSVデータを初期化します` と入力してください",
+            key='sales_reset_confirm_text',
+            placeholder="売上CSVデータを初期化します",
+        )
+        reset_disabled = not (
+            approval
+            and understood
+            and confirm_text.strip() == '売上CSVデータを初期化します'
+        )
+        if st.button(
+            f"売上CSVデータを初期化する（売上明細 {record_count:,}件 / 取込履歴 {import_count:,}件）",
+            type='secondary',
+            disabled=reset_disabled,
+            key='sales_reset_execute',
+        ):
+            rec_n, imp_n = db.delete_all_records()
+            st.success(f"初期化しました: 売上明細 {rec_n:,}件 / 取込履歴 {imp_n:,}件")
+            st.rerun()
+
+
 def render_dashboard():
+    render_sales_reset_admin()
+
     if not year_months:
         st.info("まだデータがありません。「**📥 CSV取込**」タブから取込んでください。")
         return
