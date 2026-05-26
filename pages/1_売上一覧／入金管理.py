@@ -1506,22 +1506,11 @@ def _payment_method_choices(kbn):
     return list(dict.fromkeys(choices))
 
 
-def _set_bulk_selection(editor_key, row_count, selected):
-    editor_state = st.session_state.get(editor_key)
-    editor_state = dict(editor_state) if isinstance(editor_state, dict) else {}
-    edited_rows = dict(editor_state.get('edited_rows') or {})
-
-    for idx in range(row_count):
-        row_changes = dict(edited_rows.get(idx) or edited_rows.get(str(idx)) or {})
-        row_changes['一括対象'] = selected
-        edited_rows[idx] = row_changes
-        edited_rows.pop(str(idx), None)
-
-    editor_state['edited_rows'] = edited_rows
-    st.session_state[editor_key] = editor_state
+def _set_bulk_selection(selection_key, selected):
+    st.session_state[selection_key] = selected
 
 
-def _render_bulk_selection_buttons(kbn, area_key, editor_key, row_count, selected_ym, selected_facility_id):
+def _render_bulk_selection_buttons(kbn, area_key, selection_key, row_count, selected_ym, selected_facility_id):
     select_cols = st.columns(2)
     with select_cols[0]:
         st.button(
@@ -1531,7 +1520,7 @@ def _render_bulk_selection_buttons(kbn, area_key, editor_key, row_count, selecte
             width='stretch',
             key=f"bulk_select_all_{area_key}_{kbn}_{selected_ym}_{selected_facility_id}",
             on_click=_set_bulk_selection,
-            args=(editor_key, row_count, True),
+            args=(selection_key, True),
         )
     with select_cols[1]:
         st.button(
@@ -1541,11 +1530,11 @@ def _render_bulk_selection_buttons(kbn, area_key, editor_key, row_count, selecte
             width='stretch',
             key=f"bulk_clear_all_{area_key}_{kbn}_{selected_ym}_{selected_facility_id}",
             on_click=_set_bulk_selection,
-            args=(editor_key, row_count, False),
+            args=(selection_key, False),
         )
 
 
-def _render_payment_tools(kbn, label, edited_df, selected_ym, selected_facility_id, state_key, editor_key):
+def _render_payment_tools(kbn, label, edited_df, selected_ym, selected_facility_id, state_key, selection_key):
     selected_rows = edited_df[edited_df['一括対象'] == True].copy()
     method_choices = _payment_method_choices(kbn)
     row_count = len(edited_df)
@@ -1555,7 +1544,7 @@ def _render_payment_tools(kbn, label, edited_df, selected_ym, selected_facility_
         with st.expander(f"{label}の一括入金登録", expanded=False):
             st.caption("一覧で「一括対象」にチェックした行を、まとめて入金済みにします。")
             _render_bulk_selection_buttons(
-                kbn, "paid", editor_key, row_count, selected_ym, selected_facility_id
+                kbn, "paid", selection_key, row_count, selected_ym, selected_facility_id
             )
             if kbn == 'self':
                 c1, c2 = st.columns(2)
@@ -1621,7 +1610,7 @@ def _render_payment_tools(kbn, label, edited_df, selected_ym, selected_facility_
                 "安全のため、行そのものは消さず、この区分の請求額・回収額を0円にして一覧対象から外します。"
             )
             _render_bulk_selection_buttons(
-                kbn, "delete", editor_key, row_count, selected_ym, selected_facility_id
+                kbn, "delete", selection_key, row_count, selected_ym, selected_facility_id
             )
             st.metric("チェック中", f"{len(selected_rows)} 行")
             approval = st.checkbox(
@@ -1822,6 +1811,7 @@ def render_payment_page(kbn):
             '国保請求額': '国保請求額',
         }
         total_label = "国保請求額"
+    selection_key = f"top_bulk_select_{kbn}_{selected_ym}_{selected_facility_id}"
 
     charge_filter_col = '合計請求額' if kbn == 'self' else '国保請求額'
     df = df[
@@ -1836,6 +1826,14 @@ def render_payment_page(kbn):
         if kbn == 'self'
         else _apply_editor_state_to_kokuho_df(df, editor_key)
     )
+    selection_override = st.session_state.pop(selection_key, None)
+    if selection_override is not None and '一括対象' in display_df.columns:
+        display_df = display_df.copy()
+        display_df['一括対象'] = bool(selection_override)
+        try:
+            st.session_state.pop(editor_key, None)
+        except Exception:
+            pass
 
     state_key = f"top_orig_{kbn}_{selected_ym}_{selected_facility_id}"
     stored_original = st.session_state.get(state_key)
@@ -1910,7 +1908,7 @@ def render_payment_page(kbn):
         else _recompute_kokuho_invoice_totals(edited_df)
     )
 
-    _render_payment_tools(kbn, label, edited_df, selected_ym, selected_facility_id, state_key, editor_key)
+    _render_payment_tools(kbn, label, edited_df, selected_ym, selected_facility_id, state_key, selection_key)
     _render_manual_add(kbn, label, selected_ym, selected_facility_id, selected_facility_label, state_key)
 
     changes = _detect_changes(edited_df, original_df, kbn)
