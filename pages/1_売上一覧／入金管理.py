@@ -410,6 +410,50 @@ def _auto_paid_date(orig_paid, new_paid, current_date):
     return current_date
 
 
+def _recompute_self_invoice_totals(df):
+    """自己負担4項目の合計を、画面表示用DataFrameへ即時反映する。"""
+    if df is None or df.empty:
+        return df
+
+    df = df.copy()
+    for col in ['自己負担額', 'おやつ代', '検査代', 'その他', '回収額']:
+        if col not in df.columns:
+            df[col] = 0
+        df[col] = df[col].fillna(0).map(_as_int)
+
+    df['合計請求額'] = (
+        df['自己負担額']
+        + df['おやつ代']
+        + df['検査代']
+        + df['その他']
+    )
+    df['差'] = df['合計請求額'] - df['回収額']
+    df['ステータス'] = df.apply(
+        lambda row: _status_from_amounts(row['合計請求額'], row['回収額']),
+        axis=1,
+    )
+    return df
+
+
+def _apply_editor_state_to_self_df(df, editor_key):
+    """data_editorの未保存編集を反映してから合計請求額を再計算する。"""
+    df = df.copy()
+    editor_state = st.session_state.get(editor_key)
+    if isinstance(editor_state, dict):
+        edited_rows = editor_state.get('edited_rows') or {}
+        for row_idx, changes in edited_rows.items():
+            try:
+                row_idx = int(row_idx)
+            except (TypeError, ValueError):
+                continue
+            if row_idx < 0 or row_idx >= len(df) or not isinstance(changes, dict):
+                continue
+            for col, value in changes.items():
+                if col in df.columns:
+                    df.at[row_idx, col] = value
+    return _recompute_self_invoice_totals(df)
+
+
 def _build_split_df(records_list, show_diff_only=False):
     rows_self = []
     rows_kokuho = []
@@ -594,6 +638,8 @@ def render_uriage_main():
             st.session_state[state_key_kokuho] = kokuho_df.copy()
         original_self = st.session_state[state_key_self]
         original_kokuho = st.session_state[state_key_kokuho]
+        self_editor_key = f"editor_self_{selected_ym}_{selected_facility_id}_{show_diff_only}"
+        self_display_df = _apply_editor_state_to_self_df(self_df, self_editor_key)
 
         base_columns = {
             '一括対象': st.column_config.CheckboxColumn(
@@ -630,7 +676,7 @@ def render_uriage_main():
             "<span style='color:#1e3a8a; font-weight:700; font-size:18px;'>"
             "自己負担</span>"
             "<span style='color:#475569; font-size:13px; margin-left:12px;'>"
-            f"{len(self_df)}行 / 合計請求 {self_df['合計請求額'].sum():,}円 / 回収 {self_df['回収額'].sum():,}円"
+            f"{len(self_display_df)}行 / 合計請求 {self_display_df['合計請求額'].sum():,}円 / 回収 {self_display_df['回収額'].sum():,}円"
             "</span></div>",
             unsafe_allow_html=True,
         )
@@ -664,23 +710,14 @@ def render_uriage_main():
             ),
         }
         edited_self = st.data_editor(
-            styling.style_editor_df(self_df),
+            styling.style_editor_df(self_display_df),
             column_config=self_columns,
             hide_index=True,
             width='stretch',
             height=320,
-            key=f"editor_self_{selected_ym}_{selected_facility_id}_{show_diff_only}",
+            key=self_editor_key,
         )
-        edited_self['合計請求額'] = (
-            edited_self['自己負担額'].fillna(0).astype(int)
-            + edited_self['おやつ代'].fillna(0).astype(int)
-            + edited_self['検査代'].fillna(0).astype(int)
-            + edited_self['その他'].fillna(0).astype(int)
-        )
-        edited_self['差'] = (
-            edited_self['合計請求額'].fillna(0).astype(int)
-            - edited_self['回収額'].fillna(0).astype(int)
-        )
+        edited_self = _recompute_self_invoice_totals(edited_self)
 
         with st.expander("自己負担の一括入金登録（この一覧から）", expanded=False):
             selected_bulk = edited_self[edited_self['一括対象'] == True].copy()
