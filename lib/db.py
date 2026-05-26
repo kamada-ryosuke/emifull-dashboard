@@ -323,6 +323,9 @@ def init_db():
             self_charge INTEGER,            -- 決定利用者負担額（自己負担）
             kokuho_charge INTEGER,          -- 請求額給付費（国保請求）
             -- 自己負担の入金トラッキング
+            self_snack_charge INTEGER DEFAULT 0,
+            self_exam_charge INTEGER DEFAULT 0,
+            self_other_charge INTEGER DEFAULT 0,
             self_paid_amount INTEGER DEFAULT 0,
             self_paid_date DATE,
             self_payment_method TEXT,
@@ -420,6 +423,12 @@ def init_db():
             conn.execute("ALTER TABLE monthly_records ADD COLUMN self_memo TEXT")
         if 'kokuho_memo' not in record_cols:
             conn.execute("ALTER TABLE monthly_records ADD COLUMN kokuho_memo TEXT")
+        if 'self_snack_charge' not in record_cols:
+            conn.execute("ALTER TABLE monthly_records ADD COLUMN self_snack_charge INTEGER DEFAULT 0")
+        if 'self_exam_charge' not in record_cols:
+            conn.execute("ALTER TABLE monthly_records ADD COLUMN self_exam_charge INTEGER DEFAULT 0")
+        if 'self_other_charge' not in record_cols:
+            conn.execute("ALTER TABLE monthly_records ADD COLUMN self_other_charge INTEGER DEFAULT 0")
 
         # === マイグレーション: 請求額0円の'未入金'を'対象外'へ修正 ===
         conn.execute("""
@@ -461,6 +470,32 @@ def init_db():
     init_vehicle_schema()
     init_cash_advance_schema()
     init_profit_reports_schema()
+
+
+def ensure_sales_schema():
+    """売上一覧で使う追加列を安全に用意する。既存データは変更しない。"""
+    with get_conn() as conn:
+        tables = {
+            r['name'] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        if 'monthly_records' not in tables:
+            return
+
+        record_cols = {
+            r['name'] for r in conn.execute("PRAGMA table_info(monthly_records)").fetchall()
+        }
+        optional_columns = {
+            'self_memo': 'TEXT',
+            'kokuho_memo': 'TEXT',
+            'self_snack_charge': 'INTEGER DEFAULT 0',
+            'self_exam_charge': 'INTEGER DEFAULT 0',
+            'self_other_charge': 'INTEGER DEFAULT 0',
+        }
+        for col, col_type in optional_columns.items():
+            if col not in record_cols:
+                conn.execute(f"ALTER TABLE monthly_records ADD COLUMN {col} {col_type}")
 
 
 # === 施設マスタ ===
@@ -581,7 +616,11 @@ def list_records(service_ym=None, facility_id=None):
     """フィルタ条件付きで一覧取得（差額計算込み）"""
     sql = """
         SELECT r.*, f.short_code AS facility_short_code, f.facility_name,
-               (COALESCE(r.self_charge, 0) - COALESCE(r.self_paid_amount, 0)) AS self_diff,
+               (COALESCE(r.self_charge, 0)
+                + COALESCE(r.self_snack_charge, 0)
+                + COALESCE(r.self_exam_charge, 0)
+                + COALESCE(r.self_other_charge, 0)
+                - COALESCE(r.self_paid_amount, 0)) AS self_diff,
                (COALESCE(r.kokuho_charge, 0) - COALESCE(r.kokuho_paid_amount, 0)) AS kokuho_diff
         FROM monthly_records r
         JOIN facilities f ON f.id = r.facility_id
@@ -612,15 +651,17 @@ def list_records_for_child(facility_id, cert_number):
 
 
 def _compute_status(charge, paid):
-    """請求額0円なら'対象外'（未収金にカウントしない）"""
+    """請求額0円なら対象外。過入金も区別して表示する。"""
     charge = charge or 0
     paid = paid or 0
-    if charge <= 0:
+    if charge <= 0 and paid <= 0:
         return '対象外'
     if paid <= 0:
         return '未入金'
     if paid < charge:
         return '一部入金'
+    if paid > charge:
+        return '過入金'
     return '入金済'
 
 
@@ -631,11 +672,16 @@ def update_payment(record_id, kbn, paid_amount, paid_date, method, memo=None):
                   method=method, memo=memo)
 
 
+def _self_total_charge_from_values(base, snack=0, exam=0, other=0):
+    return (base or 0) + (snack or 0) + (exam or 0) + (other or 0)
+
+
 def update_record(record_id, kbn,
                   charge=None, paid_amount=None, paid_date=None,
-                  method=None, memo=None):
+                  method=None, memo=None,
+                  snack_charge=None, exam_charge=None, other_charge=None):
     """請求額・回収額・回収手段・入金日・備考を一括更新。
-    kbn = 'self' or 'kokuho'。memo は kbn 別の備考列に書き込む。"""
+    kbn = 'self' or 'kokuho'。自己負担はおやつ代等を足した合計で状態判定する。"""
     if kbn not in ('self', 'kokuho'):
         raise ValueError(f"kbnは 'self' または 'kokuho' を指定: {kbn}")
 
@@ -646,44 +692,139 @@ def update_record(record_id, kbn,
         if not rec:
             raise ValueError(f"レコードが見つかりません: id={record_id}")
 
-        prefix = kbn  # 'self' or 'kokuho'
+        prefix = kbn
         new_charge = charge if charge is not None else rec[f'{prefix}_charge']
         new_paid = paid_amount if paid_amount is not None else rec[f'{prefix}_paid_amount']
-        status = _compute_status(new_charge, new_paid)
+        if kbn == 'self':
+            new_snack = (
+                snack_charge if snack_charge is not None
+                else rec['self_snack_charge'] if 'self_snack_charge' in rec.keys() else 0
+            )
+            new_exam = (
+                exam_charge if exam_charge is not None
+                else rec['self_exam_charge'] if 'self_exam_charge' in rec.keys() else 0
+            )
+            new_other = (
+                other_charge if other_charge is not None
+                else rec['self_other_charge'] if 'self_other_charge' in rec.keys() else 0
+            )
+            status_charge = _self_total_charge_from_values(
+                new_charge, new_snack, new_exam, new_other
+            )
+        else:
+            new_snack = new_exam = new_other = None
+            status_charge = new_charge
+        status = _compute_status(status_charge, new_paid)
         now = datetime.now().isoformat(sep=' ', timespec='seconds')
 
         # memo: None なら既存値を保持、'' なら明示的に空文字に上書き
-        if memo is None:
-            memo_clause = f"{prefix}_memo = {prefix}_memo"
-            memo_param = None
-        else:
-            memo_clause = f"{prefix}_memo = ?"
-            memo_param = memo
+        memo_param = memo
 
-        if memo_param is None:
-            conn.execute(f"""
-                UPDATE monthly_records SET
-                  {prefix}_charge = ?,
-                  {prefix}_paid_amount = ?,
-                  {prefix}_paid_date = ?,
-                  {prefix}_payment_method = ?,
-                  {prefix}_payment_status = ?,
-                  updated_at = ?
-                WHERE id = ?
-            """, (new_charge, new_paid or 0, paid_date, method, status, now, record_id))
+        if kbn == 'self':
+            if memo_param is None:
+                conn.execute("""
+                    UPDATE monthly_records SET
+                      self_charge = ?,
+                      self_snack_charge = ?,
+                      self_exam_charge = ?,
+                      self_other_charge = ?,
+                      self_paid_amount = ?,
+                      self_paid_date = ?,
+                      self_payment_method = ?,
+                      self_payment_status = ?,
+                      updated_at = ?
+                    WHERE id = ?
+                """, (
+                    new_charge or 0, new_snack or 0, new_exam or 0, new_other or 0,
+                    new_paid or 0, paid_date, method, status, now, record_id,
+                ))
+            else:
+                conn.execute("""
+                    UPDATE monthly_records SET
+                      self_charge = ?,
+                      self_snack_charge = ?,
+                      self_exam_charge = ?,
+                      self_other_charge = ?,
+                      self_paid_amount = ?,
+                      self_paid_date = ?,
+                      self_payment_method = ?,
+                      self_payment_status = ?,
+                      self_memo = ?,
+                      updated_at = ?
+                    WHERE id = ?
+                """, (
+                    new_charge or 0, new_snack or 0, new_exam or 0, new_other or 0,
+                    new_paid or 0, paid_date, method, status, memo_param, now, record_id,
+                ))
         else:
-            conn.execute(f"""
-                UPDATE monthly_records SET
-                  {prefix}_charge = ?,
-                  {prefix}_paid_amount = ?,
-                  {prefix}_paid_date = ?,
-                  {prefix}_payment_method = ?,
-                  {prefix}_payment_status = ?,
-                  {prefix}_memo = ?,
-                  updated_at = ?
-                WHERE id = ?
-            """, (new_charge, new_paid or 0, paid_date, method, status,
-                  memo_param, now, record_id))
+            if memo_param is None:
+                conn.execute("""
+                    UPDATE monthly_records SET
+                      kokuho_charge = ?,
+                      kokuho_paid_amount = ?,
+                      kokuho_paid_date = ?,
+                      kokuho_payment_method = ?,
+                      kokuho_payment_status = ?,
+                      updated_at = ?
+                    WHERE id = ?
+                """, (new_charge or 0, new_paid or 0, paid_date, method, status, now, record_id))
+            else:
+                conn.execute("""
+                    UPDATE monthly_records SET
+                      kokuho_charge = ?,
+                      kokuho_paid_amount = ?,
+                      kokuho_paid_date = ?,
+                      kokuho_payment_method = ?,
+                      kokuho_payment_status = ?,
+                      kokuho_memo = ?,
+                      updated_at = ?
+                    WHERE id = ?
+                """, (
+                    new_charge or 0, new_paid or 0, paid_date, method, status,
+                    memo_param, now, record_id,
+                ))
+
+
+def add_manual_self_record(service_ym, facility_id, cert_number, child_name,
+                           self_charge=0, snack_charge=0, exam_charge=0,
+                           other_charge=0, paid_amount=0, method=None,
+                           memo=None):
+    """CSVにない自己負担のみの利用者を1行追加する。既存行は上書きしない。"""
+    if not service_ym or not facility_id or not cert_number or not child_name:
+        raise ValueError("サービス年月、施設、受給者証番号、利用者氏名は必須です。")
+
+    base = int(self_charge or 0)
+    snack = int(snack_charge or 0)
+    exam = int(exam_charge or 0)
+    other = int(other_charge or 0)
+    paid = int(paid_amount or 0)
+    paid_date = datetime.now(ZoneInfo("Asia/Tokyo")).date().isoformat() if paid > 0 else None
+    total_charge = _self_total_charge_from_values(base, snack, exam, other)
+    status = _compute_status(total_charge, paid)
+
+    with get_conn() as conn:
+        existing = conn.execute("""
+            SELECT id FROM monthly_records
+            WHERE service_year_month = ? AND facility_id = ? AND cert_number = ?
+        """, (service_ym, facility_id, cert_number.strip())).fetchone()
+        if existing:
+            raise ValueError(
+                "同じサービス年月・施設・受給者証番号の行が既にあります。既存行を編集してください。"
+            )
+
+        conn.execute("""
+            INSERT INTO monthly_records (
+                service_year_month, facility_id, cert_number, child_name,
+                self_charge, kokuho_charge,
+                self_snack_charge, self_exam_charge, self_other_charge,
+                self_paid_amount, self_paid_date, self_payment_method,
+                self_payment_status, self_memo
+            )
+            VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            service_ym, facility_id, cert_number.strip(), child_name.strip(),
+            base, snack, exam, other, paid, paid_date, method or None, status, memo,
+        ))
 
 
 def list_year_months():
@@ -697,7 +838,11 @@ def list_records_in_range(start_ym=None, end_ym=None, facility_id=None):
     """指定期間（YYYY-MM）内のレコード一覧"""
     sql = """
         SELECT r.*, f.short_code AS facility_short_code, f.facility_name,
-               (COALESCE(r.self_charge, 0) - COALESCE(r.self_paid_amount, 0)) AS self_diff,
+               (COALESCE(r.self_charge, 0)
+                + COALESCE(r.self_snack_charge, 0)
+                + COALESCE(r.self_exam_charge, 0)
+                + COALESCE(r.self_other_charge, 0)
+                - COALESCE(r.self_paid_amount, 0)) AS self_diff,
                (COALESCE(r.kokuho_charge, 0) - COALESCE(r.kokuho_paid_amount, 0)) AS kokuho_diff
         FROM monthly_records r
         JOIN facilities f ON f.id = r.facility_id
@@ -2237,7 +2382,10 @@ def summary_by_method(service_ym=None):
         FROM (
             SELECT 'self' AS kbn,
                    COALESCE(self_payment_method, '(未設定)') AS method,
-                   COALESCE(self_charge, 0) AS charge,
+                   COALESCE(self_charge, 0)
+                   + COALESCE(self_snack_charge, 0)
+                   + COALESCE(self_exam_charge, 0)
+                   + COALESCE(self_other_charge, 0) AS charge,
                    COALESCE(self_paid_amount, 0) AS paid
             FROM monthly_records
             WHERE 1=1 {ym_filter}

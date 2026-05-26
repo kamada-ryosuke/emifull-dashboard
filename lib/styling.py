@@ -13,6 +13,8 @@ COLOR_PARTIAL_BG = "#fef3c7"
 COLOR_PARTIAL_FG = "#92400e"
 COLOR_UNPAID_BG = "#fee2e2"
 COLOR_UNPAID_FG = "#991b1b"
+COLOR_OVERPAID_BG = "#dbeafe"
+COLOR_OVERPAID_FG = "#1d4ed8"
 COLOR_NA_BG = "#f1f5f9"     # 対象外
 COLOR_NA_FG = "#64748b"
 
@@ -315,6 +317,8 @@ def style_editor_df(df):
             return f'background-color: {COLOR_PARTIAL_BG}; color: {COLOR_PARTIAL_FG}; font-weight: 600'
         if val == '未入金':
             return f'background-color: {COLOR_UNPAID_BG}; color: {COLOR_UNPAID_FG}; font-weight: 700'
+        if val == '過入金':
+            return f'background-color: {COLOR_OVERPAID_BG}; color: {COLOR_OVERPAID_FG}; font-weight: 700'
         if val == '対象外':
             return f'background-color: {COLOR_NA_BG}; color: {COLOR_NA_FG}; font-weight: 500'
         return ''
@@ -327,6 +331,9 @@ def style_editor_df(df):
             pass
         return ''
 
+    def style_paid_amount(_):
+        return 'background-color:#eef2ff; color:#1d4ed8; font-weight:700'
+
     def highlight_unpaid_row(row):
         if row.get('ステータス') == '未入金':
             return ['background-color: #fff1f2'] * len(row)
@@ -338,6 +345,8 @@ def style_editor_df(df):
         styler = styler.map(style_status, subset=['ステータス'])
     if '差' in df.columns:
         styler = styler.map(style_diff, subset=['差'])
+    if '回収額' in df.columns:
+        styler = styler.map(style_paid_amount, subset=['回収額'])
     return styler
 
 
@@ -361,6 +370,8 @@ def style_records_df(df):
             return f'background-color: {COLOR_PARTIAL_BG}; color: {COLOR_PARTIAL_FG}; font-weight: 600'
         if val == '未入金':
             return f'background-color: {COLOR_UNPAID_BG}; color: {COLOR_UNPAID_FG}; font-weight: 600'
+        if val == '過入金':
+            return f'background-color: {COLOR_OVERPAID_BG}; color: {COLOR_OVERPAID_FG}; font-weight: 600'
         if val == '対象外':
             return f'background-color: {COLOR_NA_BG}; color: {COLOR_NA_FG}; font-weight: 500'
         return ''
@@ -378,7 +389,7 @@ def style_records_df(df):
         return [''] * len(row)
 
     formatter = {}
-    for col in ['請求額', '回収額', '差']:
+    for col in ['請求額', '自己負担額', 'おやつ代', '検査代', 'その他', '合計請求額', '回収額', '差']:
         if col in df.columns:
             formatter[col] = '{:,}'
 
