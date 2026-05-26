@@ -634,9 +634,6 @@ def list_records(service_ym=None, facility_id=None):
                 + COALESCE(r.self_other_charge, 0)
                 - COALESCE(r.self_paid_amount, 0)) AS self_diff,
                (COALESCE(r.kokuho_charge, 0)
-                + COALESCE(r.kokuho_addition_charge, 0)
-                + COALESCE(r.kokuho_adjustment_charge, 0)
-                + COALESCE(r.kokuho_other_charge, 0)
                 - COALESCE(r.kokuho_paid_amount, 0)) AS kokuho_diff
         FROM monthly_records r
         JOIN facilities f ON f.id = r.facility_id
@@ -741,9 +738,7 @@ def update_record(record_id, kbn,
                 other_charge if other_charge is not None
                 else rec['kokuho_other_charge'] if 'kokuho_other_charge' in rec.keys() else 0
             )
-            status_charge = _self_total_charge_from_values(
-                new_charge, new_addition, new_adjustment, new_other
-            )
+            status_charge = new_charge
         status = _compute_status(status_charge, new_paid)
         now = datetime.now().isoformat(sep=' ', timespec='seconds')
 
@@ -882,8 +877,7 @@ def add_manual_kokuho_record(service_ym, facility_id, cert_number, child_name,
     other = int(other_charge or 0)
     paid = int(paid_amount or 0)
     paid_date = datetime.now(ZoneInfo("Asia/Tokyo")).date().isoformat() if paid > 0 else None
-    total_charge = _self_total_charge_from_values(base, addition, adjustment, other)
-    status = _compute_status(total_charge, paid)
+    status = _compute_status(base, paid)
 
     with get_conn() as conn:
         existing = conn.execute("""
@@ -927,9 +921,6 @@ def list_records_in_range(start_ym=None, end_ym=None, facility_id=None):
                 + COALESCE(r.self_other_charge, 0)
                 - COALESCE(r.self_paid_amount, 0)) AS self_diff,
                (COALESCE(r.kokuho_charge, 0)
-                + COALESCE(r.kokuho_addition_charge, 0)
-                + COALESCE(r.kokuho_adjustment_charge, 0)
-                + COALESCE(r.kokuho_other_charge, 0)
                 - COALESCE(r.kokuho_paid_amount, 0)) AS kokuho_diff
         FROM monthly_records r
         JOIN facilities f ON f.id = r.facility_id
@@ -2479,10 +2470,7 @@ def summary_by_method(service_ym=None):
             UNION ALL
             SELECT 'kokuho' AS kbn,
                    COALESCE(kokuho_payment_method, '(未設定)') AS method,
-                   COALESCE(kokuho_charge, 0)
-                   + COALESCE(kokuho_addition_charge, 0)
-                   + COALESCE(kokuho_adjustment_charge, 0)
-                   + COALESCE(kokuho_other_charge, 0) AS charge,
+                   COALESCE(kokuho_charge, 0) AS charge,
                    COALESCE(kokuho_paid_amount, 0) AS paid
             FROM monthly_records
             WHERE 1=1 {ym_filter}

@@ -153,10 +153,7 @@ def _update_sales_record(record_id, kbn, charge=None, paid_amount=None,
             paid_amount if paid_amount is not None
             else _row_value(rec, 'kokuho_paid_amount', 0)
         )
-        status = _status_from_amounts(
-            _charge_total(new_charge, new_addition, new_adjustment, new_other),
-            new_paid,
-        )
+        status = _status_from_amounts(new_charge, new_paid)
         now = datetime.now().isoformat(sep=' ', timespec='seconds')
 
         if memo is None:
@@ -266,7 +263,7 @@ def _add_manual_kokuho_record(service_ym, facility_id, cert_number, child_name,
     other = int(other_charge or 0)
     paid = int(paid_amount or 0)
     paid_date = _today_jst().isoformat() if paid > 0 else None
-    status = _status_from_amounts(_charge_total(base, addition, adjustment, other), paid)
+    status = _status_from_amounts(base, paid)
 
     with db.get_conn() as conn:
         existing = conn.execute("""
@@ -494,12 +491,7 @@ def _self_total_from_record(r):
 
 
 def _kokuho_total_from_record(r):
-    return (
-        (r.get('kokuho_charge') or 0)
-        + (r.get('kokuho_addition_charge') or 0)
-        + (r.get('kokuho_adjustment_charge') or 0)
-        + (r.get('kokuho_other_charge') or 0)
-    )
+    return r.get('kokuho_charge') or 0
 
 
 def _status_from_amounts(charge, paid):
@@ -575,25 +567,19 @@ def _apply_editor_state_to_self_df(df, editor_key):
 
 
 def _recompute_kokuho_invoice_totals(df):
-    """国保請求4項目の合計を、画面表示用DataFrameへ即時反映する。"""
+    """国保請求額と回収額から、画面表示用の差額・ステータスを即時反映する。"""
     if df is None or df.empty:
         return df
 
     df = df.copy()
-    for col in ['国保請求額', '加算', '調整', 'その他', '回収額']:
+    for col in ['国保請求額', '回収額']:
         if col not in df.columns:
             df[col] = 0
         df[col] = df[col].fillna(0).map(_as_int)
 
-    df['合計請求額'] = (
-        df['国保請求額']
-        + df['加算']
-        + df['調整']
-        + df['その他']
-    )
-    df['差'] = df['合計請求額'] - df['回収額']
+    df['差'] = df['国保請求額'] - df['回収額']
     df['ステータス'] = df.apply(
-        lambda row: _status_from_amounts(row['合計請求額'], row['回収額']),
+        lambda row: _status_from_amounts(row['国保請求額'], row['回収額']),
         axis=1,
     )
     return df
@@ -650,23 +636,14 @@ def _build_split_df(records_list, show_diff_only=False):
             '備考': r.get('self_memo') or '',
         })
         k_charge = r['kokuho_charge'] or 0
-        k_addition = r.get('kokuho_addition_charge') or 0
-        k_adjustment = r.get('kokuho_adjustment_charge') or 0
-        k_other = r.get('kokuho_other_charge') or 0
-        k_total = k_charge + k_addition + k_adjustment + k_other
         k_paid = r['kokuho_paid_amount'] or 0
-        k_status = _status_from_amounts(k_total, k_paid)
+        k_status = _status_from_amounts(k_charge, k_paid)
         rows_kokuho.append({
             **base,
             '国保請求額': k_charge,
-            '加算': k_addition,
-            '調整': k_adjustment,
-            'その他': k_other,
-            '合計請求額': k_total,
             '回収額': k_paid,
-            '差': k_total - k_paid if (k_total > 0 or k_paid > 0) else 0,
-            '回収方法': r['kokuho_payment_method'] or '',
-            '入金日': pd.to_datetime(r['kokuho_paid_date']).date() if r['kokuho_paid_date'] else None,
+            '差': k_charge - k_paid if (k_charge > 0 or k_paid > 0) else 0,
+            '記載日': pd.to_datetime(r['kokuho_paid_date']).date() if r['kokuho_paid_date'] else None,
             'ステータス': k_status,
             '備考': r.get('kokuho_memo') or '',
         })
@@ -688,6 +665,7 @@ def _detect_changes(edited, original, kbn_key):
         if kbn_key == 'self':
             charge_col = '自己負担額'
             extra_cols = ['おやつ代', '検査代', 'その他']
+            date_col = '入金日'
             old_total = _as_int(orig['合計請求額'])
             new_total = (
                 _as_int(new['自己負担額'])
@@ -696,19 +674,22 @@ def _detect_changes(edited, original, kbn_key):
                 + _as_int(new['その他'])
             )
             extra_changed = any(_as_int(orig[c]) != _as_int(new[c]) for c in extra_cols)
+            method_changed = (orig['回収方法'] or '') != (new['回収方法'] or '')
+            new_method = new['回収方法']
         else:
             charge_col = '国保請求額' if '国保請求額' in new.index else '請求額'
-            extra_cols = [c for c in ['加算', '調整', 'その他'] if c in new.index]
-            old_total = _as_int(orig['合計請求額']) if '合計請求額' in orig.index else _as_int(orig[charge_col])
-            new_total = _as_int(new[charge_col]) + sum(_as_int(new[c]) for c in extra_cols)
-            extra_changed = any(_as_int(orig.get(c, 0)) != _as_int(new.get(c, 0)) for c in extra_cols)
+            date_col = '記載日' if '記載日' in orig.index else '入金日'
+            old_total = _as_int(orig[charge_col])
+            new_total = _as_int(new[charge_col])
+            extra_changed = False
+            method_changed = False
+            new_method = None
         old_paid = _as_int(orig['回収額'])
         new_paid = _as_int(new['回収額'])
         charge_changed = _as_int(orig[charge_col]) != _as_int(new[charge_col])
         paid_changed = old_paid != new_paid
-        method_changed = (orig['回収方法'] or '') != (new['回収方法'] or '')
-        auto_paid_date = _auto_paid_date(old_paid, new_paid, orig['入金日'])
-        date_changed = orig['入金日'] != auto_paid_date
+        auto_paid_date = _auto_paid_date(old_paid, new_paid, orig[date_col])
+        date_changed = orig[date_col] != auto_paid_date
         memo_changed = (orig.get('備考') or '') != (new.get('備考') or '')
         if charge_changed or extra_changed or paid_changed or method_changed or date_changed or memo_changed:
             changes.append({
@@ -723,12 +704,12 @@ def _detect_changes(edited, original, kbn_key):
                 'old_paid': old_paid,
                 'new_paid': new_paid,
                 'paid_date': auto_paid_date,
-                'method': new['回収方法'],
+                'method': new_method,
                 'snack_charge': _as_int(new['おやつ代']) if kbn_key == 'self' else None,
                 'exam_charge': _as_int(new['検査代']) if kbn_key == 'self' else None,
-                'other_charge': _as_int(new['その他']) if 'その他' in new.index else None,
-                'addition_charge': _as_int(new['加算']) if kbn_key == 'kokuho' and '加算' in new.index else None,
-                'adjustment_charge': _as_int(new['調整']) if kbn_key == 'kokuho' and '調整' in new.index else None,
+                'other_charge': _as_int(new['その他']) if kbn_key == 'self' else None,
+                'addition_charge': None,
+                'adjustment_charge': None,
                 'old_memo': orig.get('備考') or '',
                 'new_memo': new.get('備考') or '',
                 'memo_changed': memo_changed,
@@ -1525,24 +1506,72 @@ def _payment_method_choices(kbn):
     return list(dict.fromkeys(choices))
 
 
-def _render_payment_tools(kbn, label, edited_df, selected_ym, selected_facility_id, state_key):
+def _set_bulk_selection(editor_key, row_count, selected):
+    editor_state = st.session_state.get(editor_key)
+    editor_state = dict(editor_state) if isinstance(editor_state, dict) else {}
+    edited_rows = dict(editor_state.get('edited_rows') or {})
+
+    for idx in range(row_count):
+        row_changes = dict(edited_rows.get(idx) or edited_rows.get(str(idx)) or {})
+        row_changes['一括対象'] = selected
+        edited_rows[idx] = row_changes
+        edited_rows.pop(str(idx), None)
+
+    editor_state['edited_rows'] = edited_rows
+    st.session_state[editor_key] = editor_state
+
+
+def _render_bulk_selection_buttons(kbn, area_key, editor_key, row_count, selected_ym, selected_facility_id):
+    select_cols = st.columns(2)
+    with select_cols[0]:
+        st.button(
+            "全てチェック",
+            type='secondary',
+            disabled=row_count == 0,
+            width='stretch',
+            key=f"bulk_select_all_{area_key}_{kbn}_{selected_ym}_{selected_facility_id}",
+            on_click=_set_bulk_selection,
+            args=(editor_key, row_count, True),
+        )
+    with select_cols[1]:
+        st.button(
+            "チェックを外す",
+            type='secondary',
+            disabled=row_count == 0,
+            width='stretch',
+            key=f"bulk_clear_all_{area_key}_{kbn}_{selected_ym}_{selected_facility_id}",
+            on_click=_set_bulk_selection,
+            args=(editor_key, row_count, False),
+        )
+
+
+def _render_payment_tools(kbn, label, edited_df, selected_ym, selected_facility_id, state_key, editor_key):
     selected_rows = edited_df[edited_df['一括対象'] == True].copy()
     method_choices = _payment_method_choices(kbn)
+    row_count = len(edited_df)
 
     tool_cols = st.columns(2)
     with tool_cols[0]:
         with st.expander(f"{label}の一括入金登録", expanded=False):
             st.caption("一覧で「一括対象」にチェックした行を、まとめて入金済みにします。")
-            c1, c2 = st.columns(2)
-            with c1:
-                bulk_method = st.selectbox(
-                    "回収方法",
-                    method_choices,
-                    key=f"top_bulk_method_{kbn}_{selected_ym}_{selected_facility_id}",
-                )
-            with c2:
+            _render_bulk_selection_buttons(
+                kbn, "paid", editor_key, row_count, selected_ym, selected_facility_id
+            )
+            if kbn == 'self':
+                c1, c2 = st.columns(2)
+                with c1:
+                    bulk_method = st.selectbox(
+                        "回収方法",
+                        method_choices,
+                        key=f"top_bulk_method_{kbn}_{selected_ym}_{selected_facility_id}",
+                    )
+                with c2:
+                    st.metric("チェック中", f"{len(selected_rows)} 行")
+                st.caption("回収額は合計請求額と同じ金額で登録し、入金日は今日の日付になります。")
+            else:
+                bulk_method = None
                 st.metric("チェック中", f"{len(selected_rows)} 行")
-            st.caption("回収額は合計請求額と同じ金額で登録し、入金日は今日の日付になります。")
+                st.caption("回収額は国保請求額と同じ金額で登録し、記載日は今日の日付になります。")
             if st.button(
                 f"{label}をまとめて入金登録",
                 type='primary',
@@ -1558,11 +1587,11 @@ def _render_payment_tools(kbn, label, edited_df, selected_ym, selected_facility_
                             'record_id': int(row['id']),
                             'kbn': kbn,
                             'charge': _as_int(row['自己負担額'] if kbn == 'self' else row['国保請求額']),
-                            'paid_amount': _as_int(row['合計請求額']),
+                            'paid_amount': _as_int(row['合計請求額'] if kbn == 'self' else row['国保請求額']),
                             'paid_date': _today_jst().isoformat(),
                             'method': bulk_method,
                             'memo': row.get('備考') or None,
-                            'other_charge': _as_int(row['その他']),
+                            'other_charge': _as_int(row['その他']) if kbn == 'self' else None,
                         }
                         if kbn == 'self':
                             kwargs.update({
@@ -1571,8 +1600,8 @@ def _render_payment_tools(kbn, label, edited_df, selected_ym, selected_facility_
                             })
                         else:
                             kwargs.update({
-                                'addition_charge': _as_int(row['加算']),
-                                'adjustment_charge': _as_int(row['調整']),
+                                'addition_charge': None,
+                                'adjustment_charge': None,
                             })
                         _update_sales_record(**kwargs)
                         success += 1
@@ -1590,6 +1619,9 @@ def _render_payment_tools(kbn, label, edited_df, selected_ym, selected_facility_
         with st.expander(f"{label}の一括削除（管理者・許可制）", expanded=False):
             st.caption(
                 "安全のため、行そのものは消さず、この区分の請求額・回収額を0円にして一覧対象から外します。"
+            )
+            _render_bulk_selection_buttons(
+                kbn, "delete", editor_key, row_count, selected_ym, selected_facility_id
             )
             st.metric("チェック中", f"{len(selected_rows)} 行")
             approval = st.checkbox(
@@ -1666,19 +1698,28 @@ def _render_manual_add(kbn, label, selected_ym, selected_facility_id, selected_f
             with m_cols2[0]:
                 manual_name = st.text_input("利用者氏名")
             with m_cols2[1]:
-                manual_method = st.selectbox("回収方法", [''] + _payment_method_choices(kbn))
+                if kbn == 'self':
+                    manual_method = st.selectbox("回収方法", [''] + _payment_method_choices(kbn))
+                else:
+                    manual_method = None
+                    st.caption("国保請求は回収方法を使いません。")
 
-            m_cols3 = st.columns(5)
             if kbn == 'self':
+                m_cols3 = st.columns(5)
                 labels = ["自己負担額", "おやつ代", "検査代", "その他"]
+                values = []
+                for idx, col in enumerate(m_cols3[:4]):
+                    with col:
+                        values.append(st.number_input(labels[idx], min_value=0, step=1, key=f"manual_{kbn}_{idx}"))
+                with m_cols3[4]:
+                    manual_paid = st.number_input("回収額", min_value=0, step=1, key=f"manual_paid_{kbn}")
             else:
-                labels = ["国保請求額", "加算", "調整", "その他"]
-            values = []
-            for idx, col in enumerate(m_cols3[:4]):
-                with col:
-                    values.append(st.number_input(labels[idx], min_value=0, step=1, key=f"manual_{kbn}_{idx}"))
-            with m_cols3[4]:
-                manual_paid = st.number_input("回収額", min_value=0, step=1, key=f"manual_paid_{kbn}")
+                m_cols3 = st.columns(2)
+                values = [0, 0, 0, 0]
+                with m_cols3[0]:
+                    values[0] = st.number_input("国保請求額", min_value=0, step=1, key=f"manual_{kbn}_charge")
+                with m_cols3[1]:
+                    manual_paid = st.number_input("回収額", min_value=0, step=1, key=f"manual_paid_{kbn}")
 
             manual_memo = st.text_input("備考")
             submitted = st.form_submit_button(f"{label}行を追加", type='primary')
@@ -1705,11 +1746,11 @@ def _render_manual_add(kbn, label, selected_ym, selected_facility_id, selected_f
                             cert_number=manual_cert,
                             child_name=manual_name,
                             kokuho_charge=values[0],
-                            addition_charge=values[1],
-                            adjustment_charge=values[2],
-                            other_charge=values[3],
+                            addition_charge=0,
+                            adjustment_charge=0,
+                            other_charge=0,
                             paid_amount=manual_paid,
-                            method=manual_method or None,
+                            method=None,
                             memo=manual_memo or None,
                         )
                     st.success(f"{label}行を追加しました。")
@@ -1725,10 +1766,15 @@ def render_payment_page(kbn):
         st.info("まだデータがありません。「CSV取込」タブから取り込んでください。")
         return
 
+    page_help = (
+        "一覧の金額を編集すると、合計請求額と差額がその場で再計算されます。"
+        if kbn == 'self'
+        else "国保請求額はCSVから取り込みます。回収額を入力すると、差額とステータスがその場で再計算されます。"
+    )
     st.markdown(
         f"<div style='background:#fef9c3; border-left:5px solid #facc15; "
         f"padding:10px 16px; border-radius:6px; margin-bottom:12px; font-size:13px;'>"
-        f"<b>{label}ページです。</b> 一覧の金額を編集すると、合計請求額と差額がその場で再計算されます。"
+        f"<b>{label}ページです。</b> {page_help}"
         f"「一括対象」にチェックした行は、下の一括入金・一括削除でまとめて処理できます。"
         f"</div>",
         unsafe_allow_html=True,
@@ -1774,14 +1820,12 @@ def render_payment_page(kbn):
         editor_key = f"top_editor_kokuho_{selected_ym}_{selected_facility_id}"
         column_labels = {
             '国保請求額': '国保請求額',
-            '加算': '加算',
-            '調整': '調整',
-            'その他': 'その他',
         }
-        total_label = "国保請求 合計請求"
+        total_label = "国保請求額"
 
+    charge_filter_col = '合計請求額' if kbn == 'self' else '国保請求額'
     df = df[
-        (df['合計請求額'].fillna(0).map(_as_int) != 0)
+        (df[charge_filter_col].fillna(0).map(_as_int) != 0)
         | (df['回収額'].fillna(0).map(_as_int) != 0)
     ].reset_index(drop=True)
     if df.empty:
@@ -1794,11 +1838,17 @@ def render_payment_page(kbn):
     )
 
     state_key = f"top_orig_{kbn}_{selected_ym}_{selected_facility_id}"
-    if state_key not in st.session_state:
+    stored_original = st.session_state.get(state_key)
+    if (
+        not isinstance(stored_original, pd.DataFrame)
+        or list(stored_original.columns) != list(df.columns)
+        or len(stored_original) != len(df)
+    ):
         st.session_state[state_key] = df.copy()
     original_df = st.session_state[state_key]
 
-    sum_charge = int(display_df['合計請求額'].sum()) if not display_df.empty else 0
+    charge_sum_col = '合計請求額' if kbn == 'self' else '国保請求額'
+    sum_charge = int(display_df[charge_sum_col].sum()) if not display_df.empty else 0
     sum_paid = int(display_df['回収額'].sum()) if not display_df.empty else 0
     metric_cols = st.columns(4)
     metric_cols[0].metric("対象行", f"{len(display_df)} 行")
@@ -1816,23 +1866,35 @@ def render_payment_page(kbn):
         '利用者氏名': st.column_config.TextColumn('利用者氏名', disabled=True),
         '受給者証番号': st.column_config.TextColumn('受給者証番号', disabled=True),
         '施設': st.column_config.TextColumn('施設', disabled=True),
-        '合計請求額': st.column_config.NumberColumn('合計請求額', format='localized', disabled=True),
-        '回収額': st.column_config.NumberColumn('回収額', format='localized', step=1, min_value=0),
-        '差': st.column_config.NumberColumn('差', format='localized', disabled=True),
-        '入金日': st.column_config.DateColumn('入金日', format='YYYY-MM-DD', disabled=True),
-        'ステータス': st.column_config.TextColumn('ステータス', disabled=True, width='small'),
-        '回収方法': st.column_config.SelectboxColumn(
-            '回収方法',
-            options=[''] + _payment_method_choices(kbn),
-            required=False,
-            width='small',
-        ),
-        '備考': st.column_config.TextColumn('備考', width='medium'),
     }
-    for col, title in column_labels.items():
-        base_columns[col] = st.column_config.NumberColumn(
-            title, format='localized', step=1, min_value=0,
-        )
+    if kbn == 'self':
+        base_columns.update({
+            '合計請求額': st.column_config.NumberColumn('合計請求額', format='localized', disabled=True),
+            '回収額': st.column_config.NumberColumn('回収額', format='localized', step=1, min_value=0),
+            '差': st.column_config.NumberColumn('差', format='localized', disabled=True),
+            '入金日': st.column_config.DateColumn('入金日', format='YYYY-MM-DD', disabled=True),
+            'ステータス': st.column_config.TextColumn('ステータス', disabled=True, width='small'),
+            '回収方法': st.column_config.SelectboxColumn(
+                '回収方法',
+                options=[''] + _payment_method_choices(kbn),
+                required=False,
+                width='small',
+            ),
+            '備考': st.column_config.TextColumn('備考', width='medium'),
+        })
+        for col, title in column_labels.items():
+            base_columns[col] = st.column_config.NumberColumn(
+                title, format='localized', step=1, min_value=0,
+            )
+    else:
+        base_columns.update({
+            '国保請求額': st.column_config.NumberColumn('国保請求額', format='localized', disabled=True),
+            '回収額': st.column_config.NumberColumn('回収額', format='localized', step=1, min_value=0),
+            '差': st.column_config.NumberColumn('差', format='localized', disabled=True),
+            '記載日': st.column_config.DateColumn('記載日', format='YYYY-MM-DD', disabled=True),
+            'ステータス': st.column_config.TextColumn('ステータス', disabled=True, width='small'),
+            '備考': st.column_config.TextColumn('備考', width='medium'),
+        })
 
     edited_df = st.data_editor(
         styling.style_editor_df(display_df),
@@ -1848,7 +1910,7 @@ def render_payment_page(kbn):
         else _recompute_kokuho_invoice_totals(edited_df)
     )
 
-    _render_payment_tools(kbn, label, edited_df, selected_ym, selected_facility_id, state_key)
+    _render_payment_tools(kbn, label, edited_df, selected_ym, selected_facility_id, state_key, editor_key)
     _render_manual_add(kbn, label, selected_ym, selected_facility_id, selected_facility_label, state_key)
 
     changes = _detect_changes(edited_df, original_df, kbn)
