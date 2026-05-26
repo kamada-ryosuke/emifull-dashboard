@@ -263,6 +263,13 @@ SELF_EXTRA_CHARGE_COLUMNS = {
     'self_housing_subsidy_charge': 'INTEGER DEFAULT 0',
 }
 
+REPORT_COLUMNS = {
+    'self_report_to_supervisor': 'INTEGER DEFAULT 0',
+    'self_reported_at': 'TEXT',
+    'kokuho_report_to_supervisor': 'INTEGER DEFAULT 0',
+    'kokuho_reported_at': 'TEXT',
+}
+
 
 def get_payment_methods(kbn):
     """区分(kbn)に応じた回収手段の選択肢を返す。
@@ -378,6 +385,9 @@ def init_db():
             self_paid_date DATE,
             self_payment_method TEXT,
             self_payment_status TEXT DEFAULT '未入金',
+            self_memo TEXT,
+            self_report_to_supervisor INTEGER DEFAULT 0,
+            self_reported_at TEXT,
             -- 国保請求の入金トラッキング
             kokuho_addition_charge INTEGER DEFAULT 0,
             kokuho_adjustment_charge INTEGER DEFAULT 0,
@@ -386,6 +396,9 @@ def init_db():
             kokuho_paid_date DATE,
             kokuho_payment_method TEXT,
             kokuho_payment_status TEXT DEFAULT '未入金',
+            kokuho_memo TEXT,
+            kokuho_report_to_supervisor INTEGER DEFAULT 0,
+            kokuho_reported_at TEXT,
             memo TEXT,
             source_import_id INTEGER REFERENCES imports(id),
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -474,6 +487,9 @@ def init_db():
             conn.execute("ALTER TABLE monthly_records ADD COLUMN self_memo TEXT")
         if 'kokuho_memo' not in record_cols:
             conn.execute("ALTER TABLE monthly_records ADD COLUMN kokuho_memo TEXT")
+        for col, col_type in REPORT_COLUMNS.items():
+            if col not in record_cols:
+                conn.execute(f"ALTER TABLE monthly_records ADD COLUMN {col} {col_type}")
         if 'self_snack_charge' not in record_cols:
             conn.execute("ALTER TABLE monthly_records ADD COLUMN self_snack_charge INTEGER DEFAULT 0")
         if 'self_exam_charge' not in record_cols:
@@ -569,6 +585,7 @@ def ensure_sales_schema():
             'self_exam_charge': 'INTEGER DEFAULT 0',
             'self_other_charge': 'INTEGER DEFAULT 0',
             **SELF_EXTRA_CHARGE_COLUMNS,
+            **REPORT_COLUMNS,
             'kokuho_addition_charge': 'INTEGER DEFAULT 0',
             'kokuho_adjustment_charge': 'INTEGER DEFAULT 0',
             'kokuho_other_charge': 'INTEGER DEFAULT 0',
@@ -1009,7 +1026,7 @@ def add_manual_self_record(service_ym, facility_id, cert_number, child_name,
                            breakfast_charge=0, lunch_charge=0, dinner_charge=0,
                            rice_charge=0, special_benefit_charge=0,
                            housing_subsidy_charge=0, paid_amount=0, method=None,
-                           memo=None):
+                           memo=None, report_to_supervisor=False):
     """CSVにない自己負担のみの利用者を1行追加する。既存行は上書きしない。"""
     if not service_ym or not facility_id or not cert_number or not child_name:
         raise ValueError("サービス年月、施設、受給者証番号、利用者氏名は必須です。")
@@ -1037,6 +1054,10 @@ def add_manual_self_record(service_ym, facility_id, cert_number, child_name,
         housing_subsidy,
     )
     status = _compute_status(total_charge, paid)
+    reported_at = datetime.now(ZoneInfo("Asia/Tokyo")).isoformat(sep=' ', timespec='seconds') if (
+        report_to_supervisor and str(memo or '').strip()
+    ) else None
+    report_flag = 1 if reported_at else 0
 
     with get_conn() as conn:
         existing = conn.execute("""
@@ -1058,21 +1079,24 @@ def add_manual_self_record(service_ym, facility_id, cert_number, child_name,
                 self_breakfast_charge, self_lunch_charge, self_dinner_charge,
                 self_rice_charge, self_special_benefit_charge, self_housing_subsidy_charge,
                 self_paid_amount, self_paid_date, self_payment_method,
-                self_payment_status, self_memo
+                self_payment_status, self_memo,
+                self_report_to_supervisor, self_reported_at
             )
-            VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             service_ym, facility_id, cert_number.strip(), child_name.strip(),
             base, snack, exam, other, refund, unpaid, rent, utilities,
             daily_supplies, breakfast, lunch, dinner, rice, special_benefit,
             housing_subsidy, paid, paid_date, method or None, status, memo,
+            report_flag, reported_at,
         ))
 
 
 def add_manual_kokuho_record(service_ym, facility_id, cert_number, child_name,
                              kokuho_charge=0, addition_charge=0,
                              adjustment_charge=0, other_charge=0,
-                             paid_amount=0, method=None, memo=None):
+                             paid_amount=0, method=None, memo=None,
+                             report_to_supervisor=False):
     """CSVにない国保請求の利用者を1行追加する。既存行は上書きしない。"""
     if not service_ym or not facility_id or not cert_number or not child_name:
         raise ValueError("サービス年月、施設、受給者証番号、利用者氏名は必須です。")
@@ -1084,6 +1108,10 @@ def add_manual_kokuho_record(service_ym, facility_id, cert_number, child_name,
     paid = int(paid_amount or 0)
     paid_date = datetime.now(ZoneInfo("Asia/Tokyo")).date().isoformat() if paid > 0 else None
     status = _compute_status(base, paid)
+    reported_at = datetime.now(ZoneInfo("Asia/Tokyo")).isoformat(sep=' ', timespec='seconds') if (
+        report_to_supervisor and str(memo or '').strip()
+    ) else None
+    report_flag = 1 if reported_at else 0
 
     with get_conn() as conn:
         existing = conn.execute("""
@@ -1101,12 +1129,14 @@ def add_manual_kokuho_record(service_ym, facility_id, cert_number, child_name,
                 self_charge, kokuho_charge,
                 kokuho_addition_charge, kokuho_adjustment_charge, kokuho_other_charge,
                 kokuho_paid_amount, kokuho_paid_date, kokuho_payment_method,
-                kokuho_payment_status, kokuho_memo
+                kokuho_payment_status, kokuho_memo,
+                kokuho_report_to_supervisor, kokuho_reported_at
             )
-            VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             service_ym, facility_id, cert_number.strip(), child_name.strip(),
             base, addition, adjustment, other, paid, paid_date, method or None, status, memo,
+            report_flag, reported_at,
         ))
 
 

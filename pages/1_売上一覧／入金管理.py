@@ -25,6 +25,13 @@ SELF_EXTRA_COLUMNS = {
     'self_housing_subsidy_charge': 'INTEGER DEFAULT 0',
 }
 
+REPORT_COLUMNS = {
+    'self_report_to_supervisor': 'INTEGER DEFAULT 0',
+    'self_reported_at': 'TEXT',
+    'kokuho_report_to_supervisor': 'INTEGER DEFAULT 0',
+    'kokuho_reported_at': 'TEXT',
+}
+
 SELF_FIELD_PARAMS = {
     'self_charge': 'charge',
     'self_snack_charge': 'snack_charge',
@@ -102,6 +109,7 @@ def _ensure_sales_schema():
             'self_exam_charge': 'INTEGER DEFAULT 0',
             'self_other_charge': 'INTEGER DEFAULT 0',
             **SELF_EXTRA_COLUMNS,
+            **REPORT_COLUMNS,
             'kokuho_addition_charge': 'INTEGER DEFAULT 0',
             'kokuho_adjustment_charge': 'INTEGER DEFAULT 0',
             'kokuho_other_charge': 'INTEGER DEFAULT 0',
@@ -178,6 +186,23 @@ def _charge_total(base=0, extra1=0, extra2=0, extra3=0):
     return (base or 0) + (extra1 or 0) + (extra2 or 0) + (extra3 or 0)
 
 
+def _report_state_from_input(rec, kbn, memo, report_to_supervisor, now):
+    memo_col = f'{kbn}_memo'
+    flag_col = f'{kbn}_report_to_supervisor'
+    reported_at_col = f'{kbn}_reported_at'
+    effective_memo = _row_value(rec, memo_col, '') if memo is None else memo
+    if report_to_supervisor is None:
+        flag = 1 if _as_int(_row_value(rec, flag_col, 0)) else 0
+        reported_at = _row_value(rec, reported_at_col, None)
+    elif report_to_supervisor and str(effective_memo or '').strip():
+        flag = 1
+        reported_at = now
+    else:
+        flag = 0
+        reported_at = None
+    return effective_memo, flag, reported_at
+
+
 def _update_sales_record(record_id, kbn, charge=None, paid_amount=None,
                          paid_date=None, method=None, memo=None,
                          snack_charge=None, exam_charge=None, other_charge=None,
@@ -186,7 +211,8 @@ def _update_sales_record(record_id, kbn, charge=None, paid_amount=None,
                          daily_supplies_charge=None, breakfast_charge=None,
                          lunch_charge=None, dinner_charge=None, rice_charge=None,
                          special_benefit_charge=None, housing_subsidy_charge=None,
-                         addition_charge=None, adjustment_charge=None):
+                         addition_charge=None, adjustment_charge=None,
+                         report_to_supervisor=None):
     """売上一覧ページ用の更新。古いdb.pyが公開中でも同じ処理で保存する。"""
     if kbn not in ('self', 'kokuho'):
         raise ValueError("区分は self または kokuho を指定してください。")
@@ -270,72 +296,44 @@ def _update_sales_record(record_id, kbn, charge=None, paid_amount=None,
                 new_paid,
             )
             now = datetime.now().isoformat(sep=' ', timespec='seconds')
-
-            if memo is None:
-                conn.execute("""
-                    UPDATE monthly_records SET
-                      self_charge = ?,
-                      self_snack_charge = ?,
-                      self_exam_charge = ?,
-                      self_other_charge = ?,
-                      self_refund_charge = ?,
-                      self_unpaid_charge = ?,
-                      self_rent_charge = ?,
-                      self_utilities_charge = ?,
-                      self_daily_supplies_charge = ?,
-                      self_breakfast_charge = ?,
-                      self_lunch_charge = ?,
-                      self_dinner_charge = ?,
-                      self_rice_charge = ?,
-                      self_special_benefit_charge = ?,
-                      self_housing_subsidy_charge = ?,
-                      self_paid_amount = ?,
-                      self_paid_date = ?,
-                      self_payment_method = ?,
-                      self_payment_status = ?,
-                      updated_at = ?
-                    WHERE id = ?
-                """, (
-                    new_charge or 0, new_snack or 0, new_exam or 0, new_other or 0,
-                    new_refund or 0, new_unpaid or 0, new_rent or 0,
-                    new_utilities or 0, new_daily_supplies or 0, new_breakfast or 0,
-                    new_lunch or 0, new_dinner or 0, new_rice or 0,
-                    new_special_benefit or 0, new_housing_subsidy or 0,
-                    new_paid or 0, paid_date, method, status, now, record_id,
-                ))
-            else:
-                conn.execute("""
-                    UPDATE monthly_records SET
-                      self_charge = ?,
-                      self_snack_charge = ?,
-                      self_exam_charge = ?,
-                      self_other_charge = ?,
-                      self_refund_charge = ?,
-                      self_unpaid_charge = ?,
-                      self_rent_charge = ?,
-                      self_utilities_charge = ?,
-                      self_daily_supplies_charge = ?,
-                      self_breakfast_charge = ?,
-                      self_lunch_charge = ?,
-                      self_dinner_charge = ?,
-                      self_rice_charge = ?,
-                      self_special_benefit_charge = ?,
-                      self_housing_subsidy_charge = ?,
-                      self_paid_amount = ?,
-                      self_paid_date = ?,
-                      self_payment_method = ?,
-                      self_payment_status = ?,
-                      self_memo = ?,
-                      updated_at = ?
-                    WHERE id = ?
-                """, (
-                    new_charge or 0, new_snack or 0, new_exam or 0, new_other or 0,
-                    new_refund or 0, new_unpaid or 0, new_rent or 0,
-                    new_utilities or 0, new_daily_supplies or 0, new_breakfast or 0,
-                    new_lunch or 0, new_dinner or 0, new_rice or 0,
-                    new_special_benefit or 0, new_housing_subsidy or 0,
-                    new_paid or 0, paid_date, method, status, memo, now, record_id,
-                ))
+            new_memo, new_report, new_reported_at = _report_state_from_input(
+                rec, 'self', memo, report_to_supervisor, now
+            )
+            conn.execute("""
+                UPDATE monthly_records SET
+                  self_charge = ?,
+                  self_snack_charge = ?,
+                  self_exam_charge = ?,
+                  self_other_charge = ?,
+                  self_refund_charge = ?,
+                  self_unpaid_charge = ?,
+                  self_rent_charge = ?,
+                  self_utilities_charge = ?,
+                  self_daily_supplies_charge = ?,
+                  self_breakfast_charge = ?,
+                  self_lunch_charge = ?,
+                  self_dinner_charge = ?,
+                  self_rice_charge = ?,
+                  self_special_benefit_charge = ?,
+                  self_housing_subsidy_charge = ?,
+                  self_paid_amount = ?,
+                  self_paid_date = ?,
+                  self_payment_method = ?,
+                  self_payment_status = ?,
+                  self_memo = ?,
+                  self_report_to_supervisor = ?,
+                  self_reported_at = ?,
+                  updated_at = ?
+                WHERE id = ?
+            """, (
+                new_charge or 0, new_snack or 0, new_exam or 0, new_other or 0,
+                new_refund or 0, new_unpaid or 0, new_rent or 0,
+                new_utilities or 0, new_daily_supplies or 0, new_breakfast or 0,
+                new_lunch or 0, new_dinner or 0, new_rice or 0,
+                new_special_benefit or 0, new_housing_subsidy or 0,
+                new_paid or 0, paid_date, method, status, new_memo,
+                new_report, new_reported_at, now, record_id,
+            ))
             return
 
         new_charge = charge if charge is not None else _row_value(rec, 'kokuho_charge', 0)
@@ -357,44 +355,29 @@ def _update_sales_record(record_id, kbn, charge=None, paid_amount=None,
         )
         status = _status_from_amounts(new_charge, new_paid)
         now = datetime.now().isoformat(sep=' ', timespec='seconds')
-
-        if memo is None:
-            conn.execute("""
-                UPDATE monthly_records SET
-                  kokuho_charge = ?,
-                  kokuho_addition_charge = ?,
-                  kokuho_adjustment_charge = ?,
-                  kokuho_other_charge = ?,
-                  kokuho_paid_amount = ?,
-                  kokuho_paid_date = ?,
-                  kokuho_payment_method = ?,
-                  kokuho_payment_status = ?,
-                  updated_at = ?
-                WHERE id = ?
-            """, (
-                new_charge or 0, new_addition or 0, new_adjustment or 0,
-                new_other or 0, new_paid or 0, paid_date, method, status,
-                now, record_id,
-            ))
-        else:
-            conn.execute("""
-                UPDATE monthly_records SET
-                  kokuho_charge = ?,
-                  kokuho_addition_charge = ?,
-                  kokuho_adjustment_charge = ?,
-                  kokuho_other_charge = ?,
-                  kokuho_paid_amount = ?,
-                  kokuho_paid_date = ?,
-                  kokuho_payment_method = ?,
-                  kokuho_payment_status = ?,
-                  kokuho_memo = ?,
-                  updated_at = ?
-                WHERE id = ?
-            """, (
-                new_charge or 0, new_addition or 0, new_adjustment or 0,
-                new_other or 0, new_paid or 0, paid_date, method, status,
-                memo, now, record_id,
-            ))
+        new_memo, new_report, new_reported_at = _report_state_from_input(
+            rec, 'kokuho', memo, report_to_supervisor, now
+        )
+        conn.execute("""
+            UPDATE monthly_records SET
+              kokuho_charge = ?,
+              kokuho_addition_charge = ?,
+              kokuho_adjustment_charge = ?,
+              kokuho_other_charge = ?,
+              kokuho_paid_amount = ?,
+              kokuho_paid_date = ?,
+              kokuho_payment_method = ?,
+              kokuho_payment_status = ?,
+              kokuho_memo = ?,
+              kokuho_report_to_supervisor = ?,
+              kokuho_reported_at = ?,
+              updated_at = ?
+            WHERE id = ?
+        """, (
+            new_charge or 0, new_addition or 0, new_adjustment or 0,
+            new_other or 0, new_paid or 0, paid_date, method, status,
+            new_memo, new_report, new_reported_at, now, record_id,
+        ))
 
 
 def _add_manual_self_record(service_ym, facility_id, cert_number, child_name,
@@ -404,7 +387,7 @@ def _add_manual_self_record(service_ym, facility_id, cert_number, child_name,
                             breakfast_charge=0, lunch_charge=0, dinner_charge=0,
                             rice_charge=0, special_benefit_charge=0,
                             housing_subsidy_charge=0, paid_amount=0, method=None,
-                            memo=None):
+                            memo=None, report_to_supervisor=False):
     if not service_ym or not facility_id or not cert_number or not child_name:
         raise ValueError("サービス年月、施設、受給者証番号、利用者氏名は必須です。")
 
@@ -433,6 +416,10 @@ def _add_manual_self_record(service_ym, facility_id, cert_number, child_name,
         ),
         paid,
     )
+    reported_at = datetime.now().isoformat(sep=' ', timespec='seconds') if (
+        report_to_supervisor and str(memo or '').strip()
+    ) else None
+    report_flag = 1 if reported_at else 0
 
     with db.get_conn() as conn:
         existing = conn.execute("""
@@ -454,21 +441,24 @@ def _add_manual_self_record(service_ym, facility_id, cert_number, child_name,
                 self_breakfast_charge, self_lunch_charge, self_dinner_charge,
                 self_rice_charge, self_special_benefit_charge, self_housing_subsidy_charge,
                 self_paid_amount, self_paid_date, self_payment_method,
-                self_payment_status, self_memo
+                self_payment_status, self_memo,
+                self_report_to_supervisor, self_reported_at
             )
-            VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             service_ym, facility_id, cert_number.strip(), child_name.strip(),
             base, snack, exam, other, refund, unpaid, rent, utilities,
             daily_supplies, breakfast, lunch, dinner, rice, special_benefit,
             housing_subsidy, paid, paid_date, method or None, status, memo,
+            report_flag, reported_at,
         ))
 
 
 def _add_manual_kokuho_record(service_ym, facility_id, cert_number, child_name,
                               kokuho_charge=0, addition_charge=0,
                               adjustment_charge=0, other_charge=0,
-                              paid_amount=0, method=None, memo=None):
+                              paid_amount=0, method=None, memo=None,
+                              report_to_supervisor=False):
     if hasattr(db, 'add_manual_kokuho_record'):
         return db.add_manual_kokuho_record(
             service_ym=service_ym,
@@ -482,6 +472,7 @@ def _add_manual_kokuho_record(service_ym, facility_id, cert_number, child_name,
             paid_amount=paid_amount,
             method=method,
             memo=memo,
+            report_to_supervisor=report_to_supervisor,
         )
 
     if not service_ym or not facility_id or not cert_number or not child_name:
@@ -494,6 +485,10 @@ def _add_manual_kokuho_record(service_ym, facility_id, cert_number, child_name,
     paid = int(paid_amount or 0)
     paid_date = _today_jst().isoformat() if paid > 0 else None
     status = _status_from_amounts(base, paid)
+    reported_at = datetime.now().isoformat(sep=' ', timespec='seconds') if (
+        report_to_supervisor and str(memo or '').strip()
+    ) else None
+    report_flag = 1 if reported_at else 0
 
     with db.get_conn() as conn:
         existing = conn.execute("""
@@ -511,12 +506,14 @@ def _add_manual_kokuho_record(service_ym, facility_id, cert_number, child_name,
                 self_charge, kokuho_charge,
                 kokuho_addition_charge, kokuho_adjustment_charge, kokuho_other_charge,
                 kokuho_paid_amount, kokuho_paid_date, kokuho_payment_method,
-                kokuho_payment_status, kokuho_memo
+                kokuho_payment_status, kokuho_memo,
+                kokuho_report_to_supervisor, kokuho_reported_at
             )
-            VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             service_ym, facility_id, cert_number.strip(), child_name.strip(),
             base, addition, adjustment, other, paid, paid_date, method or None, status, memo,
+            report_flag, reported_at,
         ))
 
 
@@ -534,6 +531,7 @@ _is_admin = auth.is_admin()
 _top_titles = ["📥 CSV取込", "🔵 自己負担", "🟡 国保請求", "🔔 未入金確認"]
 if _is_admin:
     _top_titles.append("📊 売上確認")
+    _top_titles.append("📣 報告確認")
 _top_tabs = st.tabs(_top_titles)
 
 
@@ -921,6 +919,8 @@ def _build_split_df(records_list, show_diff_only=False):
             '入金日': pd.to_datetime(r['self_paid_date']).date() if r['self_paid_date'] else None,
             'ステータス': s_status,
             '備考': r.get('self_memo') or '',
+            '上司報告': bool(_as_int(r.get('self_report_to_supervisor') or 0)),
+            '報告更新日': r.get('self_reported_at') or '',
         })
         k_charge = r['kokuho_charge'] or 0
         k_paid = r['kokuho_paid_amount'] or 0
@@ -933,6 +933,8 @@ def _build_split_df(records_list, show_diff_only=False):
             '記載日': pd.to_datetime(r['kokuho_paid_date']).date() if r['kokuho_paid_date'] else None,
             'ステータス': k_status,
             '備考': r.get('kokuho_memo') or '',
+            '上司報告': bool(_as_int(r.get('kokuho_report_to_supervisor') or 0)),
+            '報告更新日': r.get('kokuho_reported_at') or '',
         })
     self_df = pd.DataFrame(rows_self)
     kokuho_df = pd.DataFrame(rows_kokuho)
@@ -954,10 +956,12 @@ def _empty_payment_df(kbn):
             *base_columns,
             *item_columns,
             '合計請求額', '回収額', '差', '回収方法', '入金日', 'ステータス', '備考',
+            '上司報告', '報告更新日',
         ])
     return pd.DataFrame(columns=[
         *base_columns,
         '国保請求額', '回収額', '差', '記載日', 'ステータス', '備考',
+        '上司報告', '報告更新日',
     ])
 
 
@@ -1017,10 +1021,43 @@ def _detect_changes(edited, original, kbn_key, is_share_layout=False):
                 'old_memo': orig.get('備考') or '',
                 'new_memo': new.get('備考') or '',
                 'memo_changed': memo_changed,
+                'old_report_to_supervisor': bool(orig.get('上司報告', False)),
                 'amount_changed': charge_changed or extra_changed or paid_changed,
                 'risky': (charge_changed or extra_changed) and old_paid > 0,
             })
     return changes
+
+
+def _render_report_prompt(changes, kbn, selected_ym, selected_facility_id):
+    memo_changes = [c for c in changes if c.get('memo_changed')]
+    if not memo_changes:
+        for c in changes:
+            c['report_to_supervisor'] = None
+        return
+
+    st.markdown("#### 備考の報告確認")
+    st.info("備考欄を変更した行があります。上司に報告しますか？ 報告する行だけ「はい、上司に報告します」にチェックしてください。")
+    for c in changes:
+        if not c.get('memo_changed'):
+            c['report_to_supervisor'] = None
+            continue
+
+        memo_text = str(c.get('new_memo') or '').strip()
+        if not memo_text:
+            c['report_to_supervisor'] = False
+            st.caption(f"{c['kbn_label']} / {c['name']}：備考が空になったため、報告確認から外します。")
+            continue
+
+        default_report = bool(c.get('old_report_to_supervisor'))
+        st.markdown(
+            f"**{c['kbn_label']} / {c['name']}**  \n"
+            f"{memo_text}"
+        )
+        c['report_to_supervisor'] = st.checkbox(
+            "はい、上司に報告します",
+            value=default_report,
+            key=f"report_confirm_{kbn}_{selected_ym}_{selected_facility_id}_{c['id']}",
+        )
 
 
 def render_uriage_main():
@@ -2058,6 +2095,11 @@ def _render_manual_add(kbn, label, selected_ym, selected_facility_id,
                     manual_paid = st.number_input("回収額", min_value=0, step=1, key=f"manual_paid_{kbn}")
 
             manual_memo = st.text_input("備考")
+            manual_report = st.checkbox(
+                "この備考を上司に報告する",
+                value=False,
+                key=f"manual_report_{kbn}_{selected_ym}_{selected_facility_id}",
+            )
             submitted = st.form_submit_button(f"{label}行を追加", type='primary')
             if submitted:
                 try:
@@ -2074,6 +2116,7 @@ def _render_manual_add(kbn, label, selected_ym, selected_facility_id,
                             paid_amount=manual_paid,
                             method=manual_method or None,
                             memo=manual_memo or None,
+                            report_to_supervisor=manual_report,
                         )
                     else:
                         _add_manual_kokuho_record(
@@ -2088,6 +2131,7 @@ def _render_manual_add(kbn, label, selected_ym, selected_facility_id,
                             paid_amount=manual_paid,
                             method=None,
                             memo=manual_memo or None,
+                            report_to_supervisor=manual_report,
                         )
                     st.success(f"{label}行を追加しました。")
                     st.session_state.pop(state_key, None)
@@ -2434,6 +2478,7 @@ def render_payment_page(kbn):
     changes = _detect_changes(edited_df, original_df, kbn, is_share_layout)
     risky_changes = [c for c in changes if c['risky']]
     st.markdown("---")
+    _render_report_prompt(changes, kbn, selected_ym, selected_facility_id)
     save_cols = st.columns([1, 4])
     with save_cols[1]:
         if changes:
@@ -2473,6 +2518,7 @@ def render_payment_page(kbn):
                     'method': c['method'] if c['method'] else None,
                     'memo': c['new_memo'] if c['memo_changed'] else None,
                     'other_charge': c.get('other_charge'),
+                    'report_to_supervisor': c.get('report_to_supervisor'),
                 }
                 if kbn == 'self':
                     kwargs.update(c.get('self_values') or {})
@@ -2899,6 +2945,111 @@ def render_dashboard():
 
 
 # ============================================================
+# ⑤ 報告確認タブ（管理者専用）
+# ============================================================
+def _report_rows_from_records(records, report_kbn):
+    rows = []
+    for r in records:
+        if report_kbn in ('すべて', '自己負担') and _as_int(r.get('self_report_to_supervisor')) == 1:
+            memo = str(r.get('self_memo') or '').strip()
+            if memo:
+                charge = _self_total_from_record(r)
+                paid = _as_int(r.get('self_paid_amount'))
+                rows.append({
+                    'サービス提供年月': r.get('service_year_month'),
+                    '区分': '自己負担',
+                    '施設': f"{r.get('facility_short_code')}: {r.get('facility_name')}",
+                    '利用者氏名': r.get('child_name') or '',
+                    '受給者証番号': r.get('cert_number') or '',
+                    '報告内容': memo,
+                    '請求額': charge,
+                    '回収額': paid,
+                    '差額': charge - paid if (charge > 0 or paid > 0) else 0,
+                    'ステータス': _status_from_amounts(charge, paid),
+                    '報告更新日': r.get('self_reported_at') or r.get('updated_at') or '',
+                })
+        if report_kbn in ('すべて', '国保請求') and _as_int(r.get('kokuho_report_to_supervisor')) == 1:
+            memo = str(r.get('kokuho_memo') or '').strip()
+            if memo:
+                charge = _kokuho_total_from_record(r)
+                paid = _as_int(r.get('kokuho_paid_amount'))
+                rows.append({
+                    'サービス提供年月': r.get('service_year_month'),
+                    '区分': '国保請求',
+                    '施設': f"{r.get('facility_short_code')}: {r.get('facility_name')}",
+                    '利用者氏名': r.get('child_name') or '',
+                    '受給者証番号': r.get('cert_number') or '',
+                    '報告内容': memo,
+                    '請求額': charge,
+                    '回収額': paid,
+                    '差額': charge - paid if (charge > 0 or paid > 0) else 0,
+                    'ステータス': _status_from_amounts(charge, paid),
+                    '報告更新日': r.get('kokuho_reported_at') or r.get('updated_at') or '',
+                })
+    rows.sort(key=lambda row: (row['報告更新日'] or '', row['サービス提供年月'] or ''), reverse=True)
+    return rows
+
+
+def render_report_confirmation():
+    if not year_months:
+        st.info("まだデータがありません。備考を登録して「上司に報告します」にチェックすると、ここに表示されます。")
+        return
+
+    st.markdown(
+        "自己負担・国保請求の備考欄で「上司に報告します」を選んだ内容だけを確認できます。"
+        "備考を修正して保存すると、この画面の内容も最新の備考で上書き表示されます。"
+    )
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        ym_options = ['（すべて）'] + year_months
+        selected_ym = st.selectbox("サービス提供年月", ym_options, key='report_ym')
+        ym_filter = None if selected_ym == '（すべて）' else selected_ym
+    with c2:
+        facility_options = {"（すべて）": None}
+        for f in facilities:
+            facility_options[f"{f['short_code']}: {f['facility_name']}"] = f['id']
+        selected_facility_label = st.selectbox("施設", list(facility_options.keys()), key='report_fac')
+        selected_facility_id = facility_options[selected_facility_label]
+    with c3:
+        report_kbn = st.selectbox("区分", ['すべて', '自己負担', '国保請求'], key='report_kbn')
+
+    records = db.list_records(service_ym=ym_filter, facility_id=selected_facility_id)
+    rows = _report_rows_from_records(records, report_kbn)
+
+    metric_cols = st.columns(3)
+    metric_cols[0].metric("報告件数", f"{len(rows)} 件")
+    metric_cols[1].metric("自己負担", f"{sum(1 for row in rows if row['区分'] == '自己負担')} 件")
+    metric_cols[2].metric("国保請求", f"{sum(1 for row in rows if row['区分'] == '国保請求')} 件")
+
+    if not rows:
+        st.info("報告対象の備考はありません。備考を保存するときに「はい、上司に報告します」を選ぶとここに表示されます。")
+        return
+
+    df = pd.DataFrame(rows)
+    st.dataframe(
+        df,
+        width='stretch',
+        hide_index=True,
+        height=560,
+        column_config={
+            '報告内容': st.column_config.TextColumn('報告内容', width='large'),
+            '請求額': st.column_config.NumberColumn('請求額', format='localized'),
+            '回収額': st.column_config.NumberColumn('回収額', format='localized'),
+            '差額': st.column_config.NumberColumn('差額', format='localized'),
+        },
+    )
+
+    csv = df.to_csv(index=False).encode('utf-8-sig')
+    st.download_button(
+        "報告確認をCSVで出力",
+        data=csv,
+        file_name=f"報告確認_{date.today().isoformat()}.csv",
+        mime='text/csv',
+    )
+
+
+# ============================================================
 # タブ呼び出し
 # ============================================================
 with _top_tabs[0]:
@@ -2912,3 +3063,5 @@ with _top_tabs[3]:
 if _is_admin:
     with _top_tabs[4]:
         render_dashboard()
+    with _top_tabs[5]:
+        render_report_confirmation()
