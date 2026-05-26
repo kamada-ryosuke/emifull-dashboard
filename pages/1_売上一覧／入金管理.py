@@ -2768,7 +2768,7 @@ def render_unpaid():
     with c3:
         aging_filter = st.selectbox(
             "経過月数",
-            ["すべて", "1ヶ月未満", "1〜3ヶ月", "3〜6ヶ月", "6ヶ月以上"],
+            ["すべて", "2か月未満", "4か月未満", "6か月未満", "12か月未満"],
             key='unpaid_aging',
         )
 
@@ -2815,13 +2815,13 @@ def render_unpaid():
             })
 
     def aging_bucket(m):
-        if m < 1:
-            return "1ヶ月未満"
-        if m < 3:
-            return "1〜3ヶ月"
+        if m < 2:
+            return "2か月未満"
+        if m < 4:
+            return "4か月未満"
         if m < 6:
-            return "3〜6ヶ月"
-        return "6ヶ月以上"
+            return "6か月未満"
+        return "12か月未満"
 
     if aging_filter != 'すべて':
         rows = [r for r in rows if aging_bucket(r['経過月数']) == aging_filter]
@@ -2833,10 +2833,10 @@ def render_unpaid():
     st.markdown("---")
     st.markdown("#### 経過月数別サマリ")
 
-    agg = {'1ヶ月未満': {'count': 0, 'amount': 0},
-           '1〜3ヶ月': {'count': 0, 'amount': 0},
-           '3〜6ヶ月': {'count': 0, 'amount': 0},
-           '6ヶ月以上': {'count': 0, 'amount': 0}}
+    agg = {'2か月未満': {'count': 0, 'amount': 0},
+           '4か月未満': {'count': 0, 'amount': 0},
+           '6か月未満': {'count': 0, 'amount': 0},
+           '12か月未満': {'count': 0, 'amount': 0}}
     for r in rows:
         bucket = aging_bucket(r['経過月数'])
         agg[bucket]['count'] += 1
@@ -2845,10 +2845,10 @@ def render_unpaid():
     sc1, sc2, sc3, sc4 = st.columns(4)
     for col, (bucket, color) in zip(
         [sc1, sc2, sc3, sc4],
-        [('1ヶ月未満', '#10b981'),
-         ('1〜3ヶ月', '#f59e0b'),
-         ('3〜6ヶ月', '#f97316'),
-         ('6ヶ月以上', '#dc2626')],
+        [('2か月未満', '#10b981'),
+         ('4か月未満', '#f59e0b'),
+         ('6か月未満', '#f97316'),
+         ('12か月未満', '#dc2626')],
     ):
         with col:
             v = agg[bucket]
@@ -2884,9 +2884,9 @@ def render_unpaid():
     def color_aging(val):
         if val >= 6:
             return 'background-color:#fee2e2; color:#991b1b; font-weight:700'
-        if val >= 3:
+        if val >= 4:
             return 'background-color:#ffedd5; color:#9a3412; font-weight:700'
-        if val >= 1:
+        if val >= 2:
             return 'background-color:#fef3c7; color:#92400e; font-weight:700'
         return 'background-color:#d1fae5; color:#065f46; font-weight:700'
 
