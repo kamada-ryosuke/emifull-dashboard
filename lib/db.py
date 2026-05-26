@@ -2418,6 +2418,29 @@ def init_receipt_performance_schema():
         CREATE INDEX IF NOT EXISTS idx_receipt_perf_subunit
             ON receipt_performance_reports(pl_subunit_id);
         """)
+        cols = {
+            r['name'] for r in conn.execute(
+                "PRAGMA table_info(receipt_performance_reports)"
+            ).fetchall()
+        }
+        missing_columns = {
+            'facility_label': "TEXT NOT NULL DEFAULT ''",
+            'sales_report_amount': "INTEGER NOT NULL DEFAULT 0",
+            'treatment_improvement_amount': "INTEGER NOT NULL DEFAULT 0",
+            'self_pay_amount': "INTEGER NOT NULL DEFAULT 0",
+            'production_activity_revenue': "INTEGER NOT NULL DEFAULT 0",
+            'business_days': "INTEGER NOT NULL DEFAULT 0",
+            'monthly_usage_count': "INTEGER NOT NULL DEFAULT 0",
+            'reported_by_email': "TEXT",
+            'reported_by_name': "TEXT",
+            'reported_at': "TEXT",
+            'updated_at': "TEXT",
+        }
+        for col, ddl in missing_columns.items():
+            if col not in cols:
+                conn.execute(
+                    f"ALTER TABLE receipt_performance_reports ADD COLUMN {col} {ddl}"
+                )
 
 
 def list_receipt_performance_year_months():
@@ -2466,34 +2489,16 @@ def upsert_receipt_performance_report(record):
         'updated_at': now,
     }
     with get_conn() as conn:
-        cur = conn.execute("""
-            INSERT INTO receipt_performance_reports (
-                service_year_month, pl_subunit_id, facility_label,
-                sales_report_amount, treatment_improvement_amount, self_pay_amount,
-                production_activity_revenue, business_days, monthly_usage_count,
-                reported_by_email, reported_by_name, reported_at, updated_at
-            )
-            VALUES (
-                ?, ?, ?,
-                ?, ?, ?,
-                ?, ?, ?,
-                ?, ?, ?, ?
-            )
-            ON CONFLICT(service_year_month, pl_subunit_id) DO UPDATE SET
-                facility_label = excluded.facility_label,
-                sales_report_amount = excluded.sales_report_amount,
-                treatment_improvement_amount = excluded.treatment_improvement_amount,
-                self_pay_amount = excluded.self_pay_amount,
-                production_activity_revenue = excluded.production_activity_revenue,
-                business_days = excluded.business_days,
-                monthly_usage_count = excluded.monthly_usage_count,
-                reported_by_email = excluded.reported_by_email,
-                reported_by_name = excluded.reported_by_name,
-                reported_at = excluded.reported_at,
-                updated_at = excluded.updated_at
-        """, (
-            payload['service_year_month'],
-            payload['pl_subunit_id'],
+        existing = conn.execute(
+            """
+            SELECT id
+            FROM receipt_performance_reports
+            WHERE service_year_month = ? AND pl_subunit_id = ?
+            """,
+            (payload['service_year_month'], payload['pl_subunit_id']),
+        ).fetchone()
+
+        values = (
             payload['facility_label'],
             payload['sales_report_amount'],
             payload['treatment_improvement_amount'],
@@ -2505,6 +2510,37 @@ def upsert_receipt_performance_report(record):
             payload['reported_by_name'],
             payload['reported_at'],
             payload['updated_at'],
+        )
+        if existing:
+            conn.execute("""
+                UPDATE receipt_performance_reports
+                SET facility_label = ?,
+                    sales_report_amount = ?,
+                    treatment_improvement_amount = ?,
+                    self_pay_amount = ?,
+                    production_activity_revenue = ?,
+                    business_days = ?,
+                    monthly_usage_count = ?,
+                    reported_by_email = ?,
+                    reported_by_name = ?,
+                    reported_at = ?,
+                    updated_at = ?
+                WHERE id = ?
+            """, (*values, existing['id']))
+            return existing['id']
+
+        cur = conn.execute("""
+            INSERT INTO receipt_performance_reports (
+                service_year_month, pl_subunit_id, facility_label,
+                sales_report_amount, treatment_improvement_amount, self_pay_amount,
+                production_activity_revenue, business_days, monthly_usage_count,
+                reported_by_email, reported_by_name, reported_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            payload['service_year_month'],
+            payload['pl_subunit_id'],
+            *values,
         ))
         return cur.lastrowid
 
