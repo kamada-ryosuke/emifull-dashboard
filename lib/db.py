@@ -5156,19 +5156,22 @@ def upsert_vehicle(v: dict) -> int:
         ]
 
         if existing:
-            sets = ', '.join(f"{f} = COALESCE(:{f}, {f})" for f in fields)
-            sql = f"UPDATE vehicles SET {sets}, updated_at = :updated_at WHERE id = :id"
-            payload = {f: v.get(f) for f in fields}
-            payload.update({'updated_at': now, 'id': existing['id']})
-            conn.execute(sql, payload)
+            sets = ', '.join(f"{f} = COALESCE(?, {f})" for f in fields)
+            sql = f"UPDATE vehicles SET {sets}, updated_at = ? WHERE id = ?"
+            params = tuple(v.get(f) for f in fields) + (now, existing['id'])
+            conn.execute(sql, params)
             return existing['id']
         else:
             cols = ', '.join(fields)
-            ph = ', '.join(f":{f}" for f in fields)
+            ph = ', '.join('?' for _ in fields)
             sql = f"INSERT INTO vehicles ({cols}) VALUES ({ph})"
-            payload = {f: v.get(f) for f in fields}
-            cur = conn.execute(sql, payload)
-            return cur.lastrowid
+            params = tuple(v.get(f) for f in fields)
+            cur = conn.execute(sql, params)
+            lastrowid = getattr(cur, 'lastrowid', None)
+            if lastrowid:
+                return lastrowid
+            row = conn.execute("SELECT last_insert_rowid() AS id").fetchone()
+            return row['id'] if row else 0
 
 
 def list_vehicles(include_scrapped: bool = False) -> list[dict]:
