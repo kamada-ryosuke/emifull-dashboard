@@ -212,18 +212,22 @@ def guess_corporation(facility: str) -> str:
 
 # ---- 未処理検出 -------------------------------------------------------
 
-def detect_unprocessed(receipts: list[dict]) -> list[dict]:
+def detect_unprocessed(
+    receipts: list[dict],
+    include_processed: bool = False,
+) -> list[dict]:
     """`_list_receipt_files` の結果から、自動処理対象だけを返す。
 
     除外条件:
       - 画像/PDF以外
       - DB receipt_processed に success として登録済み
+        (include_processed=True の場合は再確認対象として含める)
     """
     out = []
     for r in receipts:
         if r.get('kind') not in ('image', 'pdf'):
             continue
-        if db.is_receipt_processed(str(r['path'])):
+        if not include_processed and db.is_receipt_processed(str(r['path'])):
             continue
         out.append(r)
     return out
@@ -519,12 +523,13 @@ def auto_process_batch(
     receipts: list[dict],
     gdrive_dir: Path,
     on_progress: Callable[[int, int, dict], None] | None = None,
+    include_processed: bool = False,
 ) -> dict:
     """未処理レシート群を順次自動処理。
 
     Returns: {processed, manual, failed, results: [{file_name, status, ...}]}
     """
-    targets = detect_unprocessed(receipts)
+    targets = detect_unprocessed(receipts, include_processed=include_processed)
     n = len(targets)
     results = []
     counts = {'success': 0, 'manual_pending': 0, 'failed': 0}

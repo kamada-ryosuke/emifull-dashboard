@@ -28,6 +28,9 @@ CONFIG_PATH = ROOT / "config" / "anthropic.json"
 # 画像長辺の上限 (Claude API の制約に合わせた縮小)
 MAX_IMAGE_SIDE = 1568
 
+# PDFは全ページをOCR対象にする。多すぎる場合は費用・精度面から手動確認へ回す。
+MAX_PDF_PAGES = 20
+
 # モデル選定
 DEFAULT_MODEL = "claude-sonnet-4-5"
 
@@ -150,27 +153,56 @@ def _generic_to_jpeg(image_bytes: bytes) -> bytes:
         return buf.getvalue()
 
 
+def _pdf_pages_to_jpegs(pdf_bytes: bytes) -> list[bytes]:
+    """PDF全ページをJPEGバイト列へ変換する。"""
+    try:
+        import fitz  # PyMuPDF
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        if doc.page_count == 0:
+            raise ValueError("PDFにページがありません")
+        if doc.page_count > MAX_PDF_PAGES:
+            raise ValueError(
+                f"PDFのページ数が多すぎます: {doc.page_count}ページ "
+                f"(上限 {MAX_PDF_PAGES}ページ)"
+            )
+
+        pages: list[bytes] = []
+        for idx in range(doc.page_count):
+            page = doc.load_page(idx)
+            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+            pages.append(_generic_to_jpeg(pix.tobytes("png")))
+        return pages
+    except Exception as exc:
+        raise NotImplementedError(
+            f"PDF レシートの画像化に失敗しました: {exc}"
+        ) from exc
+
+
+def _normalize_images(image_bytes: bytes, ext: str) -> list[tuple[bytes, str]]:
+    """API 投入用に画像を正規化し、[(bytes, media_type), ...] を返す。
+
+    PDFの場合は先頭だけでなく全ページを返す。
+    """
+    e = ext.lower()
+    if e in (".pdf",):
+        return [(page_bytes, "image/jpeg") for page_bytes in _pdf_pages_to_jpegs(image_bytes)]
+    normalized, media_type = _normalize_image(image_bytes, ext)
+    return [(normalized, media_type)]
+
+
 def _normalize_image(image_bytes: bytes, ext: str) -> tuple[bytes, str]:
     """API 投入用に JPEG/PNG に正規化し、(bytes, media_type) を返す。
 
     - HEIC/HEIF: JPEG に変換
     - PNG/JPG/WEBP/BMP/TIFF: 必要なら縮小して JPEG 化
-    - PDF: 先頭ページを画像化してJPEG化
+    - PDF: 全ページ対応は _normalize_images() を使用
     """
     e = ext.lower()
     if e in (".heic", ".heif"):
         return _heic_to_jpeg(image_bytes), "image/jpeg"
     if e in (".pdf",):
-        try:
-            import fitz  # PyMuPDF
-            doc = fitz.open(stream=image_bytes, filetype="pdf")
-            if doc.page_count == 0:
-                raise ValueError("PDFにページがありません")
-            page = doc.load_page(0)
-            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
-            return _generic_to_jpeg(pix.tobytes("png")), "image/jpeg"
-        except Exception as exc:
-            raise NotImplementedError(f"PDF レシートの画像化に失敗しました: {exc}") from exc
+        pages = _pdf_pages_to_jpegs(image_bytes)
+        return pages[0], "image/jpeg"
     # 標準画像
     return _generic_to_jpeg(image_bytes), "image/jpeg"
 
@@ -328,28 +360,39 @@ def _extract_json(text: str) -> dict[str, Any]:
 def _call_claude_vision(
     client,
     model: str,
-    media_type: str,
-    b64_image: str,
+    images: list[tuple[str, str]],
     prompt: str,
 ) -> dict:
     """Claude Vision API を1回だけ叩いてJSON抽出する内部ヘルパ。"""
+    content = []
+    if len(images) > 1:
+        content.append({
+            "type": "text",
+            "text": (
+                f"以下は同じPDFの全{len(images)}ページです。"
+                "1ページ目だけでなく、2ページ目以降も必ず確認してください。"
+            ),
+        })
+    for idx, (media_type, b64_image) in enumerate(images, start=1):
+        if len(images) > 1:
+            content.append({"type": "text", "text": f"[PDF {idx}ページ目]"})
+        content.append({
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": media_type,
+                "data": b64_image,
+            },
+        })
+    content.append({"type": "text", "text": prompt})
+
     try:
         msg = client.messages.create(
             model=model,
-            max_tokens=1024,
+            max_tokens=4096,
             messages=[{
                 "role": "user",
-                "content": [
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": media_type,
-                            "data": b64_image,
-                        },
-                    },
-                    {"type": "text", "text": prompt},
-                ],
+                "content": content,
             }],
         )
     except Exception as e:
@@ -366,6 +409,7 @@ def _call_claude_vision(
         "ok": True,
         "data": _post_process(data),
         "model": getattr(msg, "model", model),
+        "source_page_count": len(images),
         "usage": {
             "input_tokens": getattr(msg.usage, "input_tokens", 0),
             "output_tokens": getattr(msg.usage, "output_tokens", 0),
@@ -406,7 +450,7 @@ def analyze_receipt(
         return {"ok": False, "error": "ANTHROPIC_API_KEY が未設定です"}
 
     try:
-        normalized, media_type = _normalize_image(image_bytes, ext)
+        normalized_images = _normalize_images(image_bytes, ext)
     except NotImplementedError as e:
         return {"ok": False, "error": str(e)}
     except Exception as e:
@@ -418,11 +462,14 @@ def analyze_receipt(
         return {"ok": False, "error": "anthropic SDK が未インストールです"}
 
     client = anthropic.Anthropic(api_key=api_key)
-    b64 = base64.standard_b64encode(normalized).decode("ascii")
+    images = [
+        (media_type, base64.standard_b64encode(img).decode("ascii"))
+        for img, media_type in normalized_images
+    ]
 
     # ---- Pass 1 ----
     res1 = _call_claude_vision(
-        client, model, media_type, b64,
+        client, model, images,
         _build_prompt(facility_hint, pass_no=1),
     )
     if not res1.get("ok"):
@@ -433,7 +480,7 @@ def analyze_receipt(
 
     # ---- Pass 2 ----
     res2 = _call_claude_vision(
-        client, model, media_type, b64,
+        client, model, images,
         _build_prompt(facility_hint, pass_no=2),
     )
     if not res2.get("ok"):
@@ -448,7 +495,7 @@ def analyze_receipt(
 
     # ---- Pass 3 (アービトレーション) ----
     arb = _call_claude_vision(
-        client, model, media_type, b64,
+        client, model, images,
         _build_arbitration_prompt(facility_hint, res1["data"], res2["data"]),
     )
     if not arb.get("ok"):
@@ -488,6 +535,7 @@ def analyze_receipt(
         "ok": True,
         "data": final_data,
         "model": arb.get("model", model),
+        "source_page_count": len(images),
         "usage": {"input_tokens": total_in, "output_tokens": total_out},
         "raw_text": arb.get("raw_text"),
         "triple_check": {

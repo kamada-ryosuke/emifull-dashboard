@@ -87,6 +87,7 @@ DEFAULT_DEBIT_WORKBOOK_FILE_IDS = (
     "1NL9zWNIxq0drmRLJcXtM_fpKk8FUd7At",
     "14A2SWC2_U2jXbss5XSrfIkaZqkeWWBWB",
 )
+RECHECK_PROCESSED_PDF_YEAR_MONTH = "2026-05"
 
 
 def _load_debit_folder_config() -> dict:
@@ -800,6 +801,137 @@ def _list_receipt_files(storage_dir: Path) -> list[dict]:
     return out
 
 
+def _merge_receipt_lists(
+    base: list[dict],
+    extra: list[dict],
+) -> list[dict]:
+    """Drive file id / ローカルパス単位でレシート一覧を重複なく結合する。"""
+    merged: list[dict] = []
+    seen: set[str] = set()
+    for r in [*base, *extra]:
+        key = str(r.get('drive_file_id') or r.get('path') or r.get('name'))
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(r)
+    return merged
+
+
+def _list_local_processed_pdf_receipts_for_month(
+    storage_dir: Path,
+    year_month: str,
+) -> list[dict]:
+    """ローカル同期フォルダ上の `_処理済み/{YYYY-MM}` からPDFだけを列挙する。"""
+    roots: list[tuple[Path, Path]] = []
+
+    storage_processed = storage_dir / '_処理済み' / year_month
+    if storage_processed.exists() and storage_processed.is_dir():
+        roots.append((storage_processed, Path('_処理済み') / year_month))
+
+    for sub_name in RECEIPT_SUBFOLDER_NAMES:
+        receipt_processed = storage_dir / sub_name / '_処理済み' / year_month
+        if receipt_processed.exists() and receipt_processed.is_dir():
+            roots.append((
+                receipt_processed,
+                Path(sub_name) / '_処理済み' / year_month,
+            ))
+
+    out: list[dict] = []
+    seen_paths: set[Path] = set()
+    for root, rel_prefix in roots:
+        for p in root.rglob('*'):
+            try:
+                if not p.is_file() or _receipt_kind(p) != 'pdf':
+                    continue
+                if p in seen_paths:
+                    continue
+                seen_paths.add(p)
+
+                rel_to_month = p.relative_to(root)
+                parts = rel_to_month.parts
+                facility = parts[0] if len(parts) >= 2 else '(未分類)'
+                stat = p.stat()
+                out.append({
+                    'path': p,
+                    'name': p.name,
+                    'rel': str(rel_prefix / rel_to_month),
+                    'facility': facility,
+                    'status': '処理済み',
+                    'year_month_folder': year_month,
+                    'kind': 'pdf',
+                    'ext': p.suffix.lower(),
+                    'size': stat.st_size,
+                    'mtime': stat.st_mtime,
+                    '_force_recheck': True,
+                })
+            except (PermissionError, OSError, ValueError):
+                continue
+
+    out.sort(key=lambda x: (x['facility'], -x['mtime']))
+    return out
+
+
+def _drive_child_folder_id(service, parent_id: str, name: str) -> str | None:
+    folder_mime = drive_sync.DRIVE_FOLDER_MIME
+    for item in _drive_list_children(service, parent_id):
+        if item.get('mimeType') == folder_mime and item.get('name') == name:
+            return item.get('id')
+    return None
+
+
+def _list_drive_api_processed_pdf_receipts_for_month(
+    year_month: str,
+) -> list[dict]:
+    """Drive APIで `_処理済み/{YYYY-MM}` 配下のPDFだけを列挙する。"""
+    st.session_state['debit_receipt_recheck_error'] = ''
+    folder_id = (
+        DEBIT_FOLDER_REF.get('storage_folder_id')
+        or _extract_drive_folder_id(DEBIT_FOLDER_REF.get('storage_folder_url'))
+        or DEBIT_FOLDER_REF.get('id')
+        or _extract_drive_folder_id(DEBIT_FOLDER_REF.get('url'))
+    )
+    if not folder_id:
+        return []
+
+    try:
+        cfg = _drive_api_config()
+        service = drive_sync.build_service(cfg)
+        processed_id = _drive_child_folder_id(service, folder_id, '_処理済み')
+        if not processed_id:
+            return []
+        ym_id = _drive_child_folder_id(service, processed_id, year_month)
+        if not ym_id:
+            return []
+
+        out: list[dict] = []
+        for r in _list_drive_api_receipt_files(ym_id):
+            if r.get('kind') != 'pdf':
+                continue
+            item = dict(r)
+            item['status'] = '処理済み'
+            item['year_month_folder'] = year_month
+            item['_force_recheck'] = True
+            rel = item.get('rel') or item.get('name') or ''
+            item['rel'] = f"_処理済み/{year_month}/{rel}"
+            out.append(item)
+        return out
+    except Exception as e:
+        st.session_state['debit_receipt_recheck_error'] = str(e)
+        return []
+
+
+def _processed_pdf_receipts_for_recheck(
+    storage_dir: Path,
+    year_month: str,
+) -> list[dict]:
+    """指定月の処理済みPDFを、複数ページ取りこぼし再確認用に返す。"""
+    if not re.fullmatch(r'\d{4}-\d{2}', year_month or ''):
+        return []
+    if storage_dir.exists():
+        return _list_local_processed_pdf_receipts_for_month(storage_dir, year_month)
+    return _list_drive_api_processed_pdf_receipts_for_month(year_month)
+
+
 def _guess_corporation_from_facility(facility: str) -> str:
     """部門名から法人ラベルを推定。
     のじぎく系 → NPO法人 / それ以外 → 医療法人 (現行データに基づく既定値)。
@@ -1221,7 +1353,7 @@ with tab_import:
     # ---- ② 取込実行ボタン (主要アクション) ---------------------------
     target_idx = list(range(len(files)))  # デフォルト: 全ファイル
 
-    run_col, opt_col = st.columns([3, 1])
+    run_col, opt_col, recheck_col = st.columns([3, 1, 1.4])
     with run_col:
         run_clicked = st.button(
             "🚀 取込実行（Drive上の全ファイル）",
@@ -1234,6 +1366,16 @@ with tab_import:
             "同月分を上書き（再取込）", value=False,
             help="チェック時は対象月のデータを削除してから取込",
             key='debit_dropbox_overwrite',
+        )
+    with recheck_col:
+        recheck_processed_pdf = st.checkbox(
+            f"{RECHECK_PROCESSED_PDF_YEAR_MONTH} PDF再確認",
+            value=False,
+            help=(
+                "処理済みに移動済みのPDFも、この月だけ再OCRします。"
+                "既存行は重複チェックで除外します。"
+            ),
+            key='debit_recheck_processed_pdf_202605',
         )
 
     if not files:
@@ -1414,6 +1556,35 @@ with tab_import:
                     # ----- Phase 0: 過去に処理済みなのに移動されていないレシートを整理 -----
                     receipts_storage = _resolve_storage_dir()
                     all_receipts = _current_receipts_for_import(receipts_storage)
+                    recheck_receipts: list[dict] = []
+                    if recheck_processed_pdf:
+                        recheck_receipts = _processed_pdf_receipts_for_recheck(
+                            receipts_storage,
+                            RECHECK_PROCESSED_PDF_YEAR_MONTH,
+                        )
+                        all_receipts = _merge_receipt_lists(
+                            all_receipts, recheck_receipts,
+                        )
+                        if recheck_receipts:
+                            st.info(
+                                f"🧾 {RECHECK_PROCESSED_PDF_YEAR_MONTH} の"
+                                f"処理済みPDF **{len(recheck_receipts)}件** を"
+                                "再確認対象に含めました。"
+                            )
+                        else:
+                            recheck_error = st.session_state.get(
+                                'debit_receipt_recheck_error'
+                            )
+                            if recheck_error:
+                                st.warning(
+                                    "処理済みPDFの再確認対象を取得できませんでした: "
+                                    f"{recheck_error}"
+                                )
+                            else:
+                                st.warning(
+                                    f"{RECHECK_PROCESSED_PDF_YEAR_MONTH} の"
+                                    "処理済みPDFは見つかりませんでした。"
+                                )
                     receipt_scan_month = _dominant_receipt_scan_month(all_receipts)
                     if all_receipts and receipts_storage.exists():
                         with st.spinner("処理済みレシートを整理中..."):
@@ -1433,11 +1604,25 @@ with tab_import:
                             all_receipts = _list_receipt_files(receipts_storage)
 
                     # ----- Phase 1: 未処理レシートをOCR→デビットExcelに自動追記 -----
-                    unprocessed = receipt_processor.detect_unprocessed(all_receipts)
+                    recheck_keys = {
+                        str(r.get('drive_file_id') or r.get('path'))
+                        for r in recheck_receipts
+                    }
+                    normal_receipts = [
+                        r for r in all_receipts
+                        if str(r.get('drive_file_id') or r.get('path')) not in recheck_keys
+                    ]
+                    unprocessed = receipt_processor.detect_unprocessed(normal_receipts)
+                    process_receipts = _merge_receipt_lists(
+                        unprocessed, recheck_receipts,
+                    )
                     receipt_summary = None
-                    if unprocessed and receipt_ocr.is_available():
+                    if process_receipts and receipt_ocr.is_available():
                         progress_bar = st.progress(
-                            0.0, text=f"レシートOCR処理中 (0/{len(unprocessed)})..."
+                            0.0,
+                            text=(
+                                f"レシートOCR処理中 (0/{len(process_receipts)})..."
+                            ),
                         )
 
                         def _on_progress(i, total, item):
@@ -1447,7 +1632,10 @@ with tab_import:
                             )
 
                         receipt_summary = receipt_processor.auto_process_batch(
-                            unprocessed, debit_work_dir, on_progress=_on_progress,
+                            process_receipts,
+                            debit_work_dir,
+                            on_progress=_on_progress,
+                            include_processed=bool(recheck_receipts),
                         )
                         progress_bar.empty()
                         try:
@@ -1465,9 +1653,9 @@ with tab_import:
                             )
                         for msg in move_summary.get('errors') or []:
                             st.warning(f"レシート原本の移動に失敗: {msg}")
-                    elif unprocessed and not receipt_ocr.is_available():
+                    elif process_receipts and not receipt_ocr.is_available():
                         st.warning(
-                            f"未処理レシート {len(unprocessed)} 件ありますが、"
+                            f"OCR対象レシート {len(process_receipts)} 件ありますが、"
                             "ANTHROPIC_API_KEY が未設定のためOCRをスキップします。"
                         )
 
