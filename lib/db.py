@@ -1,4 +1,4 @@
-"""SQLite/Tursoデータベース操作モジュール"""
+﻿"""SQLite/Tursoデータベース操作モジュール"""
 import os
 import sqlite3
 from contextlib import contextmanager
@@ -1751,7 +1751,7 @@ def init_journal_schema():
 def insert_journal_entries(rows: list[dict], filename: str, file_hash: str) -> dict:
     """仕訳行リストを一括 UPSERT (UNIQUE違反は無視) し、件数を返す。"""
     if not rows:
-        return {'inserted': 0, 'skipped': 0}
+        return {'inserted': 0, 'skipped': 0, 'date_range': '対象行なし'}
     with get_conn() as conn:
         inserted = 0
         skipped = 0
@@ -4981,11 +4981,12 @@ def delete_cash_entries_by_receipt(receipt_id: int) -> int:
 # 車両管理スキーマ (vehicles / vehicle_inspections)
 # ============================================================
 
-def init_vehicle_schema():
+def init_vehicle_schema(*, allow_data_migration: bool = True):
     """車両管理テーブルを作成。
 
     vehicles            … 車両マスタ（1台=1行）
     vehicle_inspections … 車検証履歴（車検更新ごとに行追加。最新行が現行有効）
+    allow_data_migration=False の場合は、既存行の補完更新やテーブル再作成を行わない。
     """
     with get_conn() as conn:
         conn.executescript("""
@@ -5005,6 +5006,7 @@ def init_vehicle_schema():
             insurance_company TEXT,               -- 自賠責保険会社
             insurance_expiry DATE,                -- 自賠責保険満了日
             child_safety_device TEXT DEFAULT '未設置',  -- '設置済' / '対象外' / '未設置'
+            tax_exemption_status TEXT DEFAULT '未', -- '済' / '未' / '対象外'
             photo_path TEXT,                      -- 車両写真の保存パス（オプション）
             scrapped INTEGER DEFAULT 0,           -- 0=現役 1=廃車
             scrapped_date DATE,                   -- 廃車年月日
@@ -5065,16 +5067,17 @@ def init_vehicle_schema():
             if col_name not in insp_cols:
                 conn.execute(f"ALTER TABLE vehicle_inspections ADD COLUMN {col_name} {col_def}")
 
-        conn.execute("""
-            UPDATE vehicle_inspections
-               SET document_path = COALESCE(document_path, pdf_path),
-                   document_filename = COALESCE(document_filename, pdf_filename),
-                   document_kind = COALESCE(document_kind, CASE WHEN pdf_path IS NOT NULL THEN 'pdf' END)
-             WHERE pdf_path IS NOT NULL
-        """)
+        if allow_data_migration:
+            conn.execute("""
+                UPDATE vehicle_inspections
+                   SET document_path = COALESCE(document_path, pdf_path),
+                       document_filename = COALESCE(document_filename, pdf_filename),
+                       document_kind = COALESCE(document_kind, CASE WHEN pdf_path IS NOT NULL THEN 'pdf' END)
+                 WHERE pdf_path IS NOT NULL
+            """)
 
         has_not_null = any(c['name'] == 'expiry_date' and c['notnull'] for c in cols)
-        if has_not_null:
+        if allow_data_migration and has_not_null:
             conn.executescript("""
                 CREATE TABLE vehicle_inspections_new (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
