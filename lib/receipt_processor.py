@@ -94,7 +94,7 @@ def reconcile_processed_locations(
         # フォルダ status が既に「処理済み」なら何もしない
         if r.get('status') == '処理済み':
             continue
-        if r.get('kind') != 'image':
+        if r.get('kind') not in ('image', 'pdf'):
             continue
 
         rec = db.get_receipt_processed(str(r['path']))

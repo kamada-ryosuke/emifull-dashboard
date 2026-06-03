@@ -884,36 +884,45 @@ def _list_drive_api_processed_pdf_receipts_for_month(
 ) -> list[dict]:
     """Drive APIで `_処理済み/{YYYY-MM}` 配下のPDFだけを列挙する。"""
     st.session_state['debit_receipt_recheck_error'] = ''
-    folder_id = (
-        DEBIT_FOLDER_REF.get('storage_folder_id')
-        or _extract_drive_folder_id(DEBIT_FOLDER_REF.get('storage_folder_url'))
-        or DEBIT_FOLDER_REF.get('id')
-        or _extract_drive_folder_id(DEBIT_FOLDER_REF.get('url'))
-    )
-    if not folder_id:
+    folder_ids: list[str] = []
+    for folder_id in (
+        DEBIT_FOLDER_REF.get('storage_folder_id'),
+        _extract_drive_folder_id(DEBIT_FOLDER_REF.get('storage_folder_url')),
+        DEBIT_FOLDER_REF.get('id'),
+        _extract_drive_folder_id(DEBIT_FOLDER_REF.get('url')),
+    ):
+        if folder_id and folder_id not in folder_ids:
+            folder_ids.append(folder_id)
+    if not folder_ids:
         return []
 
     try:
         cfg = _drive_api_config()
         service = drive_sync.build_service(cfg)
-        processed_id = _drive_child_folder_id(service, folder_id, '_処理済み')
-        if not processed_id:
-            return []
-        ym_id = _drive_child_folder_id(service, processed_id, year_month)
-        if not ym_id:
-            return []
-
         out: list[dict] = []
-        for r in _list_drive_api_receipt_files(ym_id):
-            if r.get('kind') != 'pdf':
+        seen: set[str] = set()
+        for folder_id in folder_ids:
+            processed_id = _drive_child_folder_id(service, folder_id, '_処理済み')
+            if not processed_id:
                 continue
-            item = dict(r)
-            item['status'] = '処理済み'
-            item['year_month_folder'] = year_month
-            item['_force_recheck'] = True
-            rel = item.get('rel') or item.get('name') or ''
-            item['rel'] = f"_処理済み/{year_month}/{rel}"
-            out.append(item)
+            ym_id = _drive_child_folder_id(service, processed_id, year_month)
+            if not ym_id:
+                continue
+
+            for r in _list_drive_api_receipt_files(ym_id):
+                if r.get('kind') != 'pdf':
+                    continue
+                key = str(r.get('drive_file_id') or r.get('path') or r.get('name'))
+                if key in seen:
+                    continue
+                seen.add(key)
+                item = dict(r)
+                item['status'] = '処理済み'
+                item['year_month_folder'] = year_month
+                item['_force_recheck'] = True
+                rel = item.get('rel') or item.get('name') or ''
+                item['rel'] = f"_処理済み/{year_month}/{rel}"
+                out.append(item)
         return out
     except Exception as e:
         st.session_state['debit_receipt_recheck_error'] = str(e)
@@ -930,6 +939,42 @@ def _processed_pdf_receipts_for_recheck(
     if storage_dir.exists():
         return _list_local_processed_pdf_receipts_for_month(storage_dir, year_month)
     return _list_drive_api_processed_pdf_receipts_for_month(year_month)
+
+
+def _receipt_mtime_year_month(r: dict) -> str | None:
+    mtime = r.get('mtime')
+    if mtime in (None, ''):
+        return None
+    try:
+        return datetime.fromtimestamp(float(mtime)).strftime('%Y-%m')
+    except (TypeError, ValueError, OSError):
+        return None
+
+
+def _processed_pdf_receipts_left_in_source_for_recheck(
+    receipts: list[dict],
+    year_month: str,
+) -> list[dict]:
+    """処理成功済みだが元フォルダに残っているPDFも再確認対象に含める。"""
+    out: list[dict] = []
+    for r in receipts:
+        if r.get('kind') != 'pdf':
+            continue
+        if r.get('status') == '処理済み':
+            continue
+        if _receipt_mtime_year_month(r) != year_month:
+            continue
+        try:
+            already_success = db.is_receipt_processed(str(r['path']))
+        except Exception:
+            already_success = False
+        if not already_success:
+            continue
+        item = dict(r)
+        item['_force_recheck'] = True
+        item['status'] = item.get('status') or '処理済み'
+        out.append(item)
+    return out
 
 
 def _guess_corporation_from_facility(facility: str) -> str:
@@ -1562,6 +1607,15 @@ with tab_import:
                             receipts_storage,
                             RECHECK_PROCESSED_PDF_YEAR_MONTH,
                         )
+                        source_recheck_receipts = (
+                            _processed_pdf_receipts_left_in_source_for_recheck(
+                                all_receipts,
+                                RECHECK_PROCESSED_PDF_YEAR_MONTH,
+                            )
+                        )
+                        recheck_receipts = _merge_receipt_lists(
+                            recheck_receipts, source_recheck_receipts,
+                        )
                         all_receipts = _merge_receipt_lists(
                             all_receipts, recheck_receipts,
                         )
@@ -1571,6 +1625,11 @@ with tab_import:
                                 f"処理済みPDF **{len(recheck_receipts)}件** を"
                                 "再確認対象に含めました。"
                             )
+                            if source_recheck_receipts:
+                                st.caption(
+                                    "元フォルダに残っていた処理済みPDF "
+                                    f"{len(source_recheck_receipts)}件も含めました。"
+                                )
                         else:
                             recheck_error = st.session_state.get(
                                 'debit_receipt_recheck_error'
