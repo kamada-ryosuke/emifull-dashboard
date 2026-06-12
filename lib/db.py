@@ -1,5 +1,6 @@
 ﻿"""SQLite/Tursoデータベース操作モジュール"""
 import os
+import re
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime
@@ -191,17 +192,33 @@ class _CloudConnection:
     def executemany(self, sql, seq_of_params):
         return _CloudCursor(self._conn.executemany(sql, seq_of_params))
 
+    def _execute_script_statement(self, sql):
+        sql = sql.strip().rstrip(";").strip()
+        if not sql:
+            return None
+        try:
+            return self._conn.execute(sql)
+        except ValueError:
+            compat_sql = re.sub(
+                r"\bINTEGER\s+PRIMARY\s+KEY\s+AUTOINCREMENT\b",
+                "INTEGER PRIMARY KEY",
+                sql,
+                flags=re.IGNORECASE,
+            )
+            if compat_sql != sql:
+                return self._conn.execute(compat_sql)
+            raise
+
     def executescript(self, sql_script):
         statement = ""
         for line in sql_script.splitlines():
             statement += line + "\n"
             if sqlite3.complete_statement(statement):
                 sql = statement.strip()
-                if sql:
-                    self._conn.execute(sql)
+                self._execute_script_statement(sql)
                 statement = ""
         if statement.strip():
-            self._conn.execute(statement)
+            self._execute_script_statement(statement)
 
 
 def _connect_cloud():
