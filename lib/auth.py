@@ -393,6 +393,7 @@ def _render_role_navigation():
             ("pages/5_職員台帳.py", "職員台帳"),
             ("pages/6_車両管理.py", "車両管理"),
             ("pages/7_施設マスタ／設定.py", "施設マスタ／設定"),
+            ("pages/8_PRIME.py", "PRIME"),
         ]
     else:
         links = [

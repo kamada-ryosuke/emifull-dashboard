@@ -5365,3 +5365,287 @@ def vehicle_corporation_counts(include_scrapped: bool = False) -> dict[str, int]
     sql += " GROUP BY corporation"
     with get_conn() as conn:
         return {r['corporation']: r['cnt'] for r in conn.execute(sql).fetchall()}
+
+
+# === PRIME 損益・仕訳帳 ===
+
+def _row_to_dict(row) -> dict:
+    if row is None:
+        return {}
+    if hasattr(row, "keys"):
+        return {key: row[key] for key in row.keys()}
+    return dict(row)
+
+
+def init_prime_schema():
+    """PRIME専用テーブルを作成する。既存の障がい事業部データは変更しない。"""
+    with get_conn() as conn:
+        conn.executescript("""
+        CREATE TABLE IF NOT EXISTS prime_pl_entries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            year_month TEXT NOT NULL,
+            account_name TEXT NOT NULL,
+            category TEXT NOT NULL,
+            amount INTEGER NOT NULL DEFAULT 0,
+            display_order INTEGER NOT NULL DEFAULT 0,
+            is_total INTEGER NOT NULL DEFAULT 0,
+            source_filename TEXT,
+            file_hash TEXT,
+            imported_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(year_month, account_name, display_order)
+        );
+        CREATE INDEX IF NOT EXISTS idx_prime_pl_entries_ym
+            ON prime_pl_entries(year_month);
+        CREATE INDEX IF NOT EXISTS idx_prime_pl_entries_category
+            ON prime_pl_entries(category);
+
+        CREATE TABLE IF NOT EXISTS prime_pl_imports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_filename TEXT,
+            year_month TEXT,
+            row_count INTEGER,
+            entry_count INTEGER,
+            file_hash TEXT,
+            imported_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS prime_journal_entries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            transaction_date TEXT NOT NULL,
+            year_month TEXT NOT NULL,
+            debit_account TEXT,
+            debit_amount INTEGER NOT NULL DEFAULT 0,
+            debit_partner TEXT,
+            debit_memo TEXT,
+            debit_item TEXT,
+            credit_account TEXT,
+            credit_amount INTEGER NOT NULL DEFAULT 0,
+            credit_partner TEXT,
+            credit_memo TEXT,
+            credit_item TEXT,
+            journal_id TEXT,
+            record_no TEXT,
+            transaction_content TEXT,
+            row_no INTEGER NOT NULL DEFAULT 0,
+            source_filename TEXT,
+            file_hash TEXT,
+            imported_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(file_hash, row_no)
+        );
+        CREATE INDEX IF NOT EXISTS idx_prime_journal_ym
+            ON prime_journal_entries(year_month);
+        CREATE INDEX IF NOT EXISTS idx_prime_journal_date
+            ON prime_journal_entries(transaction_date);
+        CREATE INDEX IF NOT EXISTS idx_prime_journal_debit
+            ON prime_journal_entries(debit_account);
+        CREATE INDEX IF NOT EXISTS idx_prime_journal_credit
+            ON prime_journal_entries(credit_account);
+
+        CREATE TABLE IF NOT EXISTS prime_journal_imports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_filename TEXT,
+            row_count INTEGER,
+            inserted_count INTEGER,
+            skipped_count INTEGER,
+            file_hash TEXT,
+            date_range TEXT,
+            imported_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        """)
+
+
+def replace_prime_pl_entries(year_month: str, entries: list[dict],
+                             filename: str, file_hash: str) -> dict:
+    """PRIMEの指定月だけを安全に入れ替える。"""
+    init_prime_schema()
+    clean_entries = [e for e in entries if e.get("year_month") == year_month]
+    with get_conn() as conn:
+        conn.execute("DELETE FROM prime_pl_entries WHERE year_month = ?", (year_month,))
+        for e in clean_entries:
+            conn.execute("""
+                INSERT INTO prime_pl_entries
+                (year_month, account_name, category, amount, display_order, is_total,
+                 source_filename, file_hash)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                year_month,
+                e.get("account_name") or "",
+                e.get("category") or "other",
+                int(e.get("amount") or 0),
+                int(e.get("display_order") or 0),
+                int(e.get("is_total") or 0),
+                filename,
+                file_hash,
+            ))
+        conn.execute("""
+            INSERT INTO prime_pl_imports
+            (source_filename, year_month, row_count, entry_count, file_hash)
+            VALUES (?, ?, ?, ?, ?)
+        """, (filename, year_month, len(entries), len(clean_entries), file_hash))
+    return {"entries": len(clean_entries)}
+
+
+def insert_prime_journal_entries(rows: list[dict], filename: str,
+                                 file_hash: str, date_range: str = "") -> dict:
+    init_prime_schema()
+    if not rows:
+        return {"inserted": 0, "skipped": 0}
+    inserted = 0
+    skipped = 0
+    with get_conn() as conn:
+        for r in rows:
+            cur = conn.execute("""
+                INSERT OR IGNORE INTO prime_journal_entries
+                (transaction_date, year_month,
+                 debit_account, debit_amount, debit_partner, debit_memo, debit_item,
+                 credit_account, credit_amount, credit_partner, credit_memo, credit_item,
+                 journal_id, record_no, transaction_content, row_no, source_filename, file_hash)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                r.get("transaction_date"),
+                r.get("year_month"),
+                r.get("debit_account"),
+                int(r.get("debit_amount") or 0),
+                r.get("debit_partner"),
+                r.get("debit_memo"),
+                r.get("debit_item"),
+                r.get("credit_account"),
+                int(r.get("credit_amount") or 0),
+                r.get("credit_partner"),
+                r.get("credit_memo"),
+                r.get("credit_item"),
+                r.get("journal_id"),
+                r.get("record_no"),
+                r.get("transaction_content"),
+                int(r.get("row_no") or 0),
+                filename,
+                file_hash,
+            ))
+            if getattr(cur, "rowcount", 0) == 1:
+                inserted += 1
+            else:
+                skipped += 1
+        conn.execute("""
+            INSERT INTO prime_journal_imports
+            (source_filename, row_count, inserted_count, skipped_count, file_hash, date_range)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (filename, len(rows), inserted, skipped, file_hash, date_range))
+    return {"inserted": inserted, "skipped": skipped}
+
+
+def list_prime_pl_year_months() -> list[str]:
+    init_prime_schema()
+    with get_conn() as conn:
+        return [
+            r["year_month"] for r in conn.execute(
+                "SELECT DISTINCT year_month FROM prime_pl_entries ORDER BY year_month DESC"
+            ).fetchall()
+        ]
+
+
+def list_prime_journal_year_months() -> list[str]:
+    init_prime_schema()
+    with get_conn() as conn:
+        return [
+            r["year_month"] for r in conn.execute(
+                "SELECT DISTINCT year_month FROM prime_journal_entries ORDER BY year_month DESC"
+            ).fetchall()
+        ]
+
+
+def fetch_prime_pl_entries(year_months: list[str] | None = None) -> list[dict]:
+    init_prime_schema()
+    where = ["1=1"]
+    params = []
+    if year_months:
+        yms = [ym for ym in year_months if ym]
+        if yms:
+            placeholders = ",".join("?" * len(yms))
+            where.append(f"year_month IN ({placeholders})")
+            params.extend(yms)
+    sql = f"""
+        SELECT *
+        FROM prime_pl_entries
+        WHERE {' AND '.join(where)}
+        ORDER BY year_month, display_order, id
+    """
+    with get_conn() as conn:
+        return [_row_to_dict(r) for r in conn.execute(sql, params).fetchall()]
+
+
+def fetch_prime_journal_entries(year_months: list[str] | None = None,
+                                keyword: str | None = None,
+                                limit: int = 1000) -> list[dict]:
+    init_prime_schema()
+    where = ["1=1"]
+    params = []
+    if year_months:
+        yms = [ym for ym in year_months if ym]
+        if yms:
+            placeholders = ",".join("?" * len(yms))
+            where.append(f"year_month IN ({placeholders})")
+            params.extend(yms)
+    if keyword:
+        like = f"%{keyword}%"
+        where.append("""
+            (debit_account LIKE ? OR credit_account LIKE ?
+             OR debit_partner LIKE ? OR credit_partner LIKE ?
+             OR debit_memo LIKE ? OR credit_memo LIKE ? OR transaction_content LIKE ?)
+        """)
+        params.extend([like] * 7)
+    sql = f"""
+        SELECT *
+        FROM prime_journal_entries
+        WHERE {' AND '.join(where)}
+        ORDER BY transaction_date DESC, id DESC
+        LIMIT ?
+    """
+    params.append(int(limit))
+    with get_conn() as conn:
+        return [_row_to_dict(r) for r in conn.execute(sql, params).fetchall()]
+
+
+def list_prime_pl_imports(limit: int = 20) -> list[dict]:
+    init_prime_schema()
+    with get_conn() as conn:
+        return [_row_to_dict(r) for r in conn.execute(
+            "SELECT * FROM prime_pl_imports ORDER BY imported_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()]
+
+
+def list_prime_journal_imports(limit: int = 20) -> list[dict]:
+    init_prime_schema()
+    with get_conn() as conn:
+        return [_row_to_dict(r) for r in conn.execute(
+            "SELECT * FROM prime_journal_imports ORDER BY imported_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()]
+
+
+def prime_journal_account_summary(year_months: list[str] | None = None,
+                                  side: str = "debit", limit: int = 20) -> list[dict]:
+    init_prime_schema()
+    account_col = "debit_account" if side == "debit" else "credit_account"
+    amount_col = "debit_amount" if side == "debit" else "credit_amount"
+    where = [f"COALESCE({account_col}, '') != ''"]
+    params = []
+    if year_months:
+        yms = [ym for ym in year_months if ym]
+        if yms:
+            placeholders = ",".join("?" * len(yms))
+            where.append(f"year_month IN ({placeholders})")
+            params.extend(yms)
+    sql = f"""
+        SELECT {account_col} AS account_name,
+               SUM({amount_col}) AS total_amount,
+               COUNT(*) AS row_count
+        FROM prime_journal_entries
+        WHERE {' AND '.join(where)}
+        GROUP BY {account_col}
+        ORDER BY total_amount DESC
+        LIMIT ?
+    """
+    params.append(int(limit))
+    with get_conn() as conn:
+        return [_row_to_dict(r) for r in conn.execute(sql, params).fetchall()]

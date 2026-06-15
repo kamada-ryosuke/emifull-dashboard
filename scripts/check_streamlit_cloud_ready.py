@@ -75,6 +75,7 @@ admin_pages = [
     root / "pages" / "4_給与台帳.py",
     root / "pages" / "5_職員台帳.py",
     root / "pages" / "7_施設マスタ／設定.py",
+    root / "pages" / "8_PRIME.py",
 ]
 
 for path in public_pages:

@@ -363,6 +363,9 @@ if auth.is_admin():
         ("⑦ 施設マスタ / 設定",
          "施設マスタの確認・ユーザー管理・パスワード変更",
          "#7c3aed"),
+        ("⑧ PRIME",
+         "株式会社PRIMEの試算表CSV・仕訳帳CSVを取込んで収支を比較／分析",
+         "#9333ea"),
     ]
     _render_card_grid(pages, cols_per_row=3)
 else:
