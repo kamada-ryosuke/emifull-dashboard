@@ -13,6 +13,19 @@ if (-not (Test-Path $Python)) {
 }
 
 if (-not $DryRun) {
+    & $Python -c "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('libsql') else 1)"
+    if ($LASTEXITCODE -ne 0) {
+        if ($InstallMissing) {
+            & $Python -m pip install "libsql>=0.1.7"
+        }
+        else {
+            Write-Host "libsql is missing. Run this once, then retry:"
+            Write-Host "  py -3.12 -m pip install `"libsql>=0.1.7`""
+            Write-Host "Or rerun this script with -InstallMissing."
+            exit 1
+        }
+    }
+
     if (-not $env:TURSO_DATABASE_URL) {
         $env:TURSO_DATABASE_URL = Read-Host "TURSO_DATABASE_URL"
     }
@@ -27,18 +40,6 @@ if (-not $DryRun) {
         }
     }
 
-    & $Python -c "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('libsql') else 1)"
-    if ($LASTEXITCODE -ne 0) {
-        if ($InstallMissing) {
-            & $Python -m pip install "libsql>=0.1.7"
-        }
-        else {
-            Write-Host "libsql is missing. Run this once, then retry:"
-            Write-Host "  py -3.12 -m pip install `"libsql>=0.1.7`""
-            Write-Host "Or rerun this script with -InstallMissing."
-            exit 1
-        }
-    }
 }
 
 $argsList = @(
