@@ -375,6 +375,14 @@ def _inject_sidebar_permissions_css():
     )
 
 
+def _safe_page_link(page, label):
+    try:
+        st.page_link(page, label=label)
+    except Exception:
+        # The Streamlit test runner can lack multipage metadata.
+        st.markdown(f"**{label}**")
+
+
 def _render_role_navigation():
     """Render only the pages that the current user may open."""
     login_page = _entrypoint_page()
@@ -405,7 +413,7 @@ def _render_role_navigation():
 
     with st.sidebar:
         for page, label in links:
-            st.page_link(page, label=label)
+            _safe_page_link(page, label)
 
 
 def render_sidebar_navigation():

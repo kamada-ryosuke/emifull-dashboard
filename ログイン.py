@@ -6,7 +6,7 @@
 import streamlit as st
 import base64
 from pathlib import Path
-from lib import db, styling, auth, manuals
+from lib import db, styling, auth
 
 st.set_page_config(
     page_title="障がい事業部ダッシュボード",
@@ -315,6 +315,8 @@ st.markdown(
     f"{'管理者' if auth.is_admin() else '一般'}</span></div></div>",
     unsafe_allow_html=True,
 )
+
+from lib import manuals
 
 manuals.render_manual_entry()
 
