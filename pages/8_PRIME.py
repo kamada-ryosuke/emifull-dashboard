@@ -70,24 +70,46 @@ def _metric_amount(entries: list[dict], primary_category: str,
     return sum(int(e.get("amount") or 0) for e in entries if e.get("category") in fallback_categories)
 
 
+def _amount_by_accounts(entries: list[dict], account_names: tuple[str, ...]) -> int | None:
+    targets = set(account_names)
+    matched = [int(e.get("amount") or 0) for e in entries if e.get("account_name") in targets]
+    if not matched:
+        return None
+    return sum(matched)
+
+
 def _metrics(entries: list[dict]) -> dict[str, int]:
-    revenue = _metric_amount(entries, "revenue_total", ("revenue",))
-    cogs = _metric_amount(entries, "cogs_total", ("cogs",))
-    gross = _metric_amount(entries, "gross_profit")
+    revenue = _amount_by_accounts(entries, ("売上高 計", "売上高計"))
+    if revenue is None:
+        revenue = _metric_amount(entries, "revenue_total", ("revenue",))
+    cogs = _amount_by_accounts(entries, ("商品売上原価", "売上原価 計", "売上原価計"))
+    if cogs is None:
+        cogs = _metric_amount(entries, "cogs_total", ("cogs",))
+    gross = _amount_by_accounts(entries, ("売上総損益金額", "売上総利益", "売上総損益"))
+    if gross is None:
+        gross = _metric_amount(entries, "gross_profit")
     if gross == 0 and (revenue or cogs):
         gross = revenue - cogs
-    sga_total = _metric_amount(entries, "sga_total", ("sga",))
+    sga_total = _amount_by_accounts(entries, ("販売管理費 計", "販管費 計", "販売費及び一般管理費 計"))
+    if sga_total is None:
+        sga_total = _metric_amount(entries, "sga_total", ("sga",))
     personnel = sum(
         int(e.get("amount") or 0)
         for e in entries
         if e.get("category") == "sga"
         and any(k in (e.get("account_name") or "") for k in PERSONNEL_KEYWORDS)
     )
-    operating = _metric_amount(entries, "operating_profit")
+    operating = _amount_by_accounts(entries, ("営業損益金額", "営業利益", "営業損失"))
+    if operating is None:
+        operating = _metric_amount(entries, "operating_profit")
     if operating == 0 and (gross or sga_total):
         operating = gross - sga_total
-    ordinary = _metric_amount(entries, "ordinary_profit")
-    net_income = _metric_amount(entries, "net_income")
+    ordinary = _amount_by_accounts(entries, ("経常損益金額", "経常利益", "経常損失"))
+    if ordinary is None:
+        ordinary = _metric_amount(entries, "ordinary_profit")
+    net_income = _amount_by_accounts(entries, ("当期純損益金額", "当期純利益", "当期純損失"))
+    if net_income is None:
+        net_income = _metric_amount(entries, "net_income")
     return {
         "売上高": revenue,
         "売上原価": cogs,
@@ -109,6 +131,14 @@ def _preview_metrics(entries: list[dict]) -> dict[str, str]:
         "経常利益": _yen(m["経常利益"]),
         "当期純利益": _yen(m["当期純利益"]),
     }
+
+
+def _department_picker(year_months: list[str], key: str) -> str:
+    departments = db.list_prime_departments(year_months)
+    if not departments:
+        return "部門合計"
+    default_idx = departments.index("部門合計") if "部門合計" in departments else 0
+    return st.selectbox("表示部門", departments, index=default_idx, key=key)
 
 
 def _select_period(existing_yms: list[str], key_prefix: str) -> tuple[list[str], str]:
@@ -176,19 +206,24 @@ with tab_import:
         parsed = [prime_parser.parse_prime_pl_csv(f, f.name) for f in pl_files]
         preview_rows = []
         for result in parsed:
+            total_entries = [e for e in result.entries if e.get("department_name") == "部門合計"]
+            department_count = len({e.get("department_name") for e in result.entries if e.get("department_name")})
+            account_count = len({(e.get("display_order"), e.get("account_name")) for e in result.entries})
             if result.error:
                 preview_rows.append({
                     "ファイル": result.filename,
                     "対象月": result.year_month or "判定不可",
-                    "行数": 0,
+                    "科目行数": 0,
+                    "部門数": 0,
                     "状態": result.error,
                 })
             else:
-                metrics = _preview_metrics(result.entries)
+                metrics = _preview_metrics(total_entries)
                 preview_rows.append({
                     "ファイル": result.filename,
                     "対象月": result.year_month,
-                    "行数": len(result.entries),
+                    "科目行数": account_count,
+                    "部門数": department_count,
                     "売上高": metrics["売上高"],
                     "営業利益": metrics["営業利益"],
                     "経常利益": metrics["経常利益"],
@@ -293,7 +328,8 @@ with tab_summary:
         st.info("まず「CSV取込」からPRIMEの試算表CSVを取り込んでください。")
     else:
         target_yms, period_label = _select_period(existing_yms, "prime_summary")
-        entries = db.fetch_prime_pl_entries(target_yms)
+        department_name = _department_picker(target_yms, "prime_summary_department")
+        entries = db.fetch_prime_pl_entries(target_yms, [department_name])
         metrics = _metrics(entries)
 
         st.markdown(
@@ -301,7 +337,7 @@ with tab_summary:
             f"padding:14px 20px; border-radius:10px; border-left:6px solid #2563eb; margin:16px 0;'>"
             f"<div style='font-size:13px; color:#475569; font-weight:600;'>表示中</div>"
             f"<div style='font-size:20px; color:#0f172a; font-weight:700; margin-top:4px;'>"
-            f"{period_label} ／ PRIME</div></div>",
+            f"{period_label} ／ PRIME ／ {department_name}</div></div>",
             unsafe_allow_html=True,
         )
 
@@ -320,15 +356,48 @@ with tab_summary:
             styled = df.style.format({"金額": "{:,.0f}"})
             st.dataframe(styled, hide_index=True, width="stretch", height=min(38 * (len(df) + 1), 700))
 
+        if department_name == "部門合計":
+            st.markdown("### 部門別 損益比較")
+            departments = [d for d in db.list_prime_departments(target_yms) if d != "部門合計"]
+            comparison_rows = []
+            for dept in departments:
+                dept_metrics = _metrics(db.fetch_prime_pl_entries(target_yms, [dept]))
+                if any(dept_metrics.values()):
+                    comparison_rows.append({
+                        "部門": dept,
+                        "売上高": dept_metrics["売上高"],
+                        "人件費": dept_metrics["人件費"],
+                        "経費": dept_metrics["経費"],
+                        "営業利益": dept_metrics["営業利益"],
+                        "営業利益率": _pct(dept_metrics["営業利益"], dept_metrics["売上高"]),
+                        "経常利益": dept_metrics["経常利益"],
+                        "経常利益率": _pct(dept_metrics["経常利益"], dept_metrics["売上高"]),
+                    })
+            if comparison_rows:
+                df_compare = pd.DataFrame(comparison_rows)
+                st.dataframe(
+                    df_compare.style.format({
+                        "売上高": "{:,.0f}",
+                        "人件費": "{:,.0f}",
+                        "経費": "{:,.0f}",
+                        "営業利益": "{:,.0f}",
+                        "経常利益": "{:,.0f}",
+                    }),
+                    hide_index=True,
+                    width="stretch",
+                    height=min(38 * (len(df_compare) + 1), 520),
+                )
+
 
 with tab_trend:
     if not existing_yms:
         st.info("まずPRIMEの試算表CSVを取り込んでください。")
     else:
+        department_name = _department_picker(existing_yms, "prime_trend_department")
         months = sorted(existing_yms)
         monthly_rows = []
         for ym in months:
-            m = _metrics(db.fetch_prime_pl_entries([ym]))
+            m = _metrics(db.fetch_prime_pl_entries([ym], [department_name]))
             monthly_rows.append({
                 "月": ym,
                 "売上高": m["売上高"],
@@ -358,7 +427,8 @@ with tab_accounts:
     if not existing_yms:
         st.info("まずPRIMEの試算表CSVを取り込んでください。")
     else:
-        all_entries = db.fetch_prime_pl_entries(existing_yms)
+        department_name = _department_picker(existing_yms, "prime_account_department")
+        all_entries = db.fetch_prime_pl_entries(existing_yms, [department_name])
         categories = sorted(
             {e.get("category") or "other" for e in all_entries},
             key=lambda c: CATEGORY_ORDER.get(c, 999),

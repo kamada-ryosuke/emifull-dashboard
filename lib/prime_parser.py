@@ -148,10 +148,10 @@ def classify_pl_account(account_name: str, current_section: str = "") -> str:
     section = current_section or ""
     text = f"{section} {label}"
 
-    if "当期純" in label:
-        return "net_income"
     if "税引前" in label:
         return "pretax_income"
+    if "当期純" in label:
+        return "net_income"
     if "経常" in label and ("利益" in label or "損失" in label or "損益" in label):
         return "ordinary_profit"
     if "営業利益" in label or "営業損失" in label or "営業損益" in label:
@@ -170,16 +170,20 @@ def classify_pl_account(account_name: str, current_section: str = "") -> str:
         return "non_operating_expense"
     if "販売費及び一般管理費" in text or "販売費および一般管理費" in text or "販管費" in text:
         return "sga_total" if _is_total_label(label) and _is_section_label(label) else "sga"
+    if label in {"商品売上原価", "売上原価 計", "売上原価計"}:
+        return "cogs_total"
     if "売上原価" in text:
-        return "cogs_total" if _is_total_label(label) and _is_section_label(label) else "cogs"
+        return "cogs"
+    if label in {"売上高 計", "売上高計"}:
+        return "revenue_total"
     if "売上高" in text:
-        return "revenue_total" if _is_total_label(label) or _is_section_label(label) else "revenue"
+        return "revenue"
     if "売上" in label:
         return "revenue"
     return "other"
 
 
-def _find_pl_header(rows: list[list[str]]) -> tuple[int | None, int | None, int | None]:
+def _find_pl_header(rows: list[list[str]]) -> tuple[int | None, int | None, int | None, list[tuple[str, int]]]:
     account_names = {"勘定科目", "科目", "科目名", "損益科目"}
     amount_preferred = (
         "残高",
@@ -194,6 +198,18 @@ def _find_pl_header(rows: list[list[str]]) -> tuple[int | None, int | None, int 
     for r_idx, row in enumerate(rows[:30]):
         headers = [_normalize_header(c) for c in row]
         account_idx = next((i for i, h in enumerate(headers) if h in account_names), None)
+        department_cols: list[tuple[str, int]] = []
+
+        # freeeの試算表CSVは「勘定科目コード」「空欄の科目名列」「部門列...」「部門合計」
+        # という横持ち形式になることがある。
+        if account_idx is None and headers and headers[0] == "勘定科目コード":
+            account_idx = 1 if len(headers) > 1 else None
+            department_cols = [
+                (_clean_cell(row[i]) or "部門合計", i)
+                for i in range(2, len(row))
+                if _clean_cell(row[i])
+            ]
+
         if account_idx is None:
             continue
         amount_idx = next((i for i, h in enumerate(headers) if h in amount_preferred), None)
@@ -203,8 +219,13 @@ def _find_pl_header(rows: list[list[str]]) -> tuple[int | None, int | None, int 
                 if ("金額" in h or "残高" in h) and h not in debit_credit_amounts
             ]
             amount_idx = candidates[-1] if candidates else None
-        return r_idx, account_idx, amount_idx
-    return None, None, None
+        if not department_cols and amount_idx is not None:
+            department_cols = [("部門合計", amount_idx)]
+        elif department_cols:
+            total_idx = next((i for i, h in enumerate(headers) if h == "部門合計"), None)
+            amount_idx = total_idx if total_idx is not None else department_cols[-1][1]
+        return r_idx, account_idx, amount_idx, department_cols
+    return None, None, None, []
 
 
 def _last_numeric_in_row(row: list[str]) -> int | None:
@@ -234,12 +255,12 @@ def parse_prime_pl_csv(file_or_path, filename: str, year_month: str | None = Non
         result.error = "ファイル名から対象月を判定できませんでした。"
         return result
 
-    header_idx, account_idx, amount_idx = _find_pl_header(rows)
+    header_idx, account_idx, amount_idx, department_cols = _find_pl_header(rows)
     if header_idx is None or account_idx is None:
         result.error = "勘定科目の列を見つけられませんでした。"
         return result
 
-    if amount_idx is None:
+    if amount_idx is None and not department_cols:
         result.warnings.append("金額列を特定できなかったため、各行の右端にある数値を金額として読み取りました。")
 
     current_section = ""
@@ -257,18 +278,44 @@ def parse_prime_pl_csv(file_or_path, filename: str, year_month: str | None = Non
         if _is_section_label(account_name):
             current_section = account_name
 
-        if amount is None:
+        if department_cols:
+            has_department_amount = any(
+                col_idx < len(row) and _parse_amount(row[col_idx]) is not None
+                for _, col_idx in department_cols
+            )
+            if not has_department_amount:
+                continue
+
+        if amount is None and not department_cols:
             continue
 
         category = classify_pl_account(account_name, current_section)
-        result.entries.append({
-            "year_month": result.year_month,
-            "account_name": account_name,
-            "category": category,
-            "amount": amount,
-            "display_order": display_order,
-            "is_total": 1 if _is_total_label(account_name) else 0,
-        })
+        if department_cols:
+            for department_name, col_idx in department_cols:
+                if col_idx >= len(row):
+                    continue
+                department_amount = _parse_amount(row[col_idx])
+                if department_amount is None:
+                    department_amount = 0
+                result.entries.append({
+                    "year_month": result.year_month,
+                    "department_name": department_name,
+                    "account_name": account_name,
+                    "category": category,
+                    "amount": department_amount,
+                    "display_order": display_order,
+                    "is_total": 1 if _is_total_label(account_name) else 0,
+                })
+        else:
+            result.entries.append({
+                "year_month": result.year_month,
+                "department_name": "部門合計",
+                "account_name": account_name,
+                "category": category,
+                "amount": amount,
+                "display_order": display_order,
+                "is_total": 1 if _is_total_label(account_name) else 0,
+            })
         display_order += 1
 
     if not result.entries:

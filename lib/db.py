@@ -5384,6 +5384,7 @@ def init_prime_schema():
         CREATE TABLE IF NOT EXISTS prime_pl_entries (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             year_month TEXT NOT NULL,
+            department_name TEXT NOT NULL DEFAULT '部門合計',
             account_name TEXT NOT NULL,
             category TEXT NOT NULL,
             amount INTEGER NOT NULL DEFAULT 0,
@@ -5392,7 +5393,7 @@ def init_prime_schema():
             source_filename TEXT,
             file_hash TEXT,
             imported_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(year_month, account_name, display_order)
+            UNIQUE(year_month, department_name, account_name, display_order)
         );
         CREATE INDEX IF NOT EXISTS idx_prime_pl_entries_ym
             ON prime_pl_entries(year_month);
@@ -5452,6 +5453,48 @@ def init_prime_schema():
             imported_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
         """)
+        pl_cols = {
+            r['name'] for r in conn.execute(
+                "PRAGMA table_info(prime_pl_entries)"
+            ).fetchall()
+        }
+        if 'department_name' not in pl_cols:
+            conn.execute("ALTER TABLE prime_pl_entries RENAME TO prime_pl_entries_old")
+            conn.executescript("""
+            CREATE TABLE prime_pl_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                year_month TEXT NOT NULL,
+                department_name TEXT NOT NULL DEFAULT '部門合計',
+                account_name TEXT NOT NULL,
+                category TEXT NOT NULL,
+                amount INTEGER NOT NULL DEFAULT 0,
+                display_order INTEGER NOT NULL DEFAULT 0,
+                is_total INTEGER NOT NULL DEFAULT 0,
+                source_filename TEXT,
+                file_hash TEXT,
+                imported_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(year_month, department_name, account_name, display_order)
+            );
+            CREATE INDEX IF NOT EXISTS idx_prime_pl_entries_ym
+                ON prime_pl_entries(year_month);
+            CREATE INDEX IF NOT EXISTS idx_prime_pl_entries_department
+                ON prime_pl_entries(department_name);
+            CREATE INDEX IF NOT EXISTS idx_prime_pl_entries_category
+                ON prime_pl_entries(category);
+            """)
+            conn.execute("""
+                INSERT INTO prime_pl_entries
+                (id, year_month, department_name, account_name, category, amount,
+                 display_order, is_total, source_filename, file_hash, imported_at)
+                SELECT id, year_month, '部門合計', account_name, category, amount,
+                       display_order, is_total, source_filename, file_hash, imported_at
+                  FROM prime_pl_entries_old
+            """)
+            conn.execute("DROP TABLE prime_pl_entries_old")
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_prime_pl_entries_department
+                ON prime_pl_entries(department_name)
+        """)
 
 
 def replace_prime_pl_entries(year_month: str, entries: list[dict],
@@ -5464,11 +5507,12 @@ def replace_prime_pl_entries(year_month: str, entries: list[dict],
         for e in clean_entries:
             conn.execute("""
                 INSERT INTO prime_pl_entries
-                (year_month, account_name, category, amount, display_order, is_total,
-                 source_filename, file_hash)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (year_month, department_name, account_name, category, amount,
+                 display_order, is_total, source_filename, file_hash)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 year_month,
+                e.get("department_name") or "部門合計",
                 e.get("account_name") or "",
                 e.get("category") or "other",
                 int(e.get("amount") or 0),
@@ -5553,7 +5597,7 @@ def list_prime_journal_year_months() -> list[str]:
         ]
 
 
-def fetch_prime_pl_entries(year_months: list[str] | None = None) -> list[dict]:
+def list_prime_departments(year_months: list[str] | None = None) -> list[str]:
     init_prime_schema()
     where = ["1=1"]
     params = []
@@ -5564,10 +5608,40 @@ def fetch_prime_pl_entries(year_months: list[str] | None = None) -> list[dict]:
             where.append(f"year_month IN ({placeholders})")
             params.extend(yms)
     sql = f"""
+        SELECT DISTINCT department_name
+        FROM prime_pl_entries
+        WHERE {' AND '.join(where)}
+        ORDER BY CASE WHEN department_name = '部門合計' THEN 0 ELSE 1 END,
+                 department_name
+    """
+    with get_conn() as conn:
+        return [r["department_name"] for r in conn.execute(sql, params).fetchall()]
+
+
+def fetch_prime_pl_entries(year_months: list[str] | None = None,
+                           department_names: list[str] | None = None) -> list[dict]:
+    init_prime_schema()
+    where = ["1=1"]
+    params = []
+    if year_months:
+        yms = [ym for ym in year_months if ym]
+        if yms:
+            placeholders = ",".join("?" * len(yms))
+            where.append(f"year_month IN ({placeholders})")
+            params.extend(yms)
+    if department_names:
+        names = [name for name in department_names if name]
+        if names:
+            placeholders = ",".join("?" * len(names))
+            where.append(f"department_name IN ({placeholders})")
+            params.extend(names)
+    sql = f"""
         SELECT *
         FROM prime_pl_entries
         WHERE {' AND '.join(where)}
-        ORDER BY year_month, display_order, id
+        ORDER BY year_month,
+                 CASE WHEN department_name = '部門合計' THEN 0 ELSE 1 END,
+                 department_name, display_order, id
     """
     with get_conn() as conn:
         return [_row_to_dict(r) for r in conn.execute(sql, params).fetchall()]
