@@ -187,6 +187,8 @@ class _CloudConnection:
     def execute(self, sql, params=()):
         if params is None:
             params = ()
+        elif isinstance(params, list):
+            params = tuple(params)
         return _CloudCursor(self._conn.execute(sql, params))
 
     def executemany(self, sql, seq_of_params):
