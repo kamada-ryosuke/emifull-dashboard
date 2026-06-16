@@ -379,6 +379,12 @@ else:
          "車両一覧・車検期限・保険/装置状態を閲覧",
          "#0ea5e9"),
     ]
+    if auth.can_view_prime():
+        pages.append(
+            ("③ PRIME",
+             "株式会社PRIMEの試算表CSV・仕訳帳CSVを閲覧し、収支を比較／分析",
+             "#9333ea")
+        )
     _render_card_grid(pages, cols_per_row=3)
 
 st.markdown("<br>", unsafe_allow_html=True)

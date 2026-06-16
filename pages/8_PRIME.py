@@ -110,7 +110,7 @@ PRIME_AREAS = [
 
 
 styling.inject_global_css()
-auth.require_admin()
+auth.require_prime_access()
 auth.render_sidebar_navigation()
 db.init_prime_schema()
 

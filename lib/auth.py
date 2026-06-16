@@ -18,6 +18,12 @@ import streamlit as st
 from lib import db
 
 ADMIN_EMAIL = "kamada.rusk@emifull-group.or.jp"
+PRIME_VIEWER_EMAILS = {
+    ADMIN_EMAIL,
+    "kanbe.tkhr@emifull-group.or.jp",
+    "kuroda.yusk@emifull-group.or.jp",
+    "morita.yshr@emifull-group.or.jp",
+}
 
 # ---------- パスワードハッシュ ----------
 
@@ -98,6 +104,11 @@ def auto_login_for_codex():
 def is_admin():
     init_session()
     return (st.session_state.user_email or '').lower() == ADMIN_EMAIL
+
+
+def can_view_prime():
+    init_session()
+    return (st.session_state.user_email or '').lower() in PRIME_VIEWER_EMAILS
 
 
 def current_user():
@@ -263,6 +274,16 @@ def require_admin():
         st.stop()
 
 
+def require_prime_access():
+    require_login()
+    if not can_view_prime():
+        st.error(
+            "🚫 PRIMEは許可されたユーザーのみ閲覧できます。\n\n"
+            "現在のロール: " + (st.session_state.user_role or '未ログイン')
+        )
+        st.stop()
+
+
 @st.cache_data(ttl=300, show_spinner=False)
 def _cached_sidebar_vehicles():
     return db.list_vehicles(include_scrapped=False)
@@ -410,6 +431,8 @@ def _render_role_navigation():
             ("pages/4_給与台帳.py", "給与台帳"),
             ("pages/6_車両管理.py", "車両管理"),
         ]
+        if can_view_prime():
+            links.append(("pages/8_PRIME.py", "PRIME"))
 
     with st.sidebar:
         for page, label in links:
