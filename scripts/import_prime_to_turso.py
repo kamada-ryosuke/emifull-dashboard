@@ -39,6 +39,11 @@ def _find_journal_files(source_dir: Path) -> list[Path]:
 
 
 def _validate_credentials() -> None:
+    for key in ("TURSO_DATABASE_URL", "TURSO_AUTH_TOKEN"):
+        value = os.getenv(key)
+        if value:
+            os.environ[key] = _normalize_secret_value(value, key)
+
     missing = [
         key
         for key in ("TURSO_DATABASE_URL", "TURSO_AUTH_TOKEN")
@@ -50,6 +55,27 @@ def _validate_credentials() -> None:
             + ", ".join(missing)
             + "\nRun import_prime_to_turso.ps1 so the values can be entered safely."
         )
+    database_url = os.getenv("TURSO_DATABASE_URL", "")
+    if not database_url.startswith("libsql://"):
+        raise SystemExit(
+            "TURSO_DATABASE_URL must start with libsql:// . "
+            "Paste only the value, not the whole TOML line."
+        )
+
+
+def _normalize_secret_value(value: str, key: str) -> str:
+    value = (value or "").strip()
+    prefix = f"{key}="
+    compact = value.replace(" ", "")
+    if compact.startswith(prefix):
+        value = value.split("=", 1)[1].strip()
+    elif "=" in value and value.split("=", 1)[0].strip() == key:
+        value = value.split("=", 1)[1].strip()
+    if (value.startswith('"') and value.endswith('"')) or (
+        value.startswith("'") and value.endswith("'")
+    ):
+        value = value[1:-1].strip()
+    return value
 
 
 def _delete_prime_journal_file(file_hash: str) -> None:

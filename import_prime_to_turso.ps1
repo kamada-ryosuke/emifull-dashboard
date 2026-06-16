@@ -12,6 +12,28 @@ if (-not (Test-Path $Python)) {
     $Python = "py"
 }
 
+function Normalize-SecretInput {
+    param(
+        [string]$Value,
+        [string]$Key
+    )
+    if ($null -eq $Value) {
+        $clean = ""
+    }
+    else {
+        $clean = $Value.Trim()
+    }
+    $eqIndex = $clean.IndexOf("=")
+    if ($eqIndex -ge 0) {
+        $left = $clean.Substring(0, $eqIndex).Trim()
+        if ($left -eq $Key) {
+            $clean = $clean.Substring($eqIndex + 1).Trim()
+        }
+    }
+    $clean = $clean.Trim('"').Trim("'").Trim()
+    return $clean
+}
+
 if (-not $DryRun) {
     & $Python -c "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('libsql') else 1)"
     if ($LASTEXITCODE -ne 0) {
@@ -29,6 +51,8 @@ if (-not $DryRun) {
     if (-not $env:TURSO_DATABASE_URL) {
         $env:TURSO_DATABASE_URL = Read-Host "TURSO_DATABASE_URL"
     }
+    $env:TURSO_DATABASE_URL = Normalize-SecretInput $env:TURSO_DATABASE_URL "TURSO_DATABASE_URL"
+
     if (-not $env:TURSO_AUTH_TOKEN) {
         $secureToken = Read-Host "TURSO_AUTH_TOKEN (hidden)" -AsSecureString
         $ptr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureToken)
@@ -39,6 +63,7 @@ if (-not $DryRun) {
             [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr)
         }
     }
+    $env:TURSO_AUTH_TOKEN = Normalize-SecretInput $env:TURSO_AUTH_TOKEN "TURSO_AUTH_TOKEN"
 
 }
 
