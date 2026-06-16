@@ -29,7 +29,19 @@ CATEGORY_ORDER = {
     "other": 999,
 }
 
-PERSONNEL_KEYWORDS = ("給与", "給料", "役員報酬", "賞与", "法定福利", "福利厚生", "人件費")
+PERSONNEL_KEYWORDS = (
+    "給与",
+    "給料",
+    "賃金",
+    "役員報酬",
+    "賞与",
+    "法定福利",
+    "福利厚生",
+    "退職",
+    "出向",
+    "派遣",
+    "人件費",
+)
 
 
 styling.inject_global_css()
@@ -78,6 +90,13 @@ def _amount_by_accounts(entries: list[dict], account_names: tuple[str, ...]) -> 
     return sum(matched)
 
 
+def _is_personnel_account(entry: dict) -> bool:
+    account_name = entry.get("account_name") or ""
+    if int(entry.get("is_total") or 0):
+        return False
+    return any(keyword in account_name for keyword in PERSONNEL_KEYWORDS)
+
+
 def _metrics(entries: list[dict]) -> dict[str, int]:
     revenue = _amount_by_accounts(entries, ("売上高 計", "売上高計"))
     if revenue is None:
@@ -96,8 +115,7 @@ def _metrics(entries: list[dict]) -> dict[str, int]:
     personnel = sum(
         int(e.get("amount") or 0)
         for e in entries
-        if e.get("category") == "sga"
-        and any(k in (e.get("account_name") or "") for k in PERSONNEL_KEYWORDS)
+        if _is_personnel_account(e)
     )
     operating = _amount_by_accounts(entries, ("営業損益金額", "営業利益", "営業損失"))
     if operating is None:
