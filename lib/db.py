@@ -12,6 +12,7 @@ DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 LOCAL_REPLICA_PATH = Path(__file__).resolve().parent.parent / "data" / "cloud_replica.db"
 _CLOUD_CONNECTION = None
 _CLOUD_CONNECTION_KEY = None
+_PRIME_SCHEMA_READY = False
 
 USER_POSITION_PRESETS = {
     "kamada.rusk@emifull-group.or.jp": "部長",
@@ -5379,9 +5380,52 @@ def _row_to_dict(row) -> dict:
     return dict(row)
 
 
+def _table_columns(conn, table_name: str) -> set[str]:
+    return {r['name'] for r in conn.execute(f"PRAGMA table_info({table_name})").fetchall()}
+
+
+def _prime_schema_ready(conn) -> bool:
+    required_tables = {
+        "prime_pl_entries",
+        "prime_pl_imports",
+        "prime_journal_entries",
+        "prime_journal_imports",
+    }
+    rows = conn.execute("""
+        SELECT name
+        FROM sqlite_master
+        WHERE type = 'table'
+          AND name IN (
+            'prime_pl_entries',
+            'prime_pl_imports',
+            'prime_journal_entries',
+            'prime_journal_imports'
+          )
+    """).fetchall()
+    existing = {r["name"] for r in rows}
+    if not required_tables.issubset(existing):
+        return False
+
+    pl_cols = _table_columns(conn, "prime_pl_entries")
+    journal_cols = _table_columns(conn, "prime_journal_entries")
+    return (
+        {"year_month", "department_name", "account_name", "category", "amount"}
+        .issubset(pl_cols)
+        and {"transaction_date", "year_month", "debit_account", "credit_account"}
+        .issubset(journal_cols)
+    )
+
+
 def init_prime_schema():
     """PRIME専用テーブルを作成する。既存の障がい事業部データは変更しない。"""
+    global _PRIME_SCHEMA_READY
+    if _PRIME_SCHEMA_READY:
+        return
     with get_conn() as conn:
+        if _use_cloud_db() and _prime_schema_ready(conn):
+            _PRIME_SCHEMA_READY = True
+            return
+
         conn.executescript("""
         CREATE TABLE IF NOT EXISTS prime_pl_entries (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -5455,11 +5499,7 @@ def init_prime_schema():
             imported_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
         """)
-        pl_cols = {
-            r['name'] for r in conn.execute(
-                "PRAGMA table_info(prime_pl_entries)"
-            ).fetchall()
-        }
+        pl_cols = _table_columns(conn, "prime_pl_entries")
         if 'department_name' not in pl_cols:
             conn.execute("ALTER TABLE prime_pl_entries RENAME TO prime_pl_entries_old")
             conn.executescript("""
@@ -5497,6 +5537,7 @@ def init_prime_schema():
             CREATE INDEX IF NOT EXISTS idx_prime_pl_entries_department
                 ON prime_pl_entries(department_name)
         """)
+        _PRIME_SCHEMA_READY = True
 
 
 def replace_prime_pl_entries(year_month: str, entries: list[dict],
