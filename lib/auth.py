@@ -23,6 +23,7 @@ PRIME_READ_ONLY_EMAILS = {
     "kuroda.yusk@emifull-group.or.jp",
     "morita.yshr@emifull-group.or.jp",
     "shimada.tsk@emifull-group.or.jp",
+    "hamada.yra@emifull-group.or.jp",
 }
 PRIME_VIEWER_EMAILS = {
     ADMIN_EMAIL,
@@ -30,6 +31,7 @@ PRIME_VIEWER_EMAILS = {
 }
 PRIME_ONLY_EMAILS = {
     "shimada.tsk@emifull-group.or.jp",
+    "hamada.yra@emifull-group.or.jp",
 }
 
 # ---------- パスワードハッシュ ----------
