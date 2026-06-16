@@ -118,6 +118,12 @@ st.title("PRIME")
 st.caption("株式会社PRIMEの試算表（損益計算書）CSVと仕訳帳CSVを、障がい事業部データとは分けて管理します。")
 
 
+def _no_prime_data_message() -> str:
+    if auth.can_manage_prime():
+        return "まず「CSV取込」からPRIMEの試算表CSVを取り込んでください。"
+    return "PRIMEのデータがまだ取り込まれていません。管理者に確認してください。"
+
+
 def _yen(value) -> str:
     try:
         return f"{int(value):,} 円"
@@ -491,147 +497,160 @@ if existing_yms:
         fy_start_month = 2 if fy_mode_label.startswith("法人") else 4
 
 
-tab_import, tab_summary, tab_ratio, tab_compare, tab_meeting, tab_report, tab_sga_trend, tab_journal = st.tabs([
-    "📥 CSV取込",
-    "📊 サマリ",
-    "🔍 構成比",
-    "📅 比較",
-    "🏛️ 業績会議",
-    "📝 報告書提出",
-    "📈 販管費推移",
-    "🧾 仕訳帳",
-])
+prime_can_import = auth.can_manage_prime()
+if prime_can_import:
+    tab_import, tab_summary, tab_ratio, tab_compare, tab_meeting, tab_report, tab_sga_trend, tab_journal = st.tabs([
+        "📥 CSV取込",
+        "📊 サマリ",
+        "🔍 構成比",
+        "📅 比較",
+        "🏛️ 業績会議",
+        "📝 報告書提出",
+        "📈 販管費推移",
+        "🧾 仕訳帳",
+    ])
+else:
+    tab_summary, tab_ratio, tab_compare, tab_meeting, tab_report, tab_sga_trend, tab_journal = st.tabs([
+        "📊 サマリ",
+        "🔍 構成比",
+        "📅 比較",
+        "🏛️ 業績会議",
+        "📝 報告書提出",
+        "📈 販管費推移",
+        "🧾 仕訳帳",
+    ])
 
 
-with tab_import:
-    st.markdown("### 試算表CSV（損益計算書）")
-    st.caption("1ファイル＝1か月分として取り込みます。同じ月を再取込すると、PRIMEのその月だけ上書きします。")
-    pl_files = st.file_uploader(
-        "試算表：損益計算書 CSV",
-        type=["csv"],
-        accept_multiple_files=True,
-        key="prime_pl_csv_uploader",
-    )
-    if pl_files:
-        parsed = [prime_parser.parse_prime_pl_csv(f, f.name) for f in pl_files]
-        preview_rows = []
-        for result in parsed:
-            total_entries = [e for e in result.entries if e.get("department_name") == "部門合計"]
-            department_count = len({e.get("department_name") for e in result.entries if e.get("department_name")})
-            account_count = len({(e.get("display_order"), e.get("account_name")) for e in result.entries})
-            if result.error:
-                preview_rows.append({
-                    "ファイル": result.filename,
-                    "対象月": result.year_month or "判定不可",
-                    "科目行数": 0,
-                    "部門数": 0,
-                    "状態": result.error,
-                })
-            else:
-                metrics = _preview_metrics(total_entries)
-                preview_rows.append({
-                    "ファイル": result.filename,
-                    "対象月": result.year_month,
-                    "科目行数": account_count,
-                    "部門数": department_count,
-                    "売上高": metrics["売上高"],
-                    "営業利益": metrics["営業利益"],
-                    "経常利益": metrics["経常利益"],
-                    "状態": "取込可能",
-                })
-        st.dataframe(pd.DataFrame(preview_rows), hide_index=True, width="stretch")
-
-        warnings = [f"{r.filename}: {w}" for r in parsed for w in r.warnings]
-        if warnings:
-            with st.expander("読み取り時の注意"):
-                for warning in warnings:
-                    st.write(f"- {warning}")
-
-        ok_results = [r for r in parsed if not r.error and r.year_month and r.entries]
-        overwrite_confirmed = st.checkbox(
-            "PRIMEの該当月だけを上書きして取り込むことを確認しました",
-            key="prime_pl_overwrite_confirm",
+if prime_can_import:
+    with tab_import:
+        st.markdown("### 試算表CSV（損益計算書）")
+        st.caption("1ファイル＝1か月分として取り込みます。同じ月を再取込すると、PRIMEのその月だけ上書きします。")
+        pl_files = st.file_uploader(
+            "試算表：損益計算書 CSV",
+            type=["csv"],
+            accept_multiple_files=True,
+            key="prime_pl_csv_uploader",
         )
-        if st.button(
-            "試算表CSVを取り込む",
-            type="primary",
-            disabled=not ok_results or not overwrite_confirmed,
-            key="prime_pl_import_btn",
-        ):
-            total = 0
-            for result in ok_results:
-                summary = db.replace_prime_pl_entries(
-                    result.year_month,
-                    result.entries,
-                    result.filename,
-                    result.file_hash,
-                )
-                total += summary["entries"]
-            st.success(f"PRIME損益データを取り込みました（{len(ok_results)}ファイル / {total:,}行）。")
-            st.rerun()
+        if pl_files:
+            parsed = [prime_parser.parse_prime_pl_csv(f, f.name) for f in pl_files]
+            preview_rows = []
+            for result in parsed:
+                total_entries = [e for e in result.entries if e.get("department_name") == "部門合計"]
+                department_count = len({e.get("department_name") for e in result.entries if e.get("department_name")})
+                account_count = len({(e.get("display_order"), e.get("account_name")) for e in result.entries})
+                if result.error:
+                    preview_rows.append({
+                        "ファイル": result.filename,
+                        "対象月": result.year_month or "判定不可",
+                        "科目行数": 0,
+                        "部門数": 0,
+                        "状態": result.error,
+                    })
+                else:
+                    metrics = _preview_metrics(total_entries)
+                    preview_rows.append({
+                        "ファイル": result.filename,
+                        "対象月": result.year_month,
+                        "科目行数": account_count,
+                        "部門数": department_count,
+                        "売上高": metrics["売上高"],
+                        "営業利益": metrics["営業利益"],
+                        "経常利益": metrics["経常利益"],
+                        "状態": "取込可能",
+                    })
+            st.dataframe(pd.DataFrame(preview_rows), hide_index=True, width="stretch")
 
-    st.markdown("---")
-    st.markdown("### 仕訳帳CSV")
-    st.caption("仕訳帳は重複防止のため、同じファイル内容・同じ行番号は二重登録しません。")
-    journal_files = st.file_uploader(
-        "仕訳帳 CSV",
-        type=["csv"],
-        accept_multiple_files=True,
-        key="prime_journal_csv_uploader",
-    )
-    if journal_files:
-        parsed_journals = [prime_parser.parse_prime_journal_csv(f, f.name) for f in journal_files]
-        journal_preview = []
-        for result in parsed_journals:
-            journal_preview.append({
-                "ファイル": result.filename,
-                "期間": result.date_range,
-                "行数": len(result.rows),
-                "状態": result.error or "取込可能",
-            })
-        st.dataframe(pd.DataFrame(journal_preview), hide_index=True, width="stretch")
+            warnings = [f"{r.filename}: {w}" for r in parsed for w in r.warnings]
+            if warnings:
+                with st.expander("読み取り時の注意"):
+                    for warning in warnings:
+                        st.write(f"- {warning}")
 
-        ok_journals = [r for r in parsed_journals if not r.error and r.rows]
-        if st.button(
-            "仕訳帳CSVを取り込む",
-            type="primary",
-            disabled=not ok_journals,
-            key="prime_journal_import_btn",
-        ):
-            inserted = 0
-            skipped = 0
-            for result in ok_journals:
-                summary = db.insert_prime_journal_entries(
-                    result.rows,
-                    result.filename,
-                    result.file_hash,
-                    result.date_range,
-                )
-                inserted += summary["inserted"]
-                skipped += summary["skipped"]
-            st.success(f"仕訳帳を取り込みました（追加 {inserted:,}行 / 重複 {skipped:,}行）。")
-            st.rerun()
+            ok_results = [r for r in parsed if not r.error and r.year_month and r.entries]
+            overwrite_confirmed = st.checkbox(
+                "PRIMEの該当月だけを上書きして取り込むことを確認しました",
+                key="prime_pl_overwrite_confirm",
+            )
+            if st.button(
+                "試算表CSVを取り込む",
+                type="primary",
+                disabled=not ok_results or not overwrite_confirmed,
+                key="prime_pl_import_btn",
+            ):
+                total = 0
+                for result in ok_results:
+                    summary = db.replace_prime_pl_entries(
+                        result.year_month,
+                        result.entries,
+                        result.filename,
+                        result.file_hash,
+                    )
+                    total += summary["entries"]
+                st.success(f"PRIME損益データを取り込みました（{len(ok_results)}ファイル / {total:,}行）。")
+                st.rerun()
 
-    c1, c2 = st.columns(2)
-    with c1:
-        imports = db.list_prime_pl_imports(limit=10)
-        st.markdown("#### 試算表 取込履歴")
-        if imports:
-            st.dataframe(pd.DataFrame(imports), hide_index=True, width="stretch")
-        else:
-            st.info("まだ取込履歴がありません。")
-    with c2:
-        journal_imports = db.list_prime_journal_imports(limit=10)
-        st.markdown("#### 仕訳帳 取込履歴")
-        if journal_imports:
-            st.dataframe(pd.DataFrame(journal_imports), hide_index=True, width="stretch")
-        else:
-            st.info("まだ取込履歴がありません。")
+        st.markdown("---")
+        st.markdown("### 仕訳帳CSV")
+        st.caption("仕訳帳は重複防止のため、同じファイル内容・同じ行番号は二重登録しません。")
+        journal_files = st.file_uploader(
+            "仕訳帳 CSV",
+            type=["csv"],
+            accept_multiple_files=True,
+            key="prime_journal_csv_uploader",
+        )
+        if journal_files:
+            parsed_journals = [prime_parser.parse_prime_journal_csv(f, f.name) for f in journal_files]
+            journal_preview = []
+            for result in parsed_journals:
+                journal_preview.append({
+                    "ファイル": result.filename,
+                    "期間": result.date_range,
+                    "行数": len(result.rows),
+                    "状態": result.error or "取込可能",
+                })
+            st.dataframe(pd.DataFrame(journal_preview), hide_index=True, width="stretch")
+
+            ok_journals = [r for r in parsed_journals if not r.error and r.rows]
+            if st.button(
+                "仕訳帳CSVを取り込む",
+                type="primary",
+                disabled=not ok_journals,
+                key="prime_journal_import_btn",
+            ):
+                inserted = 0
+                skipped = 0
+                for result in ok_journals:
+                    summary = db.insert_prime_journal_entries(
+                        result.rows,
+                        result.filename,
+                        result.file_hash,
+                        result.date_range,
+                    )
+                    inserted += summary["inserted"]
+                    skipped += summary["skipped"]
+                st.success(f"仕訳帳を取り込みました（追加 {inserted:,}行 / 重複 {skipped:,}行）。")
+                st.rerun()
+
+        c1, c2 = st.columns(2)
+        with c1:
+            imports = db.list_prime_pl_imports(limit=10)
+            st.markdown("#### 試算表 取込履歴")
+            if imports:
+                st.dataframe(pd.DataFrame(imports), hide_index=True, width="stretch")
+            else:
+                st.info("まだ取込履歴がありません。")
+        with c2:
+            journal_imports = db.list_prime_journal_imports(limit=10)
+            st.markdown("#### 仕訳帳 取込履歴")
+            if journal_imports:
+                st.dataframe(pd.DataFrame(journal_imports), hide_index=True, width="stretch")
+            else:
+                st.info("まだ取込履歴がありません。")
 
 
 with tab_summary:
     if not existing_yms or target is None:
-        st.info("まず「CSV取込」からPRIMEの試算表CSVを取り込んでください。")
+        st.info(_no_prime_data_message())
     else:
         target_yms, period_label = _select_period(existing_yms, "prime_summary")
         entries = _entries_for_target(target_yms, target)
@@ -683,7 +702,7 @@ with tab_summary:
 
 with tab_ratio:
     if not existing_yms or target is None:
-        st.info("まずPRIMEの試算表CSVを取り込んでください。")
+        st.info(_no_prime_data_message())
     else:
         ratio_yms, ratio_label = _select_period(
             existing_yms,
@@ -733,7 +752,7 @@ with tab_ratio:
 
 with tab_compare:
     if not existing_yms or target is None:
-        st.info("まずPRIMEの試算表CSVを取り込んでください。")
+        st.info(_no_prime_data_message())
     else:
         current_ym = st.selectbox("対象月", existing_yms, index=0, key="prime_compare_ym")
         prev_ym = _ym_add(current_ym, -1)
@@ -791,7 +810,7 @@ with tab_compare:
 
 with tab_meeting:
     if not existing_yms:
-        st.info("まずPRIMEの試算表CSVを取り込んでください。")
+        st.info(_no_prime_data_message())
     else:
         meeting_ym = st.selectbox("対象月", existing_yms, index=0, key="prime_meeting_ym")
         rows = []
@@ -826,7 +845,7 @@ with tab_meeting:
 
 with tab_report:
     if not existing_yms or target is None:
-        st.info("まずPRIMEの試算表CSVを取り込んでください。")
+        st.info(_no_prime_data_message())
     else:
         report_ym = st.selectbox("対象月", existing_yms, index=0, key="prime_report_ym")
         report_entries = _entries_for_target([report_ym], target)
@@ -863,7 +882,7 @@ with tab_report:
 
 with tab_sga_trend:
     if not existing_yms or target is None:
-        st.info("まずPRIMEの試算表CSVを取り込んでください。")
+        st.info(_no_prime_data_message())
     else:
         fiscal_years = _fiscal_years(existing_yms, fy_start_month)
         trend_fy = st.selectbox(

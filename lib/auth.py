@@ -18,11 +18,18 @@ import streamlit as st
 from lib import db
 
 ADMIN_EMAIL = "kamada.rusk@emifull-group.or.jp"
-PRIME_VIEWER_EMAILS = {
-    ADMIN_EMAIL,
+PRIME_READ_ONLY_EMAILS = {
     "kanbe.tkhr@emifull-group.or.jp",
     "kuroda.yusk@emifull-group.or.jp",
     "morita.yshr@emifull-group.or.jp",
+    "shimada.tsk@emifull-group.or.jp",
+}
+PRIME_VIEWER_EMAILS = {
+    ADMIN_EMAIL,
+    *PRIME_READ_ONLY_EMAILS,
+}
+PRIME_ONLY_EMAILS = {
+    "shimada.tsk@emifull-group.or.jp",
 }
 
 # ---------- パスワードハッシュ ----------
@@ -103,12 +110,51 @@ def auto_login_for_codex():
 
 def is_admin():
     init_session()
-    return (st.session_state.user_email or '').lower() == ADMIN_EMAIL
+    return _session_email() == ADMIN_EMAIL
+
+
+def _session_email():
+    init_session()
+    return (st.session_state.user_email or '').strip().lower()
 
 
 def can_view_prime():
-    init_session()
-    return (st.session_state.user_email or '').lower() in PRIME_VIEWER_EMAILS
+    return _session_email() in PRIME_VIEWER_EMAILS
+
+
+def can_manage_prime():
+    return is_admin()
+
+
+def is_prime_only_user():
+    return _session_email() in PRIME_ONLY_EMAILS
+
+
+def _calling_script_name():
+    frame = sys._getframe()
+    auth_filename = os.path.basename(__file__)
+    while frame:
+        filename = os.path.basename(str(frame.f_code.co_filename))
+        if filename.endswith(".py") and filename != auth_filename:
+            return filename
+        frame = frame.f_back
+    return ""
+
+
+def _is_prime_or_login_context():
+    script_name = _calling_script_name()
+    return script_name in {"8_PRIME.py", "ログイン.py", "streamlit_app.py", _entrypoint_page()}
+
+
+def _enforce_prime_only_scope():
+    if not is_logged_in() or not is_prime_only_user() or _is_prime_or_login_context():
+        return
+    st.warning("このアカウントはPRIME専用です。PRIMEページへ移動します。")
+    try:
+        st.switch_page("pages/8_PRIME.py")
+    except Exception:
+        st.stop()
+    st.stop()
 
 
 def current_user():
@@ -262,6 +308,7 @@ def require_login():
     if not is_logged_in():
         go_to_login()
         st.stop()
+    _enforce_prime_only_scope()
 
 
 def require_admin():
@@ -425,14 +472,20 @@ def _render_role_navigation():
             ("pages/8_PRIME.py", "PRIME"),
         ]
     else:
-        links = [
-            (login_page, "ログイン"),
-            ("pages/2_損益ダッシュボード.py", "損益ダッシュボード"),
-            ("pages/4_給与台帳.py", "給与台帳"),
-            ("pages/6_車両管理.py", "車両管理"),
-        ]
-        if can_view_prime():
-            links.append(("pages/8_PRIME.py", "PRIME"))
+        if is_prime_only_user():
+            links = [
+                (login_page, "ログイン"),
+                ("pages/8_PRIME.py", "PRIME"),
+            ]
+        else:
+            links = [
+                (login_page, "ログイン"),
+                ("pages/2_損益ダッシュボード.py", "損益ダッシュボード"),
+                ("pages/4_給与台帳.py", "給与台帳"),
+                ("pages/6_車両管理.py", "車両管理"),
+            ]
+            if can_view_prime():
+                links.append(("pages/8_PRIME.py", "PRIME"))
 
     with st.sidebar:
         for page, label in links:
@@ -444,6 +497,7 @@ def render_sidebar_navigation():
     st.session_state._sidebar_user_box_rendered = False
     touch_login_history()
     _inject_sidebar_permissions_css()
+    _enforce_prime_only_scope()
     _render_role_navigation()
     render_sidebar_user_box()
 
