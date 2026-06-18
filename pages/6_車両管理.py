@@ -620,6 +620,12 @@ def _all_facility_options(vehicles: list[dict]) -> list[str]:
     return sorted(s)
 
 
+def _vehicle_data_changed(message: str | None = None) -> None:
+    auth.clear_sidebar_vehicle_alert_cache()
+    if message:
+        st.session_state['veh_flash_message'] = message
+
+
 # ============================================================
 # ページタイトル
 # ============================================================
@@ -631,6 +637,9 @@ st.markdown(
     "</p>",
     unsafe_allow_html=True,
 )
+flash_message = st.session_state.pop('veh_flash_message', None)
+if flash_message:
+    st.success(flash_message)
 
 # ============================================================
 # データ取得
@@ -889,7 +898,7 @@ with tab_list:
                             photo_path=None,
                             memo=memo or None,
                         )
-                        st.success('保存しました')
+                        _vehicle_data_changed('保存しました')
                         st.rerun()
 
             # 電子車検証アップロード・QR読取
@@ -1003,7 +1012,7 @@ with tab_list:
                             'note': note or None,
                         })
                         st.session_state.pop(cand_key, None)
-                        st.success('車検更新を登録しました')
+                        _vehicle_data_changed('車検更新を登録しました')
                         st.rerun()
 
             # 車検証履歴
@@ -1037,7 +1046,7 @@ with tab_list:
                 if st.form_submit_button('廃車として登録', type='secondary'):
                     db.scrap_vehicle(edit_id, scrap_d.isoformat(), scrap_r or None)
                     st.session_state.pop('veh_edit_id', None)
-                    st.success('廃車として登録しました')
+                    _vehicle_data_changed('廃車として登録しました')
                     st.rerun()
 
         edit_id = st.session_state.get('veh_edit_id')
@@ -1227,7 +1236,7 @@ with tab_scrap:
                 sel = st.selectbox('対象車両', list(rev_options.keys()), key='unscrap_sel')
                 if st.button('廃車を取消す', key='unscrap_btn'):
                     db.unscrap_vehicle(rev_options[sel])
-                    st.success('廃車を取消しました')
+                    _vehicle_data_changed('廃車を取消しました')
                     st.rerun()
 
 
@@ -1339,7 +1348,8 @@ if _is_admin:
                         'document_kind': document_kind,
                         'note': '新規登録',
                     })
-                st.success(f'登録しました (ID={vid})')
+                _vehicle_data_changed(f'登録しました (ID={vid})')
+                st.rerun()
 
 
 # ============================================================

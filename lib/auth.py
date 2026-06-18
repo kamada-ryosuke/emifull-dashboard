@@ -338,6 +338,14 @@ def _cached_sidebar_vehicles():
     return db.list_vehicles(include_scrapped=False)
 
 
+def clear_sidebar_vehicle_alert_cache():
+    """Refresh the sidebar vehicle alert after vehicle records are changed."""
+    try:
+        _cached_sidebar_vehicles.clear()
+    except Exception:
+        pass
+
+
 def _render_sidebar_vehicle_alert():
     """サイドバー: 車検満了 1か月以内の車両を簡素表示。
 
