@@ -793,6 +793,77 @@ def _color_profit_or_cost_change(row):
     return styles
 
 
+def _to_k(value) -> int:
+    try:
+        return int(int(value) / 1000)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _meeting_row(item: dict, current_ym: str, prev_ym: str, prev_year_ym: str,
+                 section_label: str = "全体") -> dict:
+    curr = _metrics(_entries_for_departments([current_ym], tuple(item["departments"])))
+    prev = _metrics(_entries_for_departments([prev_ym], tuple(item["departments"])))
+    prev_year = _metrics(_entries_for_departments([prev_year_ym], tuple(item["departments"])))
+    row = {
+        "一覧": section_label,
+        "種別": item.get("type_label") or "院",
+        "対象": item.get("display") or item.get("label"),
+    }
+    for key, label in [
+        ("売上高", "売上"),
+        ("人件費", "人件費"),
+        ("経費", "経費"),
+        ("営業利益", "営業利益"),
+    ]:
+        row[f"{label} 実績"] = _to_k(curr[key])
+        row[f"{label} 前月比"] = _to_k(curr[key] - prev[key])
+        row[f"{label} 前年比"] = _to_k(curr[key] - prev_year[key])
+    row["営業利益率"] = _pct(curr["営業利益"], curr["売上高"])
+    row["人件費率"] = _pct(curr["人件費"], curr["売上高"])
+    row["_has_value"] = any(curr.values()) or any(prev.values()) or any(prev_year.values())
+    return row
+
+
+def _meeting_rows(defs: list[dict], current_ym: str, section_label: str) -> list[dict]:
+    prev_ym = _ym_add(current_ym, -1)
+    prev_year_ym = _ym_add(current_ym, -12)
+    rows = [
+        _meeting_row(item, current_ym, prev_ym, prev_year_ym, section_label)
+        for item in defs
+    ]
+    return [row for row in rows if row.pop("_has_value", False)]
+
+
+def _style_meeting(row):
+    styles = [""] * len(row)
+    for idx, col in enumerate(row.index):
+        if not (col.endswith("前月比") or col.endswith("前年比")):
+            continue
+        try:
+            value = int(row[col])
+        except (TypeError, ValueError):
+            continue
+        is_good_when_up = col.startswith("売上") or col.startswith("営業利益")
+        if value < 0:
+            styles[idx] = "color:#dc2626; font-weight:700" if is_good_when_up else "color:#15803d; font-weight:700"
+        elif value > 0:
+            styles[idx] = "color:#15803d; font-weight:700" if is_good_when_up else "color:#dc2626; font-weight:700"
+    return styles
+
+
+def _format_meeting_df(rows: list[dict]) -> pd.DataFrame:
+    columns = [
+        "種別", "対象",
+        "売上 実績", "売上 前月比", "売上 前年比",
+        "人件費 実績", "人件費 前月比", "人件費 前年比",
+        "経費 実績", "経費 前月比", "経費 前年比",
+        "営業利益 実績", "営業利益 前月比", "営業利益 前年比",
+        "営業利益率", "人件費率",
+    ]
+    return pd.DataFrame(rows).drop(columns=["一覧"], errors="ignore").reindex(columns=columns)
+
+
 def _comparison_defs(available: list[str]) -> list[dict]:
     defs = [{**g, "type_label": "グループ"} for g in PRIME_GROUPS]
     defs.extend({**a, "type_label": "エリア"} for a in PRIME_AREAS)
@@ -1333,34 +1404,60 @@ with tab_meeting:
         st.info(_no_prime_data_message())
     else:
         meeting_ym = st.selectbox("対象月", existing_yms, index=0, key="prime_meeting_ym")
-        rows = []
-        for item in _comparison_defs(_available_departments([meeting_ym])):
-            metrics = _metrics(_entries_for_departments([meeting_ym], tuple(item["departments"])))
-            if any(metrics.values()):
-                rows.append({
-                    "種別": item["type_label"],
-                    "対象": item.get("display") or item["label"],
-                    "売上高(千円)": int(metrics["売上高"] / 1000),
-                    "人件費(千円)": int(metrics["人件費"] / 1000),
-                    "経費(千円)": int(metrics["経費"] / 1000),
-                    "営業利益(千円)": int(metrics["営業利益"] / 1000),
-                    "経常利益(千円)": int(metrics["経常利益"] / 1000),
-                    "営業利益率": _pct(metrics["営業利益"], metrics["売上高"]),
-                    "人件費率": _pct(metrics["人件費"], metrics["売上高"]),
-                })
+        meeting_prev_ym = _ym_add(meeting_ym, -1)
+        meeting_prev_year_ym = _ym_add(meeting_ym, -12)
+        available_for_meeting = _available_departments([
+            meeting_ym, meeting_prev_ym, meeting_prev_year_ym,
+        ])
+        rows = _meeting_rows(
+            _comparison_defs(available_for_meeting),
+            meeting_ym,
+            "グループ・エリア",
+        )
+        kirari_rows = _meeting_rows(
+            _scope_defs_for_subunits([meeting_ym, meeting_prev_ym, meeting_prev_year_ym]),
+            meeting_ym,
+            "きらり院別",
+        )
         st.markdown(f"### 業績会議（{meeting_ym} ／ 千円）")
+        st.caption(
+            f"前月: {meeting_prev_ym} ／ 前年同月: {meeting_prev_year_ym}。"
+            " 売上・人件費・経費・営業利益は実績／前月比／前年比、人件費率・営業利益率は当月値です。"
+        )
         if rows:
-            df_meeting = pd.DataFrame(rows)
-            st.dataframe(df_meeting, hide_index=True, width="stretch", height=min(38 * (len(df_meeting) + 1), 600))
+            df_meeting = _format_meeting_df(rows)
+            amount_cols = [c for c in df_meeting.columns if c.endswith("実績") or c.endswith("前月比") or c.endswith("前年比")]
+            st.dataframe(
+                df_meeting.style.apply(_style_meeting, axis=1).format({c: "{:,.0f}" for c in amount_cols}),
+                hide_index=True,
+                width="stretch",
+                height=min(38 * (len(df_meeting) + 1), 620),
+            )
+        else:
+            st.info("対象月にデータがありません。")
+
+        st.markdown("### きらり 院別")
+        if kirari_rows:
+            df_kirari = _format_meeting_df(kirari_rows)
+            amount_cols = [c for c in df_kirari.columns if c.endswith("実績") or c.endswith("前月比") or c.endswith("前年比")]
+            st.dataframe(
+                df_kirari.style.apply(_style_meeting, axis=1).format({c: "{:,.0f}" for c in amount_cols}),
+                hide_index=True,
+                width="stretch",
+                height=min(38 * (len(df_kirari) + 1), 620),
+            )
+        else:
+            st.info("きらり院別のデータがありません。")
+
+        csv_rows = rows + kirari_rows
+        if csv_rows:
             st.download_button(
                 "📥 業績会議CSV",
-                data=_csv_bytes(rows),
+                data=_csv_bytes(csv_rows),
                 file_name=f"PRIME_業績会議_{meeting_ym}.csv",
                 mime="text/csv",
                 key="prime_meeting_csv",
             )
-        else:
-            st.info("対象月にデータがありません。")
 
 
 with tab_report:
