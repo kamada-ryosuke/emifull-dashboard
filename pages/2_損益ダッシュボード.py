@@ -659,32 +659,7 @@ def _fmt_yen(v):
     return f"{int(v or 0):,} 円"
 
 
-def _fmt_unit_price(revenue, usage_count):
-    if not usage_count:
-        return "-"
-    return f"{int(round(revenue / usage_count)):,} 円/回"
-
-
-def _monthly_usage_count_for_scope(year_months, group_id=None, subunit_id=None):
-    """レセ報告の延べ利用回数を、表示対象と同じ範囲で合算する。"""
-    if not year_months:
-        return 0
-    target_subunit_ids = _scope_subunit_ids(group_id=group_id, subunit_id=subunit_id)
-    target_subunit_ids = set(target_subunit_ids) if target_subunit_ids else None
-    total = 0
-    try:
-        for ym in year_months:
-            for report in db.list_receipt_performance_reports(service_ym=ym):
-                subunit_id = report.get('pl_subunit_id')
-                if target_subunit_ids is not None and subunit_id not in target_subunit_ids:
-                    continue
-                total += int(report.get('monthly_usage_count') or 0)
-    except Exception:
-        return 0
-    return total
-
-
-def _build_ratio_metric_rows(entries, year_months, group_id=None, subunit_id=None):
+def _build_ratio_metric_rows(entries, year_months=None, group_id=None, subunit_id=None):
     rev_total = sum_by_cat(entries, 'revenue_total')
     sga_total = sum_by_cat(entries, 'sga_total')
     personnel = sum(
@@ -694,9 +669,6 @@ def _build_ratio_metric_rows(entries, year_months, group_id=None, subunit_id=Non
     other_expense = sga_total - personnel
     op_total = sum_by_cat(entries, 'op_profit')
     ord_total = sum_by_cat(entries, 'ordinary_profit')
-    usage_count = _monthly_usage_count_for_scope(
-        year_months, group_id=group_id, subunit_id=subunit_id,
-    )
     transport_cost = sum(
         e['amount'] for e in entries
         if e['category'] == 'sga' and e['account_name'] in TRANSPORT_COST_ACCOUNTS
@@ -718,7 +690,7 @@ def _build_ratio_metric_rows(entries, year_months, group_id=None, subunit_id=Non
             '_kind': 'cost',
         },
         {
-            '項目': '販管費（人件費＋その他経費）',
+            '項目': '販管費',
             '値': _fmt_yen(sga_total),
             '補足': f"販管費率 {fmt_pct(sga_total, rev_total)}",
             '_amount': sga_total,
@@ -737,13 +709,6 @@ def _build_ratio_metric_rows(entries, year_months, group_id=None, subunit_id=Non
             '補足': f"経常利益率 {fmt_pct(ord_total, rev_total)}",
             '_amount': ord_total,
             '_kind': 'profit',
-        },
-        {
-            '項目': '売上単価',
-            '値': _fmt_unit_price(rev_total, usage_count),
-            '補足': f"延べ利用回数 {usage_count:,} 回" if usage_count else "延べ利用回数 未入力",
-            '_amount': None,
-            '_kind': 'neutral',
         },
         {
             '項目': '送迎コスト',
@@ -1510,7 +1475,6 @@ with tab_ratio:
             st.caption(
                 "※ 人件費 = 管理者給 + 指導員給 + 法定福利費 + 退職給付費用 + 賞与 + 事務員給。"
                 " その他経費 = 販管費合計 − 人件費。"
-                " 売上単価 = 売上高 ÷ レセ報告の延べ利用回数。"
                 " 送迎コスト = 燃料費 + 車両費 + 保険料等。"
             )
 
