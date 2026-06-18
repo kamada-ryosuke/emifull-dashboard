@@ -457,7 +457,11 @@ if show_import_tools:
                     "本部・管理部門・カフェ等は サブ部門マスタに無いため照合できませんが、行は保存されます。"
                 )
 
-        if st.button("🚀 この内容で取込を実行", type='primary', key='journal_import_run'):
+        can_import_journal = bool(j_result['rows'])
+        if not can_import_journal:
+            st.warning("取込対象の明細行がありません。CSV形式や必須列を確認してください。")
+
+        if st.button("🚀 この内容で取込を実行", type='primary', key='journal_import_run', disabled=not can_import_journal):
             res = db.insert_journal_entries(
                 j_result['rows'],
                 filename=journal_uploaded.name,
@@ -465,7 +469,7 @@ if show_import_tools:
             )
             st.success(
                 f"✅ 取込完了: 新規 {res['inserted']} / スキップ {res['skipped']} / "
-                f"対象期間 {res['date_range']}"
+                f"対象期間 {res.get('date_range', '対象行なし')}"
             )
             st.rerun()
 
@@ -644,6 +648,134 @@ PERSONNEL_ACCOUNTS = {
     # B型利用者工賃 は経費扱い(人件費に含めない)。
     'A型利用者給', '賞与引当金繰入',
 }
+
+TRANSPORT_COST_ACCOUNTS = {
+    '燃料費', '車両費', '車両保険', '自動車保険料', '任意保険料',
+    '保険料', '動産保険料',
+}
+
+
+def _fmt_yen(v):
+    return f"{int(v or 0):,} 円"
+
+
+def _fmt_unit_price(revenue, usage_count):
+    if not usage_count:
+        return "-"
+    return f"{int(round(revenue / usage_count)):,} 円/回"
+
+
+def _monthly_usage_count_for_scope(year_months, group_id=None, subunit_id=None):
+    """レセ報告の延べ利用回数を、表示対象と同じ範囲で合算する。"""
+    if not year_months:
+        return 0
+    target_subunit_ids = _scope_subunit_ids(group_id=group_id, subunit_id=subunit_id)
+    target_subunit_ids = set(target_subunit_ids) if target_subunit_ids else None
+    total = 0
+    try:
+        for ym in year_months:
+            for report in db.list_receipt_performance_reports(service_ym=ym):
+                subunit_id = report.get('pl_subunit_id')
+                if target_subunit_ids is not None and subunit_id not in target_subunit_ids:
+                    continue
+                total += int(report.get('monthly_usage_count') or 0)
+    except Exception:
+        return 0
+    return total
+
+
+def _build_ratio_metric_rows(entries, year_months, group_id=None, subunit_id=None):
+    rev_total = sum_by_cat(entries, 'revenue_total')
+    sga_total = sum_by_cat(entries, 'sga_total')
+    personnel = sum(
+        e['amount'] for e in entries
+        if e['category'] == 'sga' and e['account_name'] in PERSONNEL_ACCOUNTS
+    )
+    other_expense = sga_total - personnel
+    op_total = sum_by_cat(entries, 'op_profit')
+    ord_total = sum_by_cat(entries, 'ordinary_profit')
+    usage_count = _monthly_usage_count_for_scope(
+        year_months, group_id=group_id, subunit_id=subunit_id,
+    )
+    transport_cost = sum(
+        e['amount'] for e in entries
+        if e['category'] == 'sga' and e['account_name'] in TRANSPORT_COST_ACCOUNTS
+    )
+
+    rows = [
+        {
+            '項目': '人件費',
+            '値': _fmt_yen(personnel),
+            '補足': f"人件費率 {fmt_pct(personnel, rev_total)}",
+            '_amount': personnel,
+            '_kind': 'cost',
+        },
+        {
+            '項目': 'その他経費',
+            '値': _fmt_yen(other_expense),
+            '補足': f"経費比率 {fmt_pct(other_expense, rev_total)}",
+            '_amount': other_expense,
+            '_kind': 'cost',
+        },
+        {
+            '項目': '販管費（人件費＋その他経費）',
+            '値': _fmt_yen(sga_total),
+            '補足': f"販管費率 {fmt_pct(sga_total, rev_total)}",
+            '_amount': sga_total,
+            '_kind': 'cost',
+        },
+        {
+            '項目': '営業利益',
+            '値': _fmt_yen(op_total),
+            '補足': f"営業利益率 {fmt_pct(op_total, rev_total)}",
+            '_amount': op_total,
+            '_kind': 'profit',
+        },
+        {
+            '項目': '経常利益',
+            '値': _fmt_yen(ord_total),
+            '補足': f"経常利益率 {fmt_pct(ord_total, rev_total)}",
+            '_amount': ord_total,
+            '_kind': 'profit',
+        },
+        {
+            '項目': '売上単価',
+            '値': _fmt_unit_price(rev_total, usage_count),
+            '補足': f"延べ利用回数 {usage_count:,} 回" if usage_count else "延べ利用回数 未入力",
+            '_amount': None,
+            '_kind': 'neutral',
+        },
+        {
+            '項目': '送迎コスト',
+            '値': _fmt_yen(transport_cost),
+            '補足': f"対売上比 {fmt_pct(transport_cost, rev_total)}",
+            '_amount': transport_cost,
+            '_kind': 'cost',
+        },
+    ]
+    return rows
+
+
+def _ratio_metric_pdf_data(rows):
+    return [
+        (r['項目'], r['値'], r['補足'], r.get('_amount'), r.get('_kind', 'neutral'))
+        for r in rows
+    ]
+
+
+def _style_ratio_metrics(row):
+    styles = [''] * len(row)
+    if row['項目'] not in ('営業利益', '経常利益'):
+        return styles
+    value_idx = list(row.index).index('値')
+    note_idx = list(row.index).index('補足')
+    if str(row['値']).startswith('-'):
+        styles[value_idx] = 'color:#dc2626; font-weight:700'
+        styles[note_idx] = 'color:#dc2626; font-weight:700'
+    elif str(row['値']) not in ('0 円', '-'):
+        styles[value_idx] = 'color:#15803d; font-weight:700'
+        styles[note_idx] = 'color:#15803d; font-weight:700'
+    return styles
 
 # 業績会議用 行構成: (region_label, [(row_label, [excel_name, ...])])
 REPORT_STRUCTURE = [
@@ -1361,60 +1493,25 @@ with tab_ratio:
             else:
                 st.info("売上データがありません。")
 
-            # ===== 主要指標（人件費・経費・営業利益・経常利益） =====
+            # ===== 主要指標 =====
             st.markdown("##### 主要指標")
-            PERSONNEL_ACCOUNTS = {
-                '管理者給', '指導員給', '法定福利費', '退職給付費用', '賞与', '事務員給',
-            }
-            personnel = sum(
-                e['amount'] for e in entries
-                if e['category'] == 'sga' and e['account_name'] in PERSONNEL_ACCOUNTS
+            metrics_rows = _build_ratio_metric_rows(
+                entries, ratio_yms, group_id=sel_group_id, subunit_id=sel_subunit_id,
             )
-            other_expense = sga_total - personnel
-            op_total = sum_by_cat(entries, 'op_profit')
-            ord_total = sum_by_cat(entries, 'ordinary_profit')
-
-            metrics_rows = [
-                {'項目': '人件費', '金額': personnel,
-                 '対売上比': fmt_pct(personnel, rev_total)},
-                {'項目': '経費',   '金額': other_expense,
-                 '対売上比': fmt_pct(other_expense, rev_total)},
-                {'項目': '営業利益', '金額': op_total,
-                 '対売上比': fmt_pct(op_total, rev_total)},
-                {'項目': '経常利益', '金額': ord_total,
-                 '対売上比': fmt_pct(ord_total, rev_total)},
-            ]
-            df_m = pd.DataFrame(metrics_rows)
-
-            def style_metrics(row):
-                styles = [''] * len(row)
-                idx = list(row.index)
-                amt_idx = idx.index('金額')
-                pct_idx = idx.index('対売上比')
-                # 人件費・経費はコスト寄り：金額の色付けはせず通常表示
-                # 営業利益・経常利益は損益なので 赤/緑 で色分け
-                if row['項目'] in ('営業利益', '経常利益'):
-                    amt = row['金額']
-                    pct = row['対売上比']
-                    if isinstance(amt, (int, float)):
-                        if amt < 0:
-                            styles[amt_idx] = 'color:#dc2626; font-weight:700'
-                        elif amt > 0:
-                            styles[amt_idx] = 'color:#15803d; font-weight:700'
-                    if isinstance(pct, str) and pct != '-':
-                        if pct.startswith('-'):
-                            styles[pct_idx] = 'color:#dc2626; font-weight:700'
-                        else:
-                            styles[pct_idx] = 'color:#15803d; font-weight:700'
-                return styles
+            df_m = pd.DataFrame([
+                {k: v for k, v in row.items() if not k.startswith('_')}
+                for row in metrics_rows
+            ])
 
             st.dataframe(
-                df_m.style.apply(style_metrics, axis=1).format({'金額': '{:,}'}),
+                df_m.style.apply(_style_ratio_metrics, axis=1),
                 hide_index=True, width='stretch',
             )
             st.caption(
                 "※ 人件費 = 管理者給 + 指導員給 + 法定福利費 + 退職給付費用 + 賞与 + 事務員給。"
-                " 経費 = 販管費合計 − 人件費。"
+                " その他経費 = 販管費合計 − 人件費。"
+                " 売上単価 = 売上高 ÷ レセ報告の延べ利用回数。"
+                " 送迎コスト = 燃料費 + 車両費 + 保険料等。"
             )
 
         with col_s:
@@ -1492,17 +1589,9 @@ with tab_ratio:
                 rev_data.append(('【売上高 計】', rev_total_v, '100.0%'))
 
             # 主要指標
-            personnel_v = sum(e['amount'] for e in ent
-                                if e['category'] == 'sga' and e['account_name'] in PERSONNEL_ACCOUNTS)
-            other_exp_v = sga_total_v - personnel_v
-            op_v = sum(e['amount'] for e in ent if e['category'] == 'op_profit')
-            ord_v = sum(e['amount'] for e in ent if e['category'] == 'ordinary_profit')
-            metrics_data = [
-                ('人件費', personnel_v, fmt_pct(personnel_v, rev_total_v)),
-                ('経費', other_exp_v, fmt_pct(other_exp_v, rev_total_v)),
-                ('営業利益', op_v, fmt_pct(op_v, rev_total_v)),
-                ('経常利益', ord_v, fmt_pct(ord_v, rev_total_v)),
-            ]
+            metrics_data = _ratio_metric_pdf_data(_build_ratio_metric_rows(
+                ent, scope_yms, group_id=group_id, subunit_id=subunit_id,
+            ))
 
             # 販管費構成
             sga_agg2 = defaultdict(int)
@@ -3359,25 +3448,26 @@ with tab_meeting:
             )
 
         st.markdown("##### 報告書プレビュー")
-        with st.container(border=True):
-            _render_summary_cards("① 前月の振り返り", report_preview_rows, '前月の振り返り要約')
-        with st.container(border=True):
-            _render_summary_cards("② 現在の課題", report_preview_rows, '現在の課題要約')
-        with st.container(border=True):
-            _render_summary_cards("③ 次月以降の対策", report_preview_rows, '対策要約')
-        with st.container(border=True):
-            _render_summary_cards("④ その他", report_preview_rows, 'その他要約')
-        preview_df = pd.DataFrame(report_preview_rows)[[
-            '対象月', '施設名', '提出状況', 'AI要約',
-            '前月の振り返り要約', '現在の課題要約', '対策要約', 'その他要約',
-            '報告者', '提出日時'
-        ]]
-        st.dataframe(
-            preview_df,
-            hide_index=True,
-            width='stretch',
-            height=min(38 * (len(report_preview_rows) + 1), 520),
-        )
+        st.info("表示したい項目のボタンを押すと、報告書プレビューを確認できます。")
+
+        preview_buttons = [
+            ("① 前月の振り返り", "前月の振り返り要約", f"pl_report_preview_prev_{dl_suffix}"),
+            ("② 現在の課題", "現在の課題要約", f"pl_report_preview_issue_{dl_suffix}"),
+            ("③ 次月以降の対策", "対策要約", f"pl_report_preview_actions_{dl_suffix}"),
+        ]
+
+        preview_cols = st.columns(3)
+        for idx, (label, field_name, state_key) in enumerate(preview_buttons):
+            st.session_state.setdefault(state_key, False)
+
+            button_label = f"{label}を表示" if not st.session_state[state_key] else f"{label}を非表示"
+            if preview_cols[idx].button(button_label, key=f"{state_key}_toggle"):
+                st.session_state[state_key] = not st.session_state[state_key]
+
+        for label, field_name, state_key in preview_buttons:
+            if st.session_state[state_key]:
+                with st.container(border=True):
+                    _render_summary_cards(label, report_preview_rows, field_name)
 
         # ===== 分析ハイライト =====
         section_excel_names = []

@@ -683,38 +683,52 @@ def _build_composition_rev_table(rev_data: list) -> Table:
 
 
 def _build_composition_metrics_table(metrics_data: list) -> Table:
-    """主要指標 (項目 / 金額 / 対売上比)。
-    metrics_data: [(name, amount, pct_str), ...] — 人件費/経費/営業利益/経常利益。
+    """主要指標 (項目 / 値 / 補足)。
+    metrics_data:
+      - [(name, value_str, note_str, raw_amount, kind), ...]
+      - 旧形式 [(name, amount, pct_str), ...] も受け付ける。
     """
-    data = [['項目', '金額', '対売上比']]
+    data = [['項目', '値', '補足']]
     styles = [
         ('FONTNAME', (0, 0), (-1, -1), _JP_FONT),
-        ('FONTSIZE', (0, 0), (-1, -1), 7.5),
+        ('FONTSIZE', (0, 0), (-1, -1), 6.8),
         ('BACKGROUND', (0, 0), (-1, 0), _HEADER_BG),
         ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
         ('ALIGN', (0, 0), (-1, 0), 'CENTER'),
     ]
     profit_labels = ('営業利益', '経常利益')
-    for i, (name, amount, pct) in enumerate(metrics_data, start=1):
-        data.append([name, _fmt_int(amount), pct])
-        if name in profit_labels:
+    for i, raw in enumerate(metrics_data, start=1):
+        if isinstance(raw, dict):
+            name = raw.get('項目') or raw.get('name') or ''
+            value = raw.get('値') or raw.get('value') or ''
+            note = raw.get('補足') or raw.get('note') or ''
+            amount = raw.get('_amount')
+            kind = raw.get('_kind') or ('profit' if name in profit_labels else 'neutral')
+        elif len(raw) >= 5:
+            name, value, note, amount, kind = raw[:5]
+        else:
+            name, amount, note = raw[:3]
+            value = _fmt_int(amount)
+            kind = 'profit' if name in profit_labels else 'neutral'
+
+        name_cell = Paragraph(str(name), _STYLE_BODY)
+        data.append([name_cell, value, note])
+        if kind == 'profit' or name in profit_labels:
             color = _GREEN if (isinstance(amount, (int, float)) and amount > 0) else (
                 _RED if (isinstance(amount, (int, float)) and amount < 0) else _NEUTRAL
             )
             styles.append(('TEXTCOLOR', (1, i), (1, i), color))
-            styles.append(('FONTNAME', (1, i), (1, i), _JP_FONT))
-            if isinstance(pct, str) and pct not in ('-', ''):
-                pcol = _RED if pct.startswith('-') else _GREEN
-                styles.append(('TEXTCOLOR', (2, i), (2, i), pcol))
-        # コスト指標(人件費/経費)は中立
-    t = Table(data, colWidths=[26*mm, 28*mm, 24*mm])
+            if isinstance(note, str) and note not in ('-', ''):
+                styles.append(('TEXTCOLOR', (2, i), (2, i), color))
+    t = Table(data, colWidths=[27*mm, 27*mm, 24*mm])
     t.setStyle(TableStyle(styles + [
-        ('ALIGN', (1, 1), (-1, -1), 'RIGHT'),
+        ('ALIGN', (1, 1), (1, -1), 'RIGHT'),
+        ('ALIGN', (2, 1), (2, -1), 'LEFT'),
         ('ALIGN', (0, 1), (0, -1), 'LEFT'),
         ('GRID', (0, 0), (-1, -1), 0.2, _BORDER),
         ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-        ('TOPPADDING', (0, 0), (-1, -1), 1.2),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 1.2),
+        ('TOPPADDING', (0, 0), (-1, -1), 0.8),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 0.8),
     ]))
     return t
 
@@ -784,7 +798,9 @@ def build_composition_page(
             [metrics_t],
             [Paragraph(
                 "<i>※ 人件費 = 管理者給+指導員給+法定福利費+退職給付費用+賞与+事務員給。"
-                " 経費 = 販管費合計 − 人件費。</i>",
+                " その他経費 = 販管費合計 - 人件費。"
+                " 売上単価 = 売上高 ÷ レセ報告の延べ利用回数。"
+                " 送迎コスト = 燃料費+車両費+保険料等。</i>",
                 _STYLE_FOOTNOTE,
             )],
         ],
