@@ -123,6 +123,8 @@ PRIME_AREAS = [
     },
 ]
 
+REPORTER_ROLES = ["部長", "次長", "課長", "係長", "主任", "副主任", "一般職"]
+
 
 styling.inject_global_css()
 auth.require_prime_access()
@@ -130,7 +132,7 @@ auth.render_sidebar_navigation()
 db.init_prime_schema()
 
 st.title("PRIME")
-st.caption("株式会社PRIMEの試算表（損益計算書）CSVと仕訳帳CSVを、障がい事業部データとは分けて管理します。")
+st.caption("株式会社PRIMEの試算表（損益計算書）CSVを、障がい事業部データとは分けて管理します。")
 
 
 def _safe_filename(value: str) -> str:
@@ -459,6 +461,10 @@ def _target_options(available: list[str]) -> list[dict]:
     return options
 
 
+def _target_display(option: dict) -> str:
+    return option.get("display") or str(option.get("label") or "").replace("　└ ", "").strip()
+
+
 def _clean_departments(departments: tuple[str, ...], available: list[str]) -> list[str]:
     existing = set(available)
     return [d for d in departments if d in existing]
@@ -705,29 +711,6 @@ def _pl_export_df(scope_label: str, year_months: list[str], scope: dict) -> pd.D
     return pd.DataFrame(rows, columns=["対象", "年月", "部門", "科目区分", "科目", "金額", "集計行", "取込元"])
 
 
-def _journal_export_df(scope_label: str, year_months: list[str]) -> pd.DataFrame:
-    rows = db.fetch_prime_journal_entries(year_months, limit=100000)
-    out = []
-    for r in rows:
-        out.append({
-            "対象": scope_label,
-            "取引日": r.get("transaction_date"),
-            "借方科目": r.get("debit_account"),
-            "借方金額": int(r.get("debit_amount") or 0),
-            "借方取引先": r.get("debit_partner"),
-            "借方摘要": r.get("debit_memo"),
-            "借方品目": r.get("debit_item"),
-            "貸方科目": r.get("credit_account"),
-            "貸方金額": int(r.get("credit_amount") or 0),
-            "貸方取引先": r.get("credit_partner"),
-            "貸方摘要": r.get("credit_memo"),
-            "貸方品目": r.get("credit_item"),
-            "取引内容": r.get("transaction_content"),
-            "取込元": r.get("source_filename"),
-        })
-    return pd.DataFrame(out)
-
-
 def _build_pl_csv_zip(scopes: list[dict], year_months: list[str], period_label: str,
                       prefix: str) -> bytes:
     buf = io.BytesIO()
@@ -918,7 +901,6 @@ def _csv_bytes(rows: list[dict]) -> bytes:
 
 
 existing_yms = db.list_prime_pl_year_months()
-journal_yms = db.list_prime_journal_year_months()
 target = None
 target_label = ""
 fy_mode_label = "法人決算(2月開始)"
@@ -951,25 +933,21 @@ if existing_yms:
 
 prime_can_import = auth.can_manage_prime()
 if prime_can_import:
-    tab_import, tab_summary, tab_ratio, tab_compare, tab_meeting, tab_report, tab_sga_trend, tab_journal = st.tabs([
+    tab_import, tab_summary, tab_ratio, tab_compare, tab_meeting, tab_report = st.tabs([
         "📥 CSV取込",
         "📊 サマリ",
         "🔍 構成比",
         "📅 比較",
         "🏛️ 業績会議",
         "📝 報告書提出",
-        "📈 販管費推移",
-        "🧾 仕訳帳",
     ])
 else:
-    tab_summary, tab_ratio, tab_compare, tab_meeting, tab_report, tab_sga_trend, tab_journal = st.tabs([
+    tab_summary, tab_ratio, tab_compare, tab_meeting, tab_report = st.tabs([
         "📊 サマリ",
         "🔍 構成比",
         "📅 比較",
         "🏛️ 業績会議",
         "📝 報告書提出",
-        "📈 販管費推移",
-        "🧾 仕訳帳",
     ])
 
 
@@ -1042,62 +1020,12 @@ if prime_can_import:
                 st.rerun()
 
         st.markdown("---")
-        st.markdown("### 仕訳帳CSV")
-        st.caption("仕訳帳は重複防止のため、同じファイル内容・同じ行番号は二重登録しません。")
-        journal_files = st.file_uploader(
-            "仕訳帳 CSV",
-            type=["csv"],
-            accept_multiple_files=True,
-            key="prime_journal_csv_uploader",
-        )
-        if journal_files:
-            parsed_journals = [prime_parser.parse_prime_journal_csv(f, f.name) for f in journal_files]
-            journal_preview = []
-            for result in parsed_journals:
-                journal_preview.append({
-                    "ファイル": result.filename,
-                    "期間": result.date_range,
-                    "行数": len(result.rows),
-                    "状態": result.error or "取込可能",
-                })
-            st.dataframe(pd.DataFrame(journal_preview), hide_index=True, width="stretch")
-
-            ok_journals = [r for r in parsed_journals if not r.error and r.rows]
-            if st.button(
-                "仕訳帳CSVを取り込む",
-                type="primary",
-                disabled=not ok_journals,
-                key="prime_journal_import_btn",
-            ):
-                inserted = 0
-                skipped = 0
-                for result in ok_journals:
-                    summary = db.insert_prime_journal_entries(
-                        result.rows,
-                        result.filename,
-                        result.file_hash,
-                        result.date_range,
-                    )
-                    inserted += summary["inserted"]
-                    skipped += summary["skipped"]
-                st.success(f"仕訳帳を取り込みました（追加 {inserted:,}行 / 重複 {skipped:,}行）。")
-                st.rerun()
-
-        c1, c2 = st.columns(2)
-        with c1:
-            imports = db.list_prime_pl_imports(limit=10)
-            st.markdown("#### 試算表 取込履歴")
-            if imports:
-                st.dataframe(pd.DataFrame(imports), hide_index=True, width="stretch")
-            else:
-                st.info("まだ取込履歴がありません。")
-        with c2:
-            journal_imports = db.list_prime_journal_imports(limit=10)
-            st.markdown("#### 仕訳帳 取込履歴")
-            if journal_imports:
-                st.dataframe(pd.DataFrame(journal_imports), hide_index=True, width="stretch")
-            else:
-                st.info("まだ取込履歴がありません。")
+        st.markdown("#### 試算表 取込履歴")
+        imports = db.list_prime_pl_imports(limit=10)
+        if imports:
+            st.dataframe(pd.DataFrame(imports), hide_index=True, width="stretch")
+        else:
+            st.info("まだ取込履歴がありません。")
 
 
 with tab_summary:
@@ -1277,7 +1205,7 @@ with tab_ratio:
                 )
 
         st.markdown("### 📊 CSV出力")
-        st.caption("損益CSVは、選択中の期間・対象範囲だけを切り出します。仕訳帳CSVはPRIME仕訳帳の対象期間分を出力します。")
+        st.caption("損益CSVは、選択中の期間・対象範囲だけを切り出します。")
         csv_cols = st.columns(3)
         with csv_cols[0]:
             st.download_button(
@@ -1287,14 +1215,6 @@ with tab_ratio:
                 mime="text/csv",
                 key="prime_ratio_pl_csv_dl",
             )
-            if journal_yms:
-                st.download_button(
-                    "⬇ この期間の仕訳帳CSV",
-                    data=_csv_bytes_from_df(_journal_export_df(target_label, ratio_yms)),
-                    file_name=f"PRIME_構成比_{_safe_filename(ratio_label)}_仕訳帳.csv",
-                    mime="text/csv",
-                    key="prime_ratio_journal_csv_dl",
-                )
         with csv_cols[1]:
             group_scopes = _scope_defs_for_groups(ratio_yms)
             if group_scopes:
@@ -1464,131 +1384,198 @@ with tab_report:
     if not existing_yms or target is None:
         st.info(_no_prime_data_message())
     else:
-        report_ym = st.selectbox("対象月", existing_yms, index=0, key="prime_report_ym")
-        report_entries = _entries_for_target([report_ym], target)
-        report_metrics = _metrics(report_entries)
-        _render_metric_cards(report_metrics)
+        st.markdown("##### 報告書提出 — 収支の振り返り・対策")
+        current = auth.current_user() or {}
+        current_email = current.get("email") or ""
+        current_user_for_report = db.get_user_by_email(current_email) if current_email else None
+        default_reporter_name = (
+            (current_user_for_report or {}).get("name")
+            or current.get("name")
+            or ""
+        )
+        default_reporter_role = (
+            (current_user_for_report or {}).get("position")
+            or current.get("position")
+            or "一般職"
+        )
+        if default_reporter_role not in REPORTER_ROLES:
+            default_reporter_role = "一般職"
+        if st.session_state.get("prime_report_prefill_user") != current_email:
+            st.session_state.prime_report_name = default_reporter_name
+            st.session_state.prime_report_role = default_reporter_role
+            st.session_state.prime_report_prefill_user = current_email
 
-        st.markdown("### 報告メモ")
-        previous_review = st.text_area("前月の振り返り", key="prime_report_previous")
-        issue_review = st.text_area("現在の課題", key="prime_report_issue")
-        next_actions = st.text_area("次月以降の対策", key="prime_report_actions")
-        other_notes = st.text_area("その他", key="prime_report_other")
-        row = {
-            "対象月": report_ym,
-            "対象": target_label,
-            "会計年度基準": fy_mode_label,
-            "売上高": report_metrics["売上高"],
-            "人件費": report_metrics["人件費"],
-            "経費": report_metrics["経費"],
-            "営業利益": report_metrics["営業利益"],
-            "経常利益": report_metrics["経常利益"],
-            "前月の振り返り": previous_review,
-            "現在の課題": issue_review,
-            "次月以降の対策": next_actions,
-            "その他": other_notes,
-        }
-        st.download_button(
-            "📥 報告メモCSV",
-            data=_csv_bytes([row]),
-            file_name=f"PRIME_報告メモ_{report_ym}_{target_label}.csv",
-            mime="text/csv",
-            key="prime_report_csv",
+        st.markdown(
+            """
+            <style>
+            div[data-testid="stForm"] textarea {
+                background: #ffffff !important;
+                border: 1.5px solid #94a3b8 !important;
+                border-radius: 8px !important;
+                box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.18) !important;
+            }
+            div[data-testid="stForm"] textarea:focus {
+                border-color: #60a5fa !important;
+                box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.22) !important;
+            }
+            div[data-testid="stForm"] textarea::placeholder {
+                color: #94a3b8 !important;
+                opacity: 1 !important;
+            }
+            .emifull-sad {
+                margin: 12px 0 18px;
+                padding: 22px 24px;
+                border: 2px solid #fecaca;
+                border-radius: 10px;
+                background: #fef2f2;
+                color: #b91c1c;
+                font-size: 34px;
+                font-weight: 800;
+                text-align: center;
+            }
+            </style>
+            """,
+            unsafe_allow_html=True,
         )
 
+        if st.button("文章欄だけクリア", key="prime_report_clear_texts"):
+            for key in (
+                "prime_report_previous", "prime_report_issue",
+                "prime_report_actions", "prime_report_other",
+            ):
+                st.session_state[key] = ""
+            st.rerun()
 
-with tab_sga_trend:
-    if not existing_yms or target is None:
-        st.info(_no_prime_data_message())
-    else:
-        fiscal_years = _fiscal_years(existing_yms, fy_start_month)
-        trend_fy = st.selectbox(
-            "対象年度",
-            fiscal_years,
-            index=0,
-            format_func=lambda fy: _fiscal_label(fy, fy_start_month),
-            key="prime_sga_fy",
+        report_options = _target_options(_available_departments(existing_yms))
+        report_option_by_label = {o["label"]: o for o in report_options}
+        report_labels = list(report_option_by_label.keys())
+        default_target_index = next(
+            (
+                i for i, option in enumerate(report_options)
+                if option.get("key") == target.get("key") and _target_display(option) == target_label
+            ),
+            0,
         )
-        trend_months = [m for m in _fiscal_months(trend_fy, fy_start_month) if m in existing_yms]
-        all_entries = _entries_for_target(trend_months, target)
-        accounts = sorted({
-            e.get("account_name") or ""
-            for e in all_entries
-            if e.get("account_name")
-            and not _is_total_row(e)
-            and ((e.get("category") == "sga") or _is_personnel_account(e))
-        })
-        metric_options = ["人件費合計", "経費合計"] + accounts
-        selected_metric = st.selectbox("表示科目", metric_options, key="prime_sga_account")
-        rows = []
-        for ym in trend_months:
-            entries = _entries_for_target([ym], target)
-            metrics = _metrics(entries)
-            if selected_metric == "人件費合計":
-                amount = metrics["人件費"]
-            elif selected_metric == "経費合計":
-                amount = metrics["経費"]
+        month_idx = existing_yms.index(st.session_state.get("prime_report_month")) if st.session_state.get("prime_report_month") in existing_yms else 0
+
+        with st.form("prime_report_form"):
+            c1, c2 = st.columns(2)
+            with c1:
+                report_ym = st.selectbox(
+                    "対象月", existing_yms, index=month_idx, key="prime_report_month"
+                )
+            with c2:
+                report_label = st.selectbox(
+                    "対象選択", report_labels, index=default_target_index, key="prime_report_target_label"
+                )
+            report_target = report_option_by_label[report_label]
+            report_target_label = _target_display(report_target)
+            report_entries = _entries_for_target([report_ym], report_target)
+            report_metrics = _metrics(report_entries)
+
+            st.markdown("###### 数値確認")
+            _render_metric_cards(report_metrics)
+
+            c3, c4 = st.columns([1, 2])
+            with c3:
+                reporter_role = st.selectbox(
+                    "役職",
+                    REPORTER_ROLES,
+                    index=REPORTER_ROLES.index(default_reporter_role),
+                    key="prime_report_role",
+                )
+            with c4:
+                reporter_name = st.text_input("氏名", key="prime_report_name")
+
+            previous_review = st.text_area(
+                "① 前月の振り返り",
+                height=140,
+                key="prime_report_previous",
+                placeholder="例：前月に決めた予約確認・欠席フォローを実施し、売上や利益は改善しました。一方で、現場負担や経費の課題が残りました。",
+            )
+            issue_review = st.text_area(
+                "② 現在の課題",
+                height=150,
+                key="prime_report_issue",
+                placeholder="例：売上の伸び悩み、人件費率の上昇、経費の増加、営業利益率の低下など、今月時点で利益や運営に影響している課題を記入してください。",
+            )
+            next_actions = st.text_area(
+                "③ 次月以降の対策",
+                height=150,
+                key="prime_report_actions",
+                placeholder="例：予約枠の見直し、シフト調整、経費の見直し、担当者・期限・確認方法などを会議で共有しやすい形で記入してください。",
+            )
+            other_notes = st.text_area(
+                "④ その他（任意）",
+                height=110,
+                key="prime_report_other",
+                placeholder="例：採用状況、設備修繕、関係機関連携、顧客動向など、会議で共有したいことがあれば記入してください。",
+            )
+            love = st.selectbox(
+                "送信前の確認：EMIFULLは大好きですか？",
+                ["", "はい", "もちろんです", "いいえ"],
+                key="prime_report_love",
+            )
+            submitted = st.form_submit_button("報告書を提出", type="primary")
+
+        if submitted:
+            if not love:
+                st.warning("EMIFULL愛の確認がまだです。ここだけは外せません。")
+            elif love == "いいえ":
+                st.markdown("<div class='emifull-sad'>悲しいです。</div>", unsafe_allow_html=True)
+            elif not reporter_name.strip():
+                st.warning("氏名を入力してください。")
+            elif not previous_review.strip() or not issue_review.strip() or not next_actions.strip():
+                st.warning("前月の振り返り、現在の課題、次月以降の対策を入力してください。")
             else:
-                amount = sum(
-                    int(e.get("amount") or 0)
-                    for e in entries
-                    if e.get("account_name") == selected_metric and not _is_total_row(e)
-                )
-            rows.append({"月": ym, "金額": amount})
-        df_trend = pd.DataFrame(rows)
-        st.markdown(f"### 販管費推移（{_fiscal_label(trend_fy, fy_start_month)} ／ {target_label}）")
-        if not df_trend.empty:
-            st.line_chart(df_trend.set_index("月")[["金額"]], height=340)
-            st.dataframe(df_trend.style.format({"金額": "{:,.0f}"}), hide_index=True, width="stretch")
+                report_row = {
+                    "提出日時": pd.Timestamp.now(tz="Asia/Tokyo").strftime("%Y-%m-%d %H:%M"),
+                    "対象月": report_ym,
+                    "対象": report_target_label,
+                    "会計年度基準": fy_mode_label,
+                    "役職": reporter_role,
+                    "氏名": reporter_name.strip(),
+                    "売上高": report_metrics["売上高"],
+                    "人件費": report_metrics["人件費"],
+                    "経費": report_metrics["経費"],
+                    "営業利益": report_metrics["営業利益"],
+                    "経常利益": report_metrics["経常利益"],
+                    "営業利益率": _pct(report_metrics["営業利益"], report_metrics["売上高"]),
+                    "人件費率": _pct(report_metrics["人件費"], report_metrics["売上高"]),
+                    "前月の振り返り": previous_review.strip(),
+                    "現在の課題": issue_review.strip(),
+                    "次月以降の対策": next_actions.strip(),
+                    "その他": other_notes.strip(),
+                }
+                submissions = list(st.session_state.get("prime_report_submissions", []))
+                submissions.insert(0, report_row)
+                st.session_state.prime_report_submissions = submissions
+                st.session_state.prime_report_latest = report_row
+                st.success("一緒に人生咲かそう")
 
+        latest_report = st.session_state.get("prime_report_latest")
+        if latest_report:
+            st.download_button(
+                "📥 この報告書CSV",
+                data=_csv_bytes([latest_report]),
+                file_name=f"PRIME_報告書_{latest_report['対象月']}_{_safe_filename(latest_report['対象'])}.csv",
+                mime="text/csv",
+                key="prime_report_latest_csv",
+            )
 
-with tab_journal:
-    if not journal_yms:
-        st.info("仕訳帳CSVを取り込むと、勘定科目や取引先ごとの内訳確認ができます。")
-    else:
-        target_yms, period_label = _select_period(journal_yms, "prime_journal")
-        keyword = st.text_input("検索（科目・取引先・摘要）", key="prime_journal_keyword")
-
-        c1, c2 = st.columns(2)
-        with c1:
-            st.markdown("#### 借方科目 上位")
-            debit_summary = db.prime_journal_account_summary(target_yms, side="debit", limit=15)
-            if debit_summary:
-                st.dataframe(
-                    pd.DataFrame(debit_summary).style.format({"total_amount": "{:,.0f}"}),
-                    hide_index=True,
-                    width="stretch",
-                )
-        with c2:
-            st.markdown("#### 貸方科目 上位")
-            credit_summary = db.prime_journal_account_summary(target_yms, side="credit", limit=15)
-            if credit_summary:
-                st.dataframe(
-                    pd.DataFrame(credit_summary).style.format({"total_amount": "{:,.0f}"}),
-                    hide_index=True,
-                    width="stretch",
-                )
-
-        st.markdown(f"#### 仕訳明細（{period_label}）")
-        rows = db.fetch_prime_journal_entries(target_yms, keyword=keyword.strip() or None, limit=1000)
-        if rows:
-            df_journal = pd.DataFrame(rows)
-            show_cols = [
-                "transaction_date", "debit_account", "debit_amount", "debit_partner",
-                "credit_account", "credit_amount", "credit_partner", "transaction_content",
-                "source_filename",
-            ]
-            show_cols = [c for c in show_cols if c in df_journal.columns]
-            st.dataframe(
-                df_journal[show_cols].style.format({
-                    "debit_amount": "{:,.0f}",
-                    "credit_amount": "{:,.0f}",
-                }),
-                hide_index=True,
-                width="stretch",
-                height=520,
+        st.markdown("---")
+        st.markdown("##### 自分の提出内容")
+        submissions = list(st.session_state.get("prime_report_submissions", []))
+        if submissions:
+            st.dataframe(pd.DataFrame(submissions), hide_index=True, width="stretch")
+            st.download_button(
+                "📥 入力済み報告書CSV",
+                data=_csv_bytes(submissions),
+                file_name="PRIME_報告書_入力済み.csv",
+                mime="text/csv",
+                key="prime_report_all_csv",
             )
         else:
-            st.info("条件に合う仕訳明細がありません。")
+            st.info("まだこの画面で作成した報告書はありません。")
 
 auth.render_sidebar_user_box()
