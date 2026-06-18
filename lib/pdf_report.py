@@ -775,9 +775,16 @@ def build_composition_page(
     rev_data: list,
     metrics_data: list,
     sga_data: list,
+    footnote_text: str | None = None,
 ) -> list:
     """1施設(=A4 1ページ) の構成比レポート Flowable リスト。"""
     elems = []
+    if footnote_text is None:
+        footnote_text = (
+            "※ 人件費 = 管理者給+指導員給+法定福利費+退職給付費用+賞与+事務員給。"
+            " その他経費 = 販管費合計 - 人件費。"
+            " 送迎コスト = 燃料費+車両費+保険料等。"
+        )
 
     elems.append(Paragraph("構成比レポート (売上・販管費)", _STYLE_TITLE))
     elems.append(Paragraph(f"{period_label}　／　{facility_label}", _STYLE_SUBTITLE))
@@ -796,12 +803,7 @@ def build_composition_page(
             [Spacer(1, 4)],
             [Paragraph("◆ 主要指標", _STYLE_SECTION)],
             [metrics_t],
-            [Paragraph(
-                "<i>※ 人件費 = 管理者給+指導員給+法定福利費+退職給付費用+賞与+事務員給。"
-                " その他経費 = 販管費合計 - 人件費。"
-                " 送迎コスト = 燃料費+車両費+保険料等。</i>",
-                _STYLE_FOOTNOTE,
-            )],
+            [Paragraph(f"<i>{footnote_text}</i>", _STYLE_FOOTNOTE)],
         ],
         colWidths=[80*mm],
     )
@@ -846,7 +848,8 @@ def build_composition_page(
     return elems
 
 
-def build_pdf(facility_pages: list, generated_at: str | None = None) -> bytes:
+def build_pdf(facility_pages: list, generated_at: str | None = None,
+              footer_label: str = "障がい事業部ダッシュボード") -> bytes:
     """複数施設のページデータから A4 PDF を生成 (1施設=1ページ)。"""
     if generated_at is None:
         generated_at = datetime.now().strftime('%Y-%m-%d %H:%M')
@@ -866,7 +869,7 @@ def build_pdf(facility_pages: list, generated_at: str | None = None) -> bytes:
         canvas.setFillColor(colors.HexColor('#94a3b8'))
         canvas.drawRightString(
             page_w - 6*mm, 2*mm,
-            f"障がい事業部ダッシュボード — 出力 {generated_at}",
+            f"{footer_label} — 出力 {generated_at}",
         )
         canvas.restoreState()
 
