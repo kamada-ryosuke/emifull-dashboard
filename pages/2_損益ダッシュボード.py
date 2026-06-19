@@ -831,6 +831,46 @@ REPORT_FACILITIES = (
 REPORT_FACILITY_BY_NAME = {f['name']: f for f in REPORT_FACILITIES}
 
 
+def _facility_subunit_ids(facility):
+    return [
+        subs_by_excel[name]
+        for name in facility.get('excel_names', [])
+        if name in subs_by_excel
+    ]
+
+
+def _usage_unit_facilities(sel_type, sel_group_id=None, sel_subunit_id=None):
+    rows = []
+    for facility in REPORT_FACILITIES:
+        sub_ids = _facility_subunit_ids(facility)
+        if not sub_ids:
+            continue
+        if sel_type == 'group':
+            if not any((subunit_by_id.get(sid) or {}).get('group_id') == sel_group_id for sid in sub_ids):
+                continue
+        elif sel_type == 'subunit':
+            if sel_subunit_id not in sub_ids:
+                continue
+        rows.append({**facility, 'subunit_ids': sub_ids})
+    return rows
+
+
+def _usage_unit_avg_text(business_days, usage_count):
+    if not business_days or business_days <= 0 or not usage_count:
+        return '-'
+    return f"{usage_count / business_days:.1f}"
+
+
+def _usage_unit_price_text(revenue, usage_count):
+    if not revenue or revenue <= 0 or not usage_count or usage_count <= 0:
+        return '-'
+    return f"{int((revenue / usage_count) + 0.5):,}円"
+
+
+def _usage_unit_widget_key(target_month, facility_name, suffix):
+    return f"pl_usage_{suffix}_{target_month}_{_safe_filename(facility_name)}"
+
+
 def _default_report_month():
     for key in ('pl_summary_ym', 'pl_meeting_ym'):
         if st.session_state.get(key) in existing_yms:
@@ -1136,8 +1176,8 @@ def _reports_csv_bytes(rows):
 # =============================================================
 # タブ
 # =============================================================
-tab_summary, tab_ratio, tab_yoy, tab_meeting, tab_report, tab_sga_trend = st.tabs([
-    "📊 サマリ", "🔍 構成比", "📅 比較", "🏛️ 業績会議", "📝 報告書提出", "📈 販管費推移",
+tab_summary, tab_ratio, tab_yoy, tab_meeting, tab_report, tab_sga_trend, tab_usage_unit = st.tabs([
+    "📊 サマリ", "🔍 構成比", "📅 比較", "🏛️ 業績会議", "📝 報告書提出", "📈 販管費推移", "💴 利用単価",
 ])
 
 
@@ -4104,6 +4144,99 @@ with tab_sga_trend:
                     "- 右側は仕訳帳から集計した取引先・備考の上位です。\n"
                     "- 支払手数料、水道光熱費など、動きが大きい科目の中身確認に使えます。"
                 )
+
+
+# =============================================================
+# TAB 7: 利用単価
+# =============================================================
+with tab_usage_unit:
+    st.markdown("##### 利用単価 — 1日平均利用者数・売上1人単価")
+    if not existing_yms:
+        st.info("損益データがまだ取り込まれていないため、利用単価は表示できません。")
+    else:
+        default_unit_month = _default_report_month()
+        unit_month_idx = existing_yms.index(default_unit_month) if default_unit_month in existing_yms else 0
+        unit_ym = st.selectbox(
+            "対象月",
+            existing_yms,
+            index=unit_month_idx,
+            key='pl_usage_unit_ym',
+        )
+        st.caption(f"対象月: **{unit_ym}** ／ 対象: **{sel_display}**")
+
+        facilities = _usage_unit_facilities(sel_type, sel_group_id, sel_subunit_id)
+        if not facilities:
+            st.info("選択中の対象に表示できる施設がありません。")
+        else:
+            unit_entries = db.fetch_pl_entries(year_months=[unit_ym])
+            revenue_by_subunit = defaultdict(int)
+            for e in unit_entries:
+                if e['category'] == 'revenue_total':
+                    revenue_by_subunit[e['subunit_id']] += e['amount']
+
+            saved_inputs = db.get_pl_usage_unit_inputs(
+                unit_ym,
+                [f['name'] for f in facilities],
+            )
+            saved_by_facility = {r['facility_name']: r for r in saved_inputs}
+            input_rows = []
+
+            h_fac, h_rev, h_days, h_usage, h_avg, h_unit = st.columns([1.5, 1.1, 0.9, 1.1, 1.1, 1.1])
+            h_fac.markdown("**施設名**")
+            h_rev.markdown("**売上高**")
+            h_days.markdown("**営業日数**")
+            h_usage.markdown("**延べ利用回数**")
+            h_avg.markdown("**1日平均利用者数**")
+            h_unit.markdown("**売上1人単価**")
+            st.markdown("<hr style='margin: 0.25rem 0 0.75rem;'>", unsafe_allow_html=True)
+
+            for facility in facilities:
+                facility_name = facility['name']
+                revenue = sum(revenue_by_subunit[sid] for sid in facility['subunit_ids'])
+                saved = saved_by_facility.get(facility_name, {})
+                saved_days = int(saved.get('business_days') or 0)
+                saved_usage = int(saved.get('monthly_usage_count') or 0)
+
+                c_fac, c_rev, c_days, c_usage, c_avg, c_unit = st.columns([1.5, 1.1, 0.9, 1.1, 1.1, 1.1])
+                c_fac.write(facility_name)
+                c_rev.write(_fmt_yen(revenue))
+                with c_days:
+                    business_days = st.number_input(
+                        f"{facility_name} 営業日数",
+                        min_value=0,
+                        step=1,
+                        value=saved_days,
+                        label_visibility='collapsed',
+                        key=_usage_unit_widget_key(unit_ym, facility_name, 'days'),
+                    )
+                with c_usage:
+                    usage_count = st.number_input(
+                        f"{facility_name} 延べ利用回数",
+                        min_value=0,
+                        step=1,
+                        value=saved_usage,
+                        label_visibility='collapsed',
+                        key=_usage_unit_widget_key(unit_ym, facility_name, 'usage'),
+                    )
+                c_avg.write(_usage_unit_avg_text(business_days, usage_count))
+                c_unit.write(_usage_unit_price_text(revenue, usage_count))
+
+                input_rows.append({
+                    'facility_name': facility_name,
+                    'business_days': business_days if business_days > 0 else None,
+                    'monthly_usage_count': usage_count if usage_count > 0 else None,
+                })
+
+            st.caption("営業日数または延べ利用回数が0の場合は未入力として扱い、計算結果は「-」で表示します。")
+            if st.button("💾 入力内容を保存", type='primary', key='pl_usage_unit_save'):
+                current = auth.current_user() or {}
+                saved_count = db.save_pl_usage_unit_inputs(
+                    unit_ym,
+                    input_rows,
+                    updated_by_user=current.get('email'),
+                )
+                st.success(f"{unit_ym} の利用単価入力を保存しました（{saved_count}施設）。")
+                st.rerun()
 
 # =============================================================
 # 削除（管理者用 / フッタ）

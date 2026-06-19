@@ -595,6 +595,7 @@ def init_db():
     init_vehicle_schema()
     init_cash_advance_schema()
     init_profit_reports_schema()
+    init_pl_usage_unit_schema()
 
 
 def ensure_sales_schema():
@@ -3034,6 +3035,84 @@ def get_report_status_by_facility(target_month, facilities):
             'report_count': len(submitted.get(key, [])),
         })
     return rows
+
+
+# =====================================================================
+# 損益ダッシュボード 利用単価入力
+# =====================================================================
+
+def init_pl_usage_unit_schema():
+    """利用単価計算用の手入力値を保存する。既存の損益データは変更しない。"""
+    with get_conn() as conn:
+        conn.executescript("""
+        CREATE TABLE IF NOT EXISTS pl_usage_unit_inputs (
+            target_month TEXT NOT NULL,
+            facility_name TEXT NOT NULL,
+            business_days INTEGER,
+            monthly_usage_count INTEGER,
+            updated_by_user TEXT,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (target_month, facility_name)
+        );
+        CREATE INDEX IF NOT EXISTS idx_pl_usage_unit_month
+            ON pl_usage_unit_inputs(target_month);
+        """)
+
+
+def _nullable_nonnegative_int(value):
+    if value in (None, ""):
+        return None
+    try:
+        if value != value:
+            return None
+        return max(int(float(value)), 0)
+    except (TypeError, ValueError):
+        return None
+
+
+def get_pl_usage_unit_inputs(target_month, facility_names=None):
+    init_pl_usage_unit_schema()
+    sql = "SELECT * FROM pl_usage_unit_inputs WHERE target_month = ?"
+    params = [target_month]
+    if facility_names:
+        names = [str(name) for name in facility_names]
+        placeholders = ",".join("?" for _ in names)
+        sql += f" AND facility_name IN ({placeholders})"
+        params.extend(names)
+    sql += " ORDER BY facility_name"
+    with get_conn() as conn:
+        return [dict(r) for r in conn.execute(sql, params).fetchall()]
+
+
+def save_pl_usage_unit_inputs(target_month, rows, updated_by_user=None):
+    """月別・施設別に営業日数と延べ利用回数を保存する。"""
+    init_pl_usage_unit_schema()
+    now = datetime.now().isoformat(sep=' ', timespec='seconds')
+    saved = 0
+    with get_conn() as conn:
+        for row in rows:
+            facility_name = (row.get('facility_name') or '').strip()
+            if not facility_name:
+                continue
+            business_days = _nullable_nonnegative_int(row.get('business_days'))
+            monthly_usage_count = _nullable_nonnegative_int(row.get('monthly_usage_count'))
+            conn.execute("""
+                INSERT INTO pl_usage_unit_inputs (
+                    target_month, facility_name, business_days, monthly_usage_count,
+                    updated_by_user, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(target_month, facility_name) DO UPDATE SET
+                    business_days = excluded.business_days,
+                    monthly_usage_count = excluded.monthly_usage_count,
+                    updated_by_user = excluded.updated_by_user,
+                    updated_at = excluded.updated_at
+            """, (
+                target_month, facility_name, business_days, monthly_usage_count,
+                updated_by_user, now,
+            ))
+            saved += 1
+    return saved
 
 
 # =====================================================================
