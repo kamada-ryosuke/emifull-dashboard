@@ -1458,24 +1458,24 @@ with tab_report:
         )
         month_idx = existing_yms.index(st.session_state.get("prime_report_month")) if st.session_state.get("prime_report_month") in existing_yms else 0
 
+        c1, c2 = st.columns(2)
+        with c1:
+            report_ym = st.selectbox(
+                "対象月", existing_yms, index=month_idx, key="prime_report_month"
+            )
+        with c2:
+            report_label = st.selectbox(
+                "対象選択", report_labels, index=default_target_index, key="prime_report_target_label"
+            )
+        report_target = report_option_by_label[report_label]
+        report_target_label = _target_display(report_target)
+        report_entries = _entries_for_target([report_ym], report_target)
+        report_metrics = _metrics(report_entries)
+
+        st.markdown("###### 数値確認")
+        _render_metric_cards(report_metrics)
+
         with st.form("prime_report_form"):
-            c1, c2 = st.columns(2)
-            with c1:
-                report_ym = st.selectbox(
-                    "対象月", existing_yms, index=month_idx, key="prime_report_month"
-                )
-            with c2:
-                report_label = st.selectbox(
-                    "対象選択", report_labels, index=default_target_index, key="prime_report_target_label"
-                )
-            report_target = report_option_by_label[report_label]
-            report_target_label = _target_display(report_target)
-            report_entries = _entries_for_target([report_ym], report_target)
-            report_metrics = _metrics(report_entries)
-
-            st.markdown("###### 数値確認")
-            _render_metric_cards(report_metrics)
-
             c3, c4 = st.columns([1, 2])
             with c3:
                 reporter_role = st.selectbox(
