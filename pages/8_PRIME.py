@@ -1512,7 +1512,7 @@ with tab_report:
                 placeholder="例：採用状況、設備修繕、関係機関連携、顧客動向など、会議で共有したいことがあれば記入してください。",
             )
             love = st.selectbox(
-                "送信前の確認：EMIFULLは大好きですか？",
+                "送信前の確認：PRIMEは大好きですか？",
                 ["", "はい", "もちろんです", "いいえ"],
                 key="prime_report_love",
             )
@@ -1520,7 +1520,7 @@ with tab_report:
 
         if submitted:
             if not love:
-                st.warning("EMIFULL愛の確認がまだです。ここだけは外せません。")
+                st.warning("PRIME愛の確認がまだです。ここだけは外せません。")
             elif love == "いいえ":
                 st.markdown("<div class='emifull-sad'>悲しいです。</div>", unsafe_allow_html=True)
             elif not reporter_name.strip():
