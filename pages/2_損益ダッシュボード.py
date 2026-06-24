@@ -570,11 +570,11 @@ def sum_by_cat(entries, cat):
     return sum(e['amount'] for e in entries if e['category'] == cat)
 
 
-def fetch_pl(year_months, group_id=None, subunit_id=None):
+def fetch_pl(year_months, group_id=None, subunit_id=None, subunit_ids=None):
     return db.fetch_pl_entries(
         year_months=year_months,
         group_ids=[group_id] if group_id else None,
-        subunit_ids=[subunit_id] if subunit_id else None,
+        subunit_ids=list(subunit_ids) if subunit_ids else ([subunit_id] if subunit_id else None),
     )
 
 
@@ -590,13 +590,26 @@ with c_target:
     # 階層型セレクタ: 親(グループ)と子(サブ部門)どちらでも選べる
     groups_all = db.list_pl_groups()
     all_subs = db.list_pl_subunits()
+    group_by_id = {g['id']: g for g in groups_all}
     subs_by_group = defaultdict(list)
     for s in all_subs:
         subs_by_group[s['group_id']].append(s)
+    medical_subunit_ids = [
+        s['id'] for s in all_subs
+        if (group_by_id.get(s['group_id'], {}).get('note') or '') != 'NPO'
+    ]
+    npo_subunit_ids = [
+        s['id'] for s in all_subs
+        if (group_by_id.get(s['group_id'], {}).get('note') or '') == 'NPO'
+    ]
 
-    # 選択肢: label -> ('all'|'group'|'subunit', id)
+    # 選択肢: label -> ('all'|'corp_medical'|'corp_npo'|'group'|'subunit', id)
     selection_options: dict[str, tuple[str, int | None]] = {}
     selection_options["📊 全グループ（比較表示）"] = ('all', None)
+    if medical_subunit_ids:
+        selection_options["🏥 医療法人社団EMIFULL 合計"] = ('corp_medical', None)
+    if npo_subunit_ids:
+        selection_options["🌱 NPO法人EMIFULL 合計"] = ('corp_npo', None)
     for group in groups_all:
         try:
             g_num = int(group['code'])
@@ -619,8 +632,19 @@ with c_target:
     sel_type, sel_id = selection_options[sel_label]
     sel_group_id = sel_id if sel_type == 'group' else None
     sel_subunit_id = sel_id if sel_type == 'subunit' else None
+    sel_subunit_ids = None
+    if sel_type == 'corp_medical':
+        sel_subunit_ids = medical_subunit_ids
+    elif sel_type == 'corp_npo':
+        sel_subunit_ids = npo_subunit_ids
     # ヘッダ表示用の整形ラベル（インデント記号を除去）
-    sel_display = sel_label.replace('　└ ', '').strip()
+    sel_display = (
+        sel_label
+        .replace('　└ ', '')
+        .replace('🏥 ', '')
+        .replace('🌱 ', '')
+        .strip()
+    )
     # サブ部門選択時、その親グループIDも保持（販管費比較に使う場合）
     sel_parent_group_id = None
     if sel_type == 'subunit':
@@ -839,13 +863,17 @@ def _facility_subunit_ids(facility):
     ]
 
 
-def _usage_unit_facilities(sel_type, sel_group_id=None, sel_subunit_id=None):
+def _usage_unit_facilities(sel_type, sel_group_id=None, sel_subunit_id=None, sel_subunit_ids=None):
+    selected_subunit_ids = set(sel_subunit_ids or [])
     rows = []
     for facility in REPORT_FACILITIES:
         sub_ids = _facility_subunit_ids(facility)
         if not sub_ids:
             continue
-        if sel_type == 'group':
+        if selected_subunit_ids:
+            if not any(sid in selected_subunit_ids for sid in sub_ids):
+                continue
+        elif sel_type == 'group':
             if not any((subunit_by_id.get(sid) or {}).get('group_id') == sel_group_id for sid in sub_ids):
                 continue
         elif sel_type == 'subunit':
@@ -1217,7 +1245,7 @@ with tab_summary:
     if not target_yms:
         st.warning("選択期間にデータがありません")
     else:
-        entries = fetch_pl(target_yms, sel_group_id, sel_subunit_id)
+        entries = fetch_pl(target_yms, sel_group_id, sel_subunit_id, sel_subunit_ids)
         if not entries:
             st.warning("対象期間にデータがありません")
         else:
@@ -1457,7 +1485,7 @@ with tab_ratio:
     if not ratio_yms:
         st.warning("選択期間にデータがありません")
     else:
-        entries = fetch_pl(ratio_yms, sel_group_id, sel_subunit_id)
+        entries = fetch_pl(ratio_yms, sel_group_id, sel_subunit_id, sel_subunit_ids)
         st.markdown(
             f"<div style='font-size:14px; color:#475569; margin-top:8px;'>対象: <b>{ratio_label}</b> ／ {sel_display}</div>",
             unsafe_allow_html=True,
@@ -1567,12 +1595,19 @@ with tab_ratio:
 
         def _build_composition_for(scope_label: str, scope_yms: list,
                                      group_id: int | None = None,
-                                     subunit_id: int | None = None):
+                                     subunit_id: int | None = None,
+                                     subunit_ids: list[int] | None = None):
             """指定スコープの 1施設(=A4 1ページ) 構成比レポート Flowables を返す。"""
+            fetch_kwargs = {}
+            if subunit_ids:
+                fetch_kwargs['subunit_ids'] = list(subunit_ids)
+            elif subunit_id:
+                fetch_kwargs['subunit_ids'] = [subunit_id]
+            elif group_id:
+                fetch_kwargs['group_ids'] = [group_id]
             ent = db.fetch_pl_entries(
                 year_months=scope_yms,
-                group_ids=[group_id] if group_id else None,
-                subunit_ids=[subunit_id] if subunit_id else None,
+                **fetch_kwargs,
             ) if scope_yms else []
 
             rev_total_v = sum(e['amount'] for e in ent if e['category'] == 'revenue_total')
@@ -1630,6 +1665,7 @@ with tab_ratio:
                 page = _build_composition_for(
                     scope_label=sel_display, scope_yms=ratio_yms,
                     group_id=sel_group_id, subunit_id=sel_subunit_id,
+                    subunit_ids=sel_subunit_ids,
                 )
                 pdf_bytes = _pdf.build_pdf([page])
                 st.session_state['ratio_pdf_single'] = (pdf_bytes, sel_display)
@@ -1700,6 +1736,7 @@ with tab_ratio:
                 data=_pl_csv_bytes(
                     sel_display, ratio_yms,
                     group_id=sel_group_id, subunit_id=sel_subunit_id,
+                    subunit_ids=sel_subunit_ids,
                 ),
                 file_name=f"構成比_{_safe_filename(sel_display)}_{_safe_filename(ratio_label)}_損益.csv",
                 mime='text/csv',
@@ -1711,6 +1748,7 @@ with tab_ratio:
                     data=_journal_csv_bytes(
                         sel_display, ratio_yms,
                         group_id=sel_group_id, subunit_id=sel_subunit_id,
+                        subunit_ids=sel_subunit_ids,
                     ),
                     file_name=f"構成比_{_safe_filename(sel_display)}_{_safe_filename(ratio_label)}_仕訳帳.csv",
                     mime='text/csv',
@@ -1814,9 +1852,9 @@ with tab_yoy:
             prev_month_yms = [prev_month] if prev_month in existing_yms else []
             prev_yms = [yoy_end] if yoy_end in existing_yms else []
 
-            curr_entries = fetch_pl(curr_yms, sel_group_id, sel_subunit_id) if curr_yms else []
-            prev_month_entries = fetch_pl(prev_month_yms, sel_group_id, sel_subunit_id) if prev_month_yms else []
-            prev_entries = fetch_pl(prev_yms, sel_group_id, sel_subunit_id) if prev_yms else []
+            curr_entries = fetch_pl(curr_yms, sel_group_id, sel_subunit_id, sel_subunit_ids) if curr_yms else []
+            prev_month_entries = fetch_pl(prev_month_yms, sel_group_id, sel_subunit_id, sel_subunit_ids) if prev_month_yms else []
+            prev_entries = fetch_pl(prev_yms, sel_group_id, sel_subunit_id, sel_subunit_ids) if prev_yms else []
 
             curr_label = curr_end
             prev_month_label = prev_month if prev_month_yms else f"{prev_month}(無)"
@@ -1995,7 +2033,9 @@ with tab_yoy:
                 yoy_top10 = sga_diffs[:10]
 
             # 仕訳明細抽出のための subunit_ids を確定
-            if sel_subunit_id:
+            if sel_subunit_ids:
+                _journal_sub_ids = list(sel_subunit_ids)
+            elif sel_subunit_id:
                 _journal_sub_ids = [sel_subunit_id]
             elif sel_group_id:
                 _journal_sub_ids = [s['id'] for s in db.list_pl_subunits(group_id=sel_group_id)]
@@ -2257,6 +2297,7 @@ with tab_yoy:
                         scope_curr_yms=curr_yms,
                         scope_prev_month_yms=prev_month_yms, scope_prev_yms=prev_yms,
                         group_id=sel_group_id, subunit_id=sel_subunit_id,
+                        subunit_ids=sel_subunit_ids,
                     )
                     pdf_bytes = _pdf.build_pdf([page_elems])
                     st.session_state['pl_pdf_single'] = (pdf_bytes, sel_display)
@@ -2368,6 +2409,7 @@ with tab_yoy:
                     data=_pl_csv_bytes(
                         sel_display, compare_csv_yms,
                         group_id=sel_group_id, subunit_id=sel_subunit_id,
+                        subunit_ids=sel_subunit_ids,
                     ),
                     file_name=f"比較_{_safe_filename(sel_display)}_{curr_end}_損益.csv",
                     mime='text/csv',
@@ -2379,6 +2421,7 @@ with tab_yoy:
                         data=_journal_csv_bytes(
                             sel_display, compare_csv_yms,
                             group_id=sel_group_id, subunit_id=sel_subunit_id,
+                            subunit_ids=sel_subunit_ids,
                         ),
                         file_name=f"比較_{_safe_filename(sel_display)}_{curr_end}_仕訳帳.csv",
                         mime='text/csv',
@@ -4054,7 +4097,7 @@ with tab_sga_trend:
 
             trend_months = db.pl_fiscal_year_months(trend_fy, start_month=fy_start_month)
             fetch_months = [m for m in trend_months if m in existing_yms]
-            trend_entries = fetch_pl(fetch_months, sel_group_id, sel_subunit_id) if fetch_months else []
+            trend_entries = fetch_pl(fetch_months, sel_group_id, sel_subunit_id, sel_subunit_ids) if fetch_months else []
             amount_by_month = {m: 0 for m in trend_months}
             for e in trend_entries:
                 if e['category'] == 'sga' and e['account_name'] == trend_account:
@@ -4072,7 +4115,9 @@ with tab_sga_trend:
                 kpi3.metric("最大月 / 最小月", f"{max_ym} / {min_ym}")
 
             journal_subunit_ids = None
-            if sel_subunit_id:
+            if sel_subunit_ids:
+                journal_subunit_ids = list(sel_subunit_ids)
+            elif sel_subunit_id:
                 journal_subunit_ids = [sel_subunit_id]
             elif sel_group_id:
                 journal_subunit_ids = [s['id'] for s in all_subs if s['group_id'] == sel_group_id]
@@ -4164,7 +4209,7 @@ with tab_usage_unit:
         )
         st.caption(f"対象月: **{unit_ym}** ／ 対象: **{sel_display}**")
 
-        facilities = _usage_unit_facilities(sel_type, sel_group_id, sel_subunit_id)
+        facilities = _usage_unit_facilities(sel_type, sel_group_id, sel_subunit_id, sel_subunit_ids)
         if not facilities:
             st.info("選択中の対象に表示できる施設がありません。")
         else:
