@@ -1746,10 +1746,10 @@ def _page_css():
             margin-top: 2px;
         }
         div[data-testid="stVerticalBlockBorderWrapper"]:has(.forecast-target-month-title) {
-            border: 3px solid #9bcdea !important;
+            border: 2px solid #cfe5f4 !important;
             border-radius: 14px !important;
-            background: #f8fcff !important;
-            box-shadow: 0 4px 14px rgba(38, 74, 112, 0.08) !important;
+            background: #fbfdff !important;
+            box-shadow: 0 2px 10px rgba(38, 74, 112, 0.06) !important;
         }
         .forecast-target-month-title {
             padding: 4px 2px 0;
@@ -1778,50 +1778,48 @@ def _page_css():
             margin-top: 1px;
         }
         .forecast-selected-month-banner {
-            min-height: 52px;
-            border: 3px solid #86c5ed;
-            border-radius: 12px;
-            background: #eef9ff;
+            min-height: 47px;
+            border: 2px solid #86c5ed;
+            border-radius: 10px;
+            background: #f4fbff;
             color: #0c2744;
-            font-size: 1.02rem;
+            font-size: 1rem;
             font-weight: 950;
-            box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.75);
+            box-shadow: 0 1px 5px rgba(38, 74, 112, 0.06);
         }
         .forecast-target-select-marker {
-            display: flex;
+            display: inline-flex;
             align-items: center;
-            justify-content: space-between;
-            min-height: 40px;
-            margin-top: 8px;
-            padding: 8px 12px;
-            border: 3px solid #86c5ed;
-            border-bottom: 0;
-            border-radius: 12px 12px 0 0;
-            background: #eaf7ff;
+            width: fit-content;
+            min-height: 0;
+            margin: 10px 0 6px;
+            padding: 4px 10px;
+            border: 1px solid #cfe5f4;
+            border-radius: 999px;
+            background: #f4fbff;
             color: #0c2744;
-            font-size: 0.98rem;
+            font-size: 0.88rem;
             font-weight: 950;
             letter-spacing: 0;
         }
         .forecast-target-select-marker::after {
-            content: "選択";
-            color: #0f5f91;
-            font-size: 0.78rem;
-            font-weight: 900;
+            content: "";
+            display: none;
         }
         div[data-testid="stMarkdown"]:has(.forecast-target-select-marker) + div[data-testid="stSelectbox"] {
-            padding: 0 10px 10px;
-            border: 3px solid #86c5ed;
-            border-top: 0;
-            border-radius: 0 0 12px 12px;
-            background: #ffffff;
-            box-shadow: 0 2px 10px rgba(38, 74, 112, 0.08);
+            padding: 0;
+            border: 0;
+            border-radius: 0;
+            background: transparent;
+            box-shadow: none;
         }
         div[data-testid="stMarkdown"]:has(.forecast-target-select-marker) + div[data-testid="stSelectbox"] div[data-baseweb="select"] > div {
-            min-height: 48px !important;
-            border: 2px solid #2f8fc8 !important;
+            min-height: 46px !important;
+            border: 2px solid #86c5ed !important;
+            border-radius: 10px !important;
             background: #ffffff !important;
             font-weight: 900 !important;
+            box-shadow: 0 0 0 3px rgba(134, 197, 237, 0.12) !important;
         }
         .forecast-control-note {
             color: #607285;
