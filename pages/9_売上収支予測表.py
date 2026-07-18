@@ -777,9 +777,9 @@ def _needed_user_targets(summary):
             value = f"あと {needed:,} 人"
             if remaining_days > 0:
                 per_day = int(math.ceil(needed / remaining_days))
-                note = f"残り{remaining_days}日なら 1日{per_day:,}人"
+                note = f"残り営業日数{remaining_days}日で1日あたり{per_day:,}人必要！"
             else:
-                note = "残り営業日なし"
+                note = "残り営業日数0日で1日あたり算出不可"
             css = "warn"
         rows.append({
             **target,
