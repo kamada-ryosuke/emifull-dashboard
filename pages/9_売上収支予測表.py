@@ -2257,25 +2257,25 @@ def _page_css():
             text-align: center;
             font-weight: 850;
             color: #17324d;
-            padding: 6px 0;
+            padding: 3px 0 4px;
             border-bottom: 2px solid #d9e6ef;
-            margin-bottom: 5px;
+            margin-bottom: 3px;
         }
         .forecast-calendar-title {
             display: flex;
             justify-content: space-between;
             align-items: baseline;
-            margin: 10px 0 6px;
+            margin: 6px 0 3px;
             padding: 0 2px;
         }
         .forecast-calendar-title strong {
             color: #111827;
-            font-size: 2rem;
+            font-size: 1.72rem;
             line-height: 1.1;
         }
         .forecast-calendar-title span {
             color: #111827;
-            font-size: 1.55rem;
+            font-size: 1.32rem;
             font-weight: 600;
         }
         .forecast-calendar-weekday.sunday {
@@ -2285,15 +2285,15 @@ def _page_css():
             color: #2778b8;
         }
         .forecast-calendar-day {
-            min-height: 54px;
-            margin: -4px -2px 6px;
-            padding: 8px 8px 7px;
+            min-height: 42px;
+            margin: -5px -3px 4px;
+            padding: 6px 7px 5px;
             border-radius: 7px;
             border: 1px solid #e8eef3;
             background: #ffffff;
         }
         .forecast-calendar-day.outside {
-            min-height: 150px;
+            min-height: 118px;
             background: #fbfbfb;
             color: #c8ced6;
             border-style: dashed;
@@ -2323,6 +2323,13 @@ def _page_css():
             background: #fffdf0 !important;
             box-shadow: 0 0 0 2px rgba(242, 201, 76, 0.16) !important;
         }
+        div[data-testid="stVerticalBlockBorderWrapper"]:has(.forecast-calendar-day) {
+            padding: 7px 7px 6px !important;
+            border-radius: 8px !important;
+        }
+        div[data-testid="stVerticalBlockBorderWrapper"]:has(.forecast-calendar-day) div[data-testid="stVerticalBlock"] {
+            gap: 0.15rem !important;
+        }
         .forecast-calendar-day.closed-day .forecast-calendar-label::after {
             content: "営業なし";
             display: block;
@@ -2339,7 +2346,7 @@ def _page_css():
         .forecast-calendar-date {
             display: inline-block;
             color: #172033;
-            font-size: 1.16rem;
+            font-size: 1.06rem;
             font-weight: 850;
             line-height: 1;
         }
@@ -2356,16 +2363,18 @@ def _page_css():
         }
         .forecast-calendar-label {
             color: #6c7b88;
-            font-size: 0.72rem;
+            font-size: 0.66rem;
             font-weight: 700;
             text-align: right;
             line-height: 1.2;
         }
         .forecast-select-label {
             color: #657789;
-            font-size: 0.72rem;
+            font-size: 0.68rem;
             font-weight: 800;
-            margin: 4px 0 0;
+            margin: 2px 0 1px;
+            padding: 2px 6px;
+            line-height: 1.2;
         }
         .forecast-select-label.actual {
             color: #9f2936;
@@ -2383,31 +2392,45 @@ def _page_css():
             box-shadow: 0 0 0 4px rgba(228, 109, 124, 0.18) !important;
         }
         div[data-testid="stMarkdown"]:has(.forecast-select-label) + div[data-testid="stSelectbox"] {
-            margin-bottom: 12px;
+            margin-bottom: 5px;
         }
         div[data-testid="stMarkdown"]:has(.forecast-select-label) + div[data-testid="stSelectbox"] div[data-baseweb="select"] {
             width: 100% !important;
         }
         div[data-testid="stMarkdown"]:has(.forecast-select-label) + div[data-testid="stSelectbox"] div[data-baseweb="select"] > div {
-            min-height: 42px !important;
-            padding-left: 10px !important;
-            padding-right: 8px !important;
+            min-height: 34px !important;
+            height: 34px !important;
+            padding-left: 8px !important;
+            padding-right: 6px !important;
             overflow: hidden !important;
         }
         div[data-testid="stMarkdown"]:has(.forecast-select-label) + div[data-testid="stSelectbox"] div[data-baseweb="select"] > div > div:first-child {
             flex: 1 1 auto !important;
-            min-width: 34px !important;
+            min-width: 42px !important;
             overflow: visible !important;
         }
         div[data-testid="stMarkdown"]:has(.forecast-select-label) + div[data-testid="stSelectbox"] div[data-baseweb="select"] span {
             color: #0c2744 !important;
-            font-size: 0.95rem !important;
+            font-size: 0.84rem !important;
             font-weight: 900 !important;
             line-height: 1.2 !important;
             white-space: nowrap !important;
         }
-        div[data-testid="stMarkdown"]:has(.forecast-select-label) + div[data-testid="stSelectbox"] [aria-label="Clear value"],
-        div[data-testid="stMarkdown"]:has(.forecast-select-label) + div[data-testid="stSelectbox"] [aria-label="Clear all"] {
+        div[data-testid="stMarkdown"]:has(.forecast-select-label) + div[data-testid="stSelectbox"] [aria-label*="Clear"],
+        div[data-testid="stMarkdown"]:has(.forecast-select-label) + div[data-testid="stSelectbox"] [aria-label*="clear"],
+        div[data-testid="stMarkdown"]:has(.forecast-select-label) + div[data-testid="stSelectbox"] [title*="Clear"],
+        div[data-testid="stMarkdown"]:has(.forecast-select-label) + div[data-testid="stSelectbox"] [title*="clear"],
+        div[data-testid="stMarkdown"]:has(.forecast-select-label) + div[data-testid="stSelectbox"] [aria-label*="クリア"] {
+            display: none !important;
+        }
+        div[data-testid="stMarkdown"]:has(.forecast-select-label) + div[data-testid="stSelectbox"] div[data-baseweb="select"] > div > div:last-child {
+            flex: 0 0 18px !important;
+            width: 18px !important;
+            min-width: 18px !important;
+            overflow: hidden !important;
+            justify-content: flex-end !important;
+        }
+        div[data-testid="stMarkdown"]:has(.forecast-select-label) + div[data-testid="stSelectbox"] div[data-baseweb="select"] > div > div:last-child > *:not(:last-child) {
             display: none !important;
         }
         div[data-testid="stMarkdown"]:has(.forecast-select-label) + div[data-testid="stSelectbox"] div[data-baseweb="select"] > div > div:last-child svg:not(:last-child) {
