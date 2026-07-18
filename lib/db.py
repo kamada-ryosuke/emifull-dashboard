@@ -321,7 +321,7 @@ def _ensure_revenue_forecast_facility_users(conn):
     """売上収支予測表用の施設アカウントを個別に用意する。"""
     from lib.revenue_forecast_access import (
         FACILITY_FORECAST_PASSWORD_HASH,
-        FACILITY_FORECAST_USERS,
+        FORECAST_LOGIN_USERS,
     )
 
     user_cols = {
@@ -332,33 +332,57 @@ def _ensure_revenue_forecast_facility_users(conn):
     if 'position' not in user_cols:
         conn.execute("ALTER TABLE users ADD COLUMN position TEXT")
 
-    for forecast_user in FACILITY_FORECAST_USERS:
+    for forecast_user in FORECAST_LOGIN_USERS:
         email = forecast_user["email"].strip().lower()
-        facility_label = forecast_user["facility_label"]
+        display_name = forecast_user.get("name") or email
+        position = forecast_user.get("position") or "施設管理者"
+        reset_existing = bool(forecast_user.get("reset_existing", True))
         existing = conn.execute(
-            "SELECT id, role FROM users WHERE lower(email) = ?",
+            "SELECT id, role, name, position, password_hash FROM users WHERE lower(email) = ?",
             (email,),
         ).fetchone()
         if existing is None:
             conn.execute(
                 """
                 INSERT INTO users (email, role, name, position, password_hash)
-                VALUES (?, 'user', ?, '施設管理者', ?)
+                VALUES (?, 'user', ?, ?, ?)
                 """,
-                (email, facility_label, FACILITY_FORECAST_PASSWORD_HASH),
+                (email, display_name, position, FACILITY_FORECAST_PASSWORD_HASH),
+            )
+            continue
+
+        if reset_existing:
+            conn.execute(
+                """
+                UPDATE users
+                   SET role = CASE WHEN role = 'admin' THEN role ELSE 'user' END,
+                       name = ?,
+                       position = ?,
+                       password_hash = ?
+                 WHERE id = ?
+                """,
+                (display_name, position, FACILITY_FORECAST_PASSWORD_HASH, existing['id']),
             )
             continue
 
         conn.execute(
             """
             UPDATE users
-               SET role = CASE WHEN role = 'admin' THEN role ELSE 'user' END,
-                   name = ?,
-                   position = '施設管理者',
-                   password_hash = ?
+               SET name = CASE
+                           WHEN name IS NULL OR trim(name) = '' THEN ?
+                           ELSE name
+                          END,
+                   position = CASE
+                              WHEN position IS NULL OR trim(position) = '' THEN ?
+                              ELSE position
+                             END,
+                   password_hash = CASE
+                                   WHEN password_hash IS NULL OR trim(password_hash) = '' THEN ?
+                                   ELSE password_hash
+                                  END
              WHERE id = ?
             """,
-            (facility_label, FACILITY_FORECAST_PASSWORD_HASH, existing['id']),
+            (display_name, position, FACILITY_FORECAST_PASSWORD_HASH, existing['id']),
         )
 
 

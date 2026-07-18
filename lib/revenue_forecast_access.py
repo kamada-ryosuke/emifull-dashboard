@@ -24,10 +24,97 @@ FACILITY_FORECAST_USERS = [
     {"email": "kids-tenri@emifull-group.or.jp", "facility_label": "カラダキッズてんり"},
 ]
 
+FORECAST_MANAGER_USERS = [
+    {
+        "email": "fukaya.kkr@emifull-group.or.jp",
+        "name": "天理エリア担当",
+        "facility_labels": [
+            "SORATOてんり",
+            "UMIEてんり",
+            "BLOOMてんり",
+            "カラダキッズてんり",
+        ],
+    },
+    {
+        "email": "kanbe.tkhr@emifull-group.or.jp",
+        "name": "稲美・加古川エリア担当",
+        "facility_labels": [
+            "SORATOいなみ",
+            "UMIEいなみ",
+            "UMIEいなみ第二教室",
+            "SORATOいなみ第二教室",
+            "BLOOMいなみ",
+            "カラダキッズかこがわ",
+            "Hinodeシェアホーム加古川",
+            "ジョブカレッジかこがわ",
+        ],
+    },
+    {
+        "email": "kuroda.yusk@emifull-group.or.jp",
+        "name": "のじぎく高砂担当",
+        "facility_labels": ["のじぎく高砂"],
+    },
+    {
+        "email": "nishitsuji.msys@emifull-group.or.jp",
+        "name": "Hinodeシェアホーム天理担当",
+        "facility_labels": ["Hinodeシェアホーム天理"],
+    },
+    {
+        "email": "oketani.msm@emifull-group.or.jp",
+        "name": "のじぎく担当",
+        "facility_labels": [
+            "のじぎく稲美",
+            "のじぎく加古川",
+        ],
+    },
+    {
+        "email": "morita.yshr@emifull-group.or.jp",
+        "name": "全施設担当",
+        "facility_labels": [],
+        "all_facilities": True,
+    },
+]
+
+FORECAST_LOGIN_USERS = [
+    {
+        "email": user["email"],
+        "name": user["facility_label"],
+        "position": "施設管理者",
+        "reset_existing": True,
+    }
+    for user in FACILITY_FORECAST_USERS
+] + [
+    {
+        "email": user["email"],
+        "name": user["name"],
+        "position": "担当管理者",
+        "reset_existing": False,
+    }
+    for user in FORECAST_MANAGER_USERS
+]
+
 
 def facility_forecast_profile(email):
     key = (email or "").strip().lower()
     for user in FACILITY_FORECAST_USERS:
         if user["email"] == key:
-            return user
+            return {
+                **user,
+                "facility_labels": [user["facility_label"]],
+                "display_label": user["facility_label"],
+                "dedicated": True,
+                "all_facilities": False,
+            }
+    for user in FORECAST_MANAGER_USERS:
+        if user["email"] == key:
+            labels = list(user.get("facility_labels") or [])
+            display_label = "全施設" if user.get("all_facilities") else "、".join(labels)
+            return {
+                **user,
+                "facility_label": display_label,
+                "facility_labels": labels,
+                "display_label": display_label,
+                "dedicated": False,
+                "all_facilities": bool(user.get("all_facilities")),
+            }
     return None

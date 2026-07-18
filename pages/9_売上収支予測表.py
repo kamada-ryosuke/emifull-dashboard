@@ -371,14 +371,34 @@ def _build_forecast_facilities():
     return rows
 
 
+def _forecast_profile_labels(forecast_profile):
+    if not forecast_profile:
+        return []
+    labels = list(forecast_profile.get("facility_labels") or [])
+    if not labels and forecast_profile.get("facility_label"):
+        labels = [forecast_profile.get("facility_label")]
+    return labels
+
+
+def _is_locked_single_facility_profile(forecast_profile):
+    return bool(
+        forecast_profile
+        and forecast_profile.get("dedicated", True)
+        and not forecast_profile.get("all_facilities")
+        and len(_forecast_profile_labels(forecast_profile)) == 1
+    )
+
+
 def _accessible_facilities(facilities):
     forecast_profile = auth.current_forecast_facility()
     if forecast_profile:
-        target = _normalize_name(forecast_profile.get("facility_label"))
+        if forecast_profile.get("all_facilities"):
+            return facilities
+        targets = {_normalize_name(label) for label in _forecast_profile_labels(forecast_profile)}
         return [
             facility for facility in facilities
-            if target == _normalize_name(facility["label"])
-            or target in {_normalize_name(name) for name in facility.get("search_names", set())}
+            if _normalize_name(facility["label"]) in targets
+            or targets.intersection({_normalize_name(name) for name in facility.get("search_names", set())})
         ]
     current = auth.current_user() or {}
     position = current.get("position") or ""
@@ -1773,12 +1793,12 @@ def _render_target_month_panel(today, year_options):
 
 
 def _render_view_mode_panel(forecast_profile):
-    if forecast_profile:
+    if _is_locked_single_facility_profile(forecast_profile):
         st.markdown(
             f"""
             <div class="forecast-locked-panel">
                 <strong>施設専用ログイン</strong>
-                <span>{html.escape(forecast_profile['facility_label'])} のカレンダー入力画面を表示します。</span>
+                <span>{html.escape(forecast_profile['display_label'])} のカレンダー入力画面を表示します。</span>
             </div>
             """,
             unsafe_allow_html=True,
@@ -1786,9 +1806,20 @@ def _render_view_mode_panel(forecast_profile):
         return "施設別入力・予測"
 
     if "forecast_view_mode" not in st.session_state:
-        st.session_state["forecast_view_mode"] = "全施設一覧"
+        st.session_state["forecast_view_mode"] = "施設別入力・予測" if forecast_profile else "全施設一覧"
 
     with st.container(border=True):
+        if forecast_profile:
+            scope_label = "全施設" if forecast_profile.get("all_facilities") else forecast_profile.get("display_label", "担当施設")
+            st.markdown(
+                f"""
+                <div class="forecast-locked-panel">
+                    <strong>担当施設ログイン</strong>
+                    <span>このアカウントでは {html.escape(scope_label)} のみ表示・入力できます。</span>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
         st.markdown(
             """
             <div class="forecast-control-title">
@@ -3039,7 +3070,11 @@ forecast_profile = auth.current_forecast_facility()
 view_mode = _render_view_mode_panel(forecast_profile)
 selected_facility = None
 if view_mode == "施設別入力・予測":
-    selected_facility = facilities[0] if forecast_profile else _render_facility_select_panel(facilities)
+    selected_facility = (
+        facilities[0]
+        if _is_locked_single_facility_profile(forecast_profile)
+        else _render_facility_select_panel(facilities)
+    )
 
 if not forecast_profile and not auth.is_admin() and (current.get("position") or "") not in SENIOR_POSITIONS:
     st.caption("施設別の閲覧権限テーブルは未設定のため、現在は登録済み施設を表示しています。")

@@ -138,8 +138,13 @@ def current_forecast_facility():
     return facility_forecast_profile(_session_email())
 
 
-def is_facility_forecast_user():
+def has_forecast_facility_scope():
     return current_forecast_facility() is not None
+
+
+def is_facility_forecast_user():
+    profile = current_forecast_facility()
+    return bool(profile and profile.get("dedicated", True))
 
 
 def _calling_script_name():

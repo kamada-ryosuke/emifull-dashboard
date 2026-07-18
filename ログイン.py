@@ -293,7 +293,7 @@ if not auth.is_logged_in():
     st.markdown('<div class="login-footnote">© EMIFULL All Rights Reserved.</div>', unsafe_allow_html=True)
     st.stop()
 
-if auth.is_facility_forecast_user():
+if auth.has_forecast_facility_scope():
     try:
         st.switch_page("pages/9_売上収支予測表.py")
     except Exception:
