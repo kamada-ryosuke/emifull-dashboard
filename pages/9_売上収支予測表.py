@@ -115,10 +115,6 @@ def _holiday_label(d):
     return "平日"
 
 
-def _is_business_weekday(d):
-    return d.weekday() < 5 and d not in _japanese_holidays(d.year)
-
-
 def _as_int_or_none(value):
     if value is None or value == "":
         return None
@@ -1075,68 +1071,6 @@ def _save_cell(facility, d, field, value, current_user):
     )
 
 
-def _handle_bulk_tools(facility, target_ym, days):
-    st.caption("必要な場合だけ開いて使う入力補助です。通常はカレンダーで日別に入力してください。")
-    current = auth.current_user() or {}
-    with st.expander("入力補助を開く", expanded=False):
-        st.caption("一括操作は新しい予測用テーブルだけを更新します。損益データや売上明細は変更しません。")
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            weekday_value = st.selectbox(
-                "平日の予定人数",
-                list(range(31)),
-                format_func=lambda v: f"{v}人",
-                key=f"weekday_bulk_{target_ym}_{facility['key']}",
-            )
-            weekday_ok = st.checkbox(
-                "平日の予定人数を一括設定する",
-                key=f"weekday_bulk_ok_{target_ym}_{facility['key']}",
-            )
-            if st.button("平日に反映", disabled=not weekday_ok, key=f"weekday_bulk_run_{target_ym}_{facility['key']}"):
-                saved = 0
-                for d in days:
-                    if _is_business_weekday(d):
-                        result = _save_cell(facility, d, "planned_users", weekday_value, current)
-                        saved += 1 if result.get("saved") else 0
-                st.session_state["forecast_saved_notice"] = f"平日の予定人数を保存しました（{saved}件）。"
-                st.rerun()
-
-        with c2:
-            prev_ok = st.checkbox(
-                "前月の予定をこの月へコピーする",
-                key=f"copy_prev_ok_{target_ym}_{facility['key']}",
-            )
-            if st.button("前月予定をコピー", disabled=not prev_ok, key=f"copy_prev_run_{target_ym}_{facility['key']}"):
-                prev_ym = _ym_shift(target_ym, -1)
-                prev_start, prev_end = _month_bounds(prev_ym)
-                prev_records = db.list_revenue_forecast_daily(prev_start, prev_end, [facility["key"]])
-                by_day = {
-                    date.fromisoformat(r["target_date"]).day: r.get("planned_users")
-                    for r in prev_records
-                    if r.get("planned_users") is not None
-                }
-                saved = 0
-                for d in days:
-                    if d.day in by_day:
-                        result = _save_cell(facility, d, "planned_users", by_day[d.day], current)
-                        saved += 1 if result.get("saved") else 0
-                st.session_state["forecast_saved_notice"] = f"前月予定をコピーしました（{saved}件）。"
-                st.rerun()
-
-        with c3:
-            clear_ok = st.checkbox(
-                "予定人数を全日クリアする",
-                key=f"clear_plan_ok_{target_ym}_{facility['key']}",
-            )
-            if st.button("予定をクリア", disabled=not clear_ok, key=f"clear_plan_run_{target_ym}_{facility['key']}"):
-                saved = 0
-                for d in days:
-                    result = _save_cell(facility, d, "planned_users", None, current)
-                    saved += 1 if result.get("saved") else 0
-                st.session_state["forecast_saved_notice"] = f"予定人数をクリアしました（{saved}件）。"
-                st.rerun()
-
-
 def _format_user_option(value):
     if value is None or value == FORECAST_EMPTY_OPTION:
         return "－"
@@ -1429,7 +1363,6 @@ def _render_calendar_area(facility, target_ym, days, daily_by_date, current_user
 
 
 def _render_daily_editor(facility, target_ym, days, daily_by_date, summary=None):
-    _handle_bulk_tools(facility, target_ym, days)
     st.markdown("#### 日別入力カレンダー")
     fast_mode = st.toggle(
         "高速入力モード（まとめて保存）",
