@@ -1301,6 +1301,94 @@ def _summary_to_row(summary):
     }
 
 
+def _overview_value_class(value, positive_good=True):
+    if value is None or value == 0:
+        return ""
+    if positive_good:
+        return "good" if value > 0 else "warn"
+    return "warn" if value > 0 else "good"
+
+
+def _overview_status_badges(summary):
+    d = summary["daily"]
+    badges = []
+    if summary["landing_profit"] is not None and summary["landing_profit"] < 0:
+        badges.append(("warn", "赤字予測"))
+    if d["planned_input_days"] < d["month_days"]:
+        badges.append(("note", f"予定未入力 {d['month_days'] - d['planned_input_days']}日"))
+    if d["elapsed_actual_missing"] > 0:
+        badges.append(("note", f"実績未入力 {d['elapsed_actual_missing']}日"))
+    if summary["unit"]["unit_price"] is None:
+        badges.append(("warn", "単価未算出"))
+    if not badges:
+        badges.append(("good", "入力確認OK"))
+    return "".join(
+        f"<span class='forecast-overview-badge {html.escape(css)}'>{html.escape(text)}</span>"
+        for css, text in badges[:3]
+    )
+
+
+def _overview_line(label, value, css="", note=""):
+    note_html = f"<small>{html.escape(note)}</small>" if note else ""
+    return (
+        "<div class='forecast-overview-line'>"
+        f"<span>{html.escape(label)}</span>"
+        f"<strong class='{html.escape(css)}'>{html.escape(value)}</strong>"
+        f"{note_html}"
+        "</div>"
+    )
+
+
+def _overview_facility_card(summary):
+    d = summary["daily"]
+    profit_class = "warn" if summary["landing_profit"] is not None and summary["landing_profit"] < 0 else ""
+    revenue_diff_class = _overview_value_class(summary["revenue_diff"], positive_good=True)
+    profit_diff_class = _overview_value_class(summary["profit_diff"], positive_good=True)
+    usage_diff_class = _overview_value_class(summary["usage_diff"], positive_good=True)
+    cost_diff_class = _overview_value_class(summary["sga_diff"], positive_good=False)
+    card_class = "loss" if profit_class == "warn" else ("missing" if summary["unit"]["unit_price"] is None else "steady")
+    last_updated = d["last_updated"] or "－"
+    body = "".join([
+        _overview_line("予定利用", _fmt_count(summary["planned_usage"])),
+        _overview_line("月末予測", _fmt_count(summary["landing_usage"])),
+        _overview_line("利用差", _fmt_diff_count(summary["usage_diff"]), usage_diff_class),
+        _overview_line("予定売上", _fmt_k_yen(summary["planned_revenue"])),
+        _overview_line("着地売上", _fmt_k_yen(summary["landing_revenue"])),
+        _overview_line("売上差", _fmt_diff_k_yen(summary["revenue_diff"]), revenue_diff_class),
+        _overview_line("予定利益", _fmt_k_yen(summary["planned_profit"]), "warn" if summary["planned_profit"] is not None and summary["planned_profit"] < 0 else ""),
+        _overview_line("着地利益", _fmt_k_yen(summary["landing_profit"]), profit_class),
+        _overview_line("利益差", _fmt_diff_k_yen(summary["profit_diff"]), profit_diff_class),
+        _overview_line("販管費差", _fmt_diff_k_yen(summary["sga_diff"]), cost_diff_class, "プラスは費用超過"),
+    ])
+    footer = "".join([
+        _overview_line("1人売上単価", _fmt_unit_k_yen(summary["unit"]["unit_price"]), "unit"),
+        _overview_line("予定入力", f"{d['planned_input_days']}/{d['month_days']}日"),
+        _overview_line("実績入力", f"{d['actual_input_days']}/{d['elapsed_days']}日"),
+        _overview_line("最終更新", str(last_updated)),
+    ])
+    return (
+        f"<section class='forecast-overview-card {card_class}'>"
+        "<div class='forecast-overview-head'>"
+        f"<strong>{html.escape(summary['facility']['label'])}</strong>"
+        f"<div>{_overview_status_badges(summary)}</div>"
+        "</div>"
+        f"<div class='forecast-overview-body'>{body}</div>"
+        f"<div class='forecast-overview-footer'>{footer}</div>"
+        "</section>"
+    )
+
+
+def _overview_total_item(label, value, note="", css=""):
+    note_html = f"<span>{html.escape(note)}</span>" if note else ""
+    return (
+        "<div class='forecast-total-item'>"
+        f"<small>{html.escape(label)}</small>"
+        f"<strong class='{html.escape(css)}'>{html.escape(value)}</strong>"
+        f"{note_html}"
+        "</div>"
+    )
+
+
 def _render_all_facilities(summaries):
     st.markdown("### 全施設一覧")
     rows = [_summary_to_row(summary) for summary in summaries]
@@ -1321,11 +1409,13 @@ def _render_all_facilities(summaries):
     total_planned_rate = _profit_rate(total_planned_profit, total_planned_revenue)
     total_landing_rate = _profit_rate(total_landing_profit, total_landing_revenue)
 
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("予定売上合計", _fmt_k_yen(total_planned_revenue))
-    c2.metric("着地予測売上合計", _fmt_k_yen(total_landing_revenue), _fmt_k_yen(total_revenue_diff))
-    c3.metric("着地予測利益合計", _fmt_k_yen(total_landing_profit), _fmt_k_yen(total_profit_diff))
-    c4.metric("全体着地予測利益率", _fmt_pct(total_landing_rate))
+    total_html = "".join([
+        _overview_total_item("予定売上合計", _fmt_k_yen(total_planned_revenue)),
+        _overview_total_item("着地予測売上合計", _fmt_k_yen(total_landing_revenue), _fmt_diff_k_yen(total_revenue_diff), _overview_value_class(total_revenue_diff, True)),
+        _overview_total_item("着地予測利益合計", _fmt_k_yen(total_landing_profit), _fmt_diff_k_yen(total_profit_diff), _overview_value_class(total_profit_diff, True)),
+        _overview_total_item("全体着地予測利益率", _fmt_pct(total_landing_rate), "利益合計 ÷ 売上合計", "warn" if total_landing_rate is not None and total_landing_rate < 0 else ""),
+    ])
+    st.markdown(f"<div class='forecast-total-strip'>{total_html}</div>", unsafe_allow_html=True)
 
     with st.expander("全施設合計の詳細", expanded=False):
         total_rows = pd.DataFrame([{
@@ -1343,14 +1433,22 @@ def _render_all_facilities(summaries):
         }])
         st.dataframe(total_rows, width="stretch", hide_index=True)
 
-    sortable = [
-        "売上差(千円)", "販管費差(千円)", "利益差(千円)",
-        "着地予測利益(千円)", "着地予測利益率", "月末着地予測利用回数",
-    ]
-    sc1, sc2 = st.columns([2, 1])
-    sort_col = sc1.selectbox("並び替えを選ぶ", sortable, index=2)
-    ascending = sc2.toggle("昇順", value=False)
+    sort_options = {
+        "利益差が小さい順（注意施設を上）": ("利益差(千円)", True),
+        "着地利益が小さい順": ("着地予測利益(千円)", True),
+        "売上差が大きい順": ("売上差(千円)", False),
+        "利用回数差が大きい順": ("利用回数差", False),
+        "月末予測利用が多い順": ("月末着地予測利用回数", False),
+    }
+    sort_label = st.selectbox("施設カードの並び替え", list(sort_options.keys()), index=0)
+    sort_col, ascending = sort_options[sort_label]
     df = df.sort_values(sort_col, ascending=ascending, na_position="last")
+    summary_by_label = {summary["facility"]["label"]: summary for summary in summaries}
+    sorted_summaries = [summary_by_label[name] for name in df["施設名"].tolist() if name in summary_by_label]
+
+    st.markdown("#### 施設別カード一覧")
+    cards_html = "".join(_overview_facility_card(summary) for summary in sorted_summaries)
+    st.markdown(f"<div class='forecast-overview-grid'>{cards_html}</div>", unsafe_allow_html=True)
 
     amount_cols = [c for c in df.columns if "(千円)" in c]
     pct_cols = ["予定利益率", "着地予測利益率"]
@@ -1365,12 +1463,13 @@ def _render_all_facilities(summaries):
 
     formatters = {col: "{:,.0f}" for col in amount_cols}
     formatters.update({col: "{:.1f}%" for col in pct_cols})
-    st.dataframe(
-        df.style.apply(row_style, axis=1).format(formatters, na_rep="－"),
-        width="stretch",
-        hide_index=True,
-        height=620,
-    )
+    with st.expander("詳細テーブルを開く", expanded=False):
+        st.dataframe(
+            df.style.apply(row_style, axis=1).format(formatters, na_rep="－"),
+            width="stretch",
+            hide_index=True,
+            height=520,
+        )
     st.caption("販管費差のプラスは費用超過を意味します。売上差・利益差・利用回数差のプラスとは色分けの意味が異なります。")
 
 
@@ -1809,6 +1908,173 @@ def _page_css():
             line-height: 1.35;
             margin-top: -3px;
         }
+        .forecast-total-strip {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(180px, 1fr));
+            gap: 12px;
+            margin: 14px 0 18px;
+        }
+        .forecast-total-item {
+            background: #ffffff;
+            border: 1px solid #e4edf5;
+            border-left: 5px solid #9cc7e6;
+            border-radius: 8px;
+            padding: 14px 16px;
+            box-shadow: 0 1px 5px rgba(38, 74, 112, 0.07);
+            min-height: 105px;
+        }
+        .forecast-total-item small {
+            display: block;
+            color: #5d6f82;
+            font-size: 0.82rem;
+            font-weight: 800;
+            margin-bottom: 8px;
+        }
+        .forecast-total-item strong {
+            display: block;
+            color: #10263d;
+            font-size: 1.45rem;
+            font-weight: 900;
+            line-height: 1.2;
+        }
+        .forecast-total-item strong.good {
+            color: #137343;
+        }
+        .forecast-total-item strong.warn {
+            color: #c2410c;
+        }
+        .forecast-total-item span {
+            display: inline-block;
+            margin-top: 9px;
+            padding: 3px 8px;
+            border-radius: 999px;
+            background: #eef6fb;
+            color: #607285;
+            font-size: 0.78rem;
+            font-weight: 800;
+        }
+        .forecast-overview-grid {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(260px, 1fr));
+            gap: 14px;
+            margin: 10px 0 18px;
+        }
+        .forecast-overview-card {
+            background: #ffffff;
+            border: 1px solid #e3edf5;
+            border-top: 6px solid #9cc7e6;
+            border-radius: 8px;
+            box-shadow: 0 1px 6px rgba(38, 74, 112, 0.08);
+            padding: 14px 15px 12px;
+        }
+        .forecast-overview-card.loss {
+            border-top-color: #f4a0a9;
+            background: linear-gradient(180deg, #fff7f8 0%, #ffffff 34%);
+        }
+        .forecast-overview-card.missing {
+            border-top-color: #f5c76b;
+            background: linear-gradient(180deg, #fffaf0 0%, #ffffff 34%);
+        }
+        .forecast-overview-card.steady {
+            border-top-color: #98d59c;
+            background: linear-gradient(180deg, #f8fff7 0%, #ffffff 34%);
+        }
+        .forecast-overview-head {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid #edf3f7;
+            margin-bottom: 8px;
+        }
+        .forecast-overview-head strong {
+            color: #10263d;
+            font-size: 1.04rem;
+            font-weight: 900;
+            line-height: 1.25;
+        }
+        .forecast-overview-head div {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 5px;
+        }
+        .forecast-overview-badge {
+            display: inline-flex;
+            align-items: center;
+            min-height: 22px;
+            padding: 2px 7px;
+            border-radius: 999px;
+            background: #edf5fb;
+            color: #526a80;
+            font-size: 0.72rem;
+            font-weight: 850;
+            line-height: 1.2;
+        }
+        .forecast-overview-badge.warn {
+            background: #fee2e2;
+            color: #b42318;
+        }
+        .forecast-overview-badge.good {
+            background: #e6f7ed;
+            color: #147a45;
+        }
+        .forecast-overview-badge.note {
+            background: #fff4d6;
+            color: #996300;
+        }
+        .forecast-overview-body,
+        .forecast-overview-footer {
+            display: grid;
+            grid-template-columns: 1fr;
+        }
+        .forecast-overview-footer {
+            margin-top: 8px;
+            padding-top: 6px;
+            border-top: 1px solid #edf3f7;
+            background: #fbfdff;
+            border-radius: 6px;
+        }
+        .forecast-overview-line {
+            display: grid;
+            grid-template-columns: minmax(88px, 1fr) auto;
+            gap: 8px;
+            align-items: baseline;
+            padding: 6px 0;
+            border-bottom: 1px solid #f0f4f7;
+        }
+        .forecast-overview-line:last-child {
+            border-bottom: 0;
+        }
+        .forecast-overview-line span {
+            color: #647789;
+            font-size: 0.78rem;
+            font-weight: 800;
+            line-height: 1.25;
+        }
+        .forecast-overview-line strong {
+            color: #10263d;
+            font-size: 0.95rem;
+            font-weight: 900;
+            line-height: 1.25;
+            text-align: right;
+            white-space: nowrap;
+        }
+        .forecast-overview-line strong.good {
+            color: #137343;
+        }
+        .forecast-overview-line strong.warn {
+            color: #c2410c;
+        }
+        .forecast-overview-line strong.unit {
+            color: #0f5f91;
+        }
+        .forecast-overview-line small {
+            grid-column: 1 / -1;
+            color: #8795a3;
+            font-size: 0.7rem;
+            line-height: 1.3;
+            margin-top: -3px;
+        }
         .forecast-kpi-grid {
             display: grid;
             grid-template-columns: repeat(4, minmax(150px, 1fr));
@@ -2006,6 +2272,12 @@ def _page_css():
             .forecast-summary-grid {
                 grid-template-columns: repeat(2, minmax(220px, 1fr));
             }
+            .forecast-total-strip {
+                grid-template-columns: repeat(2, minmax(180px, 1fr));
+            }
+            .forecast-overview-grid {
+                grid-template-columns: repeat(2, minmax(240px, 1fr));
+            }
             .forecast-kpi-grid {
                 grid-template-columns: repeat(2, minmax(150px, 1fr));
             }
@@ -2015,6 +2287,10 @@ def _page_css():
         }
         @media (max-width: 720px) {
             .forecast-summary-grid {
+                grid-template-columns: 1fr;
+            }
+            .forecast-total-strip,
+            .forecast-overview-grid {
                 grid-template-columns: 1fr;
             }
             .forecast-kpi-grid {
