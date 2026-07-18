@@ -2384,6 +2384,37 @@ def _page_css():
             background: #fff4f6 !important;
             box-shadow: 0 0 0 4px rgba(228, 109, 124, 0.18) !important;
         }
+        div[data-testid="stMarkdown"]:has(.forecast-select-label) + div[data-testid="stSelectbox"] {
+            margin-bottom: 12px;
+        }
+        div[data-testid="stMarkdown"]:has(.forecast-select-label) + div[data-testid="stSelectbox"] div[data-baseweb="select"] {
+            width: 100% !important;
+        }
+        div[data-testid="stMarkdown"]:has(.forecast-select-label) + div[data-testid="stSelectbox"] div[data-baseweb="select"] > div {
+            min-height: 42px !important;
+            padding-left: 10px !important;
+            padding-right: 8px !important;
+            overflow: hidden !important;
+        }
+        div[data-testid="stMarkdown"]:has(.forecast-select-label) + div[data-testid="stSelectbox"] div[data-baseweb="select"] > div > div:first-child {
+            flex: 1 1 auto !important;
+            min-width: 34px !important;
+            overflow: visible !important;
+        }
+        div[data-testid="stMarkdown"]:has(.forecast-select-label) + div[data-testid="stSelectbox"] div[data-baseweb="select"] span {
+            color: #0c2744 !important;
+            font-size: 0.95rem !important;
+            font-weight: 900 !important;
+            line-height: 1.2 !important;
+            white-space: nowrap !important;
+        }
+        div[data-testid="stMarkdown"]:has(.forecast-select-label) + div[data-testid="stSelectbox"] [aria-label="Clear value"],
+        div[data-testid="stMarkdown"]:has(.forecast-select-label) + div[data-testid="stSelectbox"] [aria-label="Clear all"] {
+            display: none !important;
+        }
+        div[data-testid="stMarkdown"]:has(.forecast-select-label) + div[data-testid="stSelectbox"] div[data-baseweb="select"] > div > div:last-child svg:not(:last-child) {
+            display: none !important;
+        }
         .forecast-side-panel {
             background: #ffffff;
             border: 1px solid #e4edf5;
