@@ -76,6 +76,7 @@ def init_login_schema():
         if 'position' not in user_cols:
             conn.execute("ALTER TABLE users ADD COLUMN position TEXT")
         _ensure_user_position_presets(conn)
+        _ensure_revenue_forecast_facility_users(conn)
 
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_login_events_login_at "
@@ -316,6 +317,51 @@ def _ensure_user_position_presets(conn):
         )
 
 
+def _ensure_revenue_forecast_facility_users(conn):
+    """売上収支予測表用の施設アカウントを個別に用意する。"""
+    from lib.revenue_forecast_access import (
+        FACILITY_FORECAST_PASSWORD_HASH,
+        FACILITY_FORECAST_USERS,
+    )
+
+    user_cols = {
+        r['name'] for r in conn.execute("PRAGMA table_info(users)").fetchall()
+    }
+    if 'password_hash' not in user_cols:
+        conn.execute("ALTER TABLE users ADD COLUMN password_hash TEXT")
+    if 'position' not in user_cols:
+        conn.execute("ALTER TABLE users ADD COLUMN position TEXT")
+
+    for forecast_user in FACILITY_FORECAST_USERS:
+        email = forecast_user["email"].strip().lower()
+        facility_label = forecast_user["facility_label"]
+        existing = conn.execute(
+            "SELECT id, role FROM users WHERE lower(email) = ?",
+            (email,),
+        ).fetchone()
+        if existing is None:
+            conn.execute(
+                """
+                INSERT INTO users (email, role, name, position, password_hash)
+                VALUES (?, 'user', ?, '施設管理者', ?)
+                """,
+                (email, facility_label, FACILITY_FORECAST_PASSWORD_HASH),
+            )
+            continue
+
+        conn.execute(
+            """
+            UPDATE users
+               SET role = CASE WHEN role = 'admin' THEN role ELSE 'user' END,
+                   name = ?,
+                   position = '施設管理者',
+                   password_hash = ?
+             WHERE id = ?
+            """,
+            (facility_label, FACILITY_FORECAST_PASSWORD_HASH, existing['id']),
+        )
+
+
 @contextmanager
 def get_conn():
     global _CLOUD_CONNECTION, _CLOUD_CONNECTION_KEY
@@ -509,6 +555,8 @@ def init_db():
                 "UPDATE users SET password_hash = ?, role = 'admin' WHERE id = ?",
                 (hash_password('emifull123'), existing['id']),
             )
+
+        _ensure_revenue_forecast_facility_users(conn)
 
         # === マイグレーション: 区分別の備考列を追加 ===
         record_cols = {

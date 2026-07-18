@@ -16,6 +16,7 @@ import sys
 import time
 import streamlit as st
 from lib import db
+from lib.revenue_forecast_access import facility_forecast_profile
 
 ADMIN_EMAIL = "kamada.rusk@emifull-group.or.jp"
 PRIME_READ_ONLY_EMAILS = {
@@ -132,6 +133,15 @@ def is_prime_only_user():
     return _session_email() in PRIME_ONLY_EMAILS
 
 
+def current_forecast_facility():
+    """売上収支予測表の施設専用アカウントなら、紐づく施設情報を返す。"""
+    return facility_forecast_profile(_session_email())
+
+
+def is_facility_forecast_user():
+    return current_forecast_facility() is not None
+
+
 def _calling_script_name():
     frame = sys._getframe()
     auth_filename = os.path.basename(__file__)
@@ -148,12 +158,28 @@ def _is_prime_or_login_context():
     return script_name in {"8_PRIME.py", "ログイン.py", "streamlit_app.py", _entrypoint_page()}
 
 
+def _is_forecast_or_login_context():
+    script_name = _calling_script_name()
+    return script_name in {"9_売上収支予測表.py", "ログイン.py", "streamlit_app.py", _entrypoint_page()}
+
+
 def _enforce_prime_only_scope():
     if not is_logged_in() or not is_prime_only_user() or _is_prime_or_login_context():
         return
     st.warning("このアカウントはPRIME専用です。PRIMEページへ移動します。")
     try:
         st.switch_page("pages/8_PRIME.py")
+    except Exception:
+        st.stop()
+    st.stop()
+
+
+def _enforce_facility_forecast_scope():
+    if not is_logged_in() or not is_facility_forecast_user() or _is_forecast_or_login_context():
+        return
+    st.warning("このアカウントは施設別の売上収支予測表専用です。自施設のカレンダーへ移動します。")
+    try:
+        st.switch_page("pages/9_売上収支予測表.py")
     except Exception:
         st.stop()
     st.stop()
@@ -483,7 +509,12 @@ def _render_role_navigation():
             ("pages/8_PRIME.py", "PRIME"),
         ]
     else:
-        if is_prime_only_user():
+        if is_facility_forecast_user():
+            links = [
+                (login_page, "ログイン"),
+                ("pages/9_売上収支予測表.py", "売上収支予測表"),
+            ]
+        elif is_prime_only_user():
             links = [
                 (login_page, "ログイン"),
                 ("pages/8_PRIME.py", "PRIME"),
@@ -510,6 +541,7 @@ def render_sidebar_navigation():
     touch_login_history()
     _inject_sidebar_permissions_css()
     _enforce_prime_only_scope()
+    _enforce_facility_forecast_scope()
     _render_role_navigation()
     render_sidebar_user_box()
 
