@@ -1407,7 +1407,7 @@ def _render_calendar_area(facility, target_ym, days, daily_by_date, current_user
             key_prefix=key_prefix,
         )
 
-    calendar_col, side_col = st.columns([3.85, 1.35], gap="medium")
+    calendar_col, side_col = st.columns([3.55, 1.65], gap="medium")
     with calendar_col:
         saved_count, changes = _render_calendar_grid(
             facility, target_ym, days, daily_by_date, current_user,
@@ -2755,11 +2755,14 @@ def _page_css():
         }
         .forecast-select-label {
             color: #657789;
-            font-size: 0.64rem;
+            font-size: 0.58rem;
             font-weight: 800;
             margin: 1px 0 0;
-            padding: 1px 5px;
+            padding: 1px 2px;
             line-height: 1.2;
+            text-align: center;
+            white-space: nowrap;
+            overflow: hidden;
         }
         .forecast-select-label.actual {
             color: #9f2936;
@@ -2785,13 +2788,13 @@ def _page_css():
         div[data-testid="stMarkdown"]:has(.forecast-select-label) + div[data-testid="stSelectbox"] div[data-baseweb="select"] > div {
             min-height: 29px !important;
             height: 29px !important;
-            padding-left: 7px !important;
-            padding-right: 5px !important;
+            padding-left: 6px !important;
+            padding-right: 3px !important;
             overflow: hidden !important;
         }
         div[data-testid="stMarkdown"]:has(.forecast-select-label) + div[data-testid="stSelectbox"] div[data-baseweb="select"] > div > div:first-child {
             flex: 1 1 auto !important;
-            min-width: 42px !important;
+            min-width: 26px !important;
             overflow: visible !important;
         }
         div[data-testid="stMarkdown"]:has(.forecast-select-label) + div[data-testid="stSelectbox"] div[data-baseweb="select"] span {
@@ -2809,9 +2812,9 @@ def _page_css():
             display: none !important;
         }
         div[data-testid="stMarkdown"]:has(.forecast-select-label) + div[data-testid="stSelectbox"] div[data-baseweb="select"] > div > div:last-child {
-            flex: 0 0 18px !important;
-            width: 18px !important;
-            min-width: 18px !important;
+            flex: 0 0 14px !important;
+            width: 14px !important;
+            min-width: 14px !important;
             overflow: hidden !important;
             justify-content: flex-end !important;
         }
@@ -2820,6 +2823,41 @@ def _page_css():
         }
         div[data-testid="stMarkdown"]:has(.forecast-select-label) + div[data-testid="stSelectbox"] div[data-baseweb="select"] > div > div:last-child svg:not(:last-child) {
             display: none !important;
+        }
+        div[data-testid="stElementContainer"][class*="_plan_choice_"] div[data-baseweb="select"],
+        div[data-testid="stElementContainer"][class*="_actual_choice_"] div[data-baseweb="select"] {
+            width: 100% !important;
+            min-width: 42px !important;
+        }
+        div[data-testid="stElementContainer"][class*="_plan_choice_"] div[data-baseweb="select"] > div,
+        div[data-testid="stElementContainer"][class*="_actual_choice_"] div[data-baseweb="select"] > div {
+            min-height: 27px !important;
+            height: 27px !important;
+            padding-left: 5px !important;
+            padding-right: 2px !important;
+            overflow: hidden !important;
+        }
+        div[data-testid="stElementContainer"][class*="_plan_choice_"] div[data-baseweb="select"] > div > div:first-child,
+        div[data-testid="stElementContainer"][class*="_actual_choice_"] div[data-baseweb="select"] > div > div:first-child {
+            flex: 1 1 auto !important;
+            min-width: 24px !important;
+            overflow: visible !important;
+        }
+        div[data-testid="stElementContainer"][class*="_plan_choice_"] div[data-baseweb="select"] div[value],
+        div[data-testid="stElementContainer"][class*="_actual_choice_"] div[data-baseweb="select"] div[value] {
+            color: #0c2744 !important;
+            font-size: 0.78rem !important;
+            font-weight: 900 !important;
+            line-height: 1.1 !important;
+            white-space: nowrap !important;
+        }
+        div[data-testid="stElementContainer"][class*="_plan_choice_"] div[data-baseweb="select"] > div > div:last-child,
+        div[data-testid="stElementContainer"][class*="_actual_choice_"] div[data-baseweb="select"] > div > div:last-child {
+            flex: 0 0 14px !important;
+            width: 14px !important;
+            min-width: 14px !important;
+            overflow: hidden !important;
+            justify-content: flex-end !important;
         }
         .forecast-side-panel {
             background: #ffffff;
@@ -2843,19 +2881,21 @@ def _page_css():
             display: flex;
             justify-content: space-between;
             align-items: baseline;
-            gap: 14px;
+            gap: 8px;
             padding: 11px 0;
             border-bottom: 1px solid #edf3f7;
         }
         .forecast-side-row span {
             color: #5d6f82;
-            font-size: 0.88rem;
+            font-size: 0.82rem;
             font-weight: 850;
             line-height: 1.35;
+            min-width: 112px;
+            white-space: nowrap;
         }
         .forecast-side-row strong {
             color: #17324d;
-            font-size: 1.08rem;
+            font-size: 1rem;
             font-weight: 950;
             text-align: right;
             white-space: nowrap;
@@ -3085,7 +3125,7 @@ selected_facility = None
 if view_mode == "施設別入力・予測":
     selected_facility = (
         facilities[0]
-        if _is_locked_single_facility_profile(forecast_profile)
+        if len(facilities) == 1
         else _render_facility_select_panel(facilities)
     )
 
