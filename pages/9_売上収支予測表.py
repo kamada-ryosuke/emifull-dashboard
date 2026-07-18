@@ -1263,7 +1263,7 @@ def _render_usage_side_panel(summary):
         ("1日平均利用人数", _fmt_average(avg_users)),
         ("1人売上単価", _fmt_unit_yen(summary["unit"]["unit_price"])),
         ("平均経費単価", _fmt_unit_yen(expense_unit)),
-        ("－の日数", f"{daily['landing_missing_days']} 日"),
+        ("－の日数（営業なし）", f"{daily['landing_missing_days']} 日"),
         ("実績未入力", f"{daily['elapsed_actual_missing']} 日"),
         ("最終更新", daily["last_updated"] or "－"),
     ]
@@ -1301,6 +1301,42 @@ def _render_usage_side_panel(summary):
         "</div>"
         for label, value in landing_rows
     )
+    def needed_users_for_rate(target_rate):
+        unit_price = summary["unit"].get("unit_price")
+        sga_amount = summary.get("landing_sga")
+        landing_revenue = summary.get("landing_revenue")
+        if unit_price is None or unit_price <= 0 or sga_amount is None or landing_revenue is None:
+            return None
+        required_revenue = sga_amount / (1 - target_rate / 100)
+        shortfall = required_revenue - landing_revenue
+        return 0 if shortfall <= 0 else int(math.ceil(shortfall / unit_price))
+
+    def needed_users_for_profit_zero():
+        unit_price = summary["unit"].get("unit_price")
+        landing_profit_value = summary.get("landing_profit")
+        if unit_price is None or unit_price <= 0 or landing_profit_value is None:
+            return None
+        shortfall = -landing_profit_value
+        return 0 if shortfall <= 0 else int(math.ceil(shortfall / unit_price))
+
+    def fmt_needed_users(value):
+        if value is None:
+            return "算出不可"
+        if value <= 0:
+            return "達成済み"
+        return f"あと {value:,} 人"
+
+    needed_rows = [
+        ("赤字解消まで", fmt_needed_users(needed_users_for_profit_zero())),
+        ("利益率5%以上まで", fmt_needed_users(needed_users_for_rate(5))),
+        ("利益率10%以上まで", fmt_needed_users(needed_users_for_rate(10))),
+    ]
+    needed_body = "".join(
+        "<div class='forecast-side-needed-row'>"
+        f"<span>{html.escape(label)}</span><strong>{html.escape(value)}</strong>"
+        "</div>"
+        for label, value in needed_rows
+    )
     updated_by = html.escape(daily["last_updated_by"] or "－")
     st.markdown(
         f"""
@@ -1311,6 +1347,11 @@ def _render_usage_side_panel(summary):
                 <div class="forecast-side-landing-title">着地予測</div>
                 <p>{html.escape(landing_copy)}</p>
                 {landing_body}
+            </div>
+            <div class="forecast-side-needed">
+                <div class="forecast-side-needed-title">必要利用人数</div>
+                <p>今の着地予測から、目標利益までに必要な追加人数です。</p>
+                {needed_body}
             </div>
             <div class="forecast-side-updated">最終更新者: {updated_by}</div>
         </div>
@@ -2732,6 +2773,48 @@ def _page_css():
         .forecast-side-landing.caution .forecast-side-landing-row strong,
         .forecast-side-landing.caution p {
             color: #946200;
+        }
+        .forecast-side-needed {
+            margin-top: 12px;
+            padding: 13px 13px 12px;
+            border: 2px solid #ef8b8b;
+            border-left: 6px solid #dc2626;
+            border-radius: 8px;
+            background: #fff7f7;
+            box-shadow: 0 1px 5px rgba(220, 38, 38, 0.08);
+        }
+        .forecast-side-needed-title {
+            color: #991b1b;
+            font-size: 0.98rem;
+            font-weight: 950;
+            margin-bottom: 5px;
+        }
+        .forecast-side-needed p {
+            margin: 0 0 9px;
+            color: #9f2936;
+            font-size: 0.8rem;
+            font-weight: 850;
+            line-height: 1.45;
+        }
+        .forecast-side-needed-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            gap: 10px;
+            padding: 7px 0;
+            border-top: 1px solid #f3c5c5;
+        }
+        .forecast-side-needed-row span {
+            color: #7f1d1d;
+            font-size: 0.8rem;
+            font-weight: 900;
+        }
+        .forecast-side-needed-row strong {
+            color: #b91c1c;
+            font-size: 1.02rem;
+            font-weight: 950;
+            text-align: right;
+            white-space: nowrap;
         }
         .forecast-side-updated {
             color: #7b8794;
