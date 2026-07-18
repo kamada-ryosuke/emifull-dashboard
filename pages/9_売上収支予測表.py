@@ -611,7 +611,7 @@ def _daily_metrics(days, daily_by_date, today):
     landing_missing_days = 0
     future_plan_missing = 0
     elapsed_actual_missing = 0
-    elapsed_days = sum(1 for d in days if d <= today)
+    elapsed_days = 0
     last_updated = None
     last_updated_by = ""
 
@@ -619,11 +619,13 @@ def _daily_metrics(days, daily_by_date, today):
         rec = daily_by_date.get(d) or {}
         planned = rec.get("planned_users")
         actual = rec.get("actual_users")
+        is_business_day = planned is not None or actual is not None
         if planned is not None:
             planned_total += int(planned)
             planned_input_days += 1
-            if int(planned) > 0:
-                business_planned_days += 1
+            business_planned_days += 1
+        if d <= today and is_business_day:
+            elapsed_days += 1
         if actual is not None and d <= today:
             actual_to_date += int(actual)
             actual_input_days += 1
@@ -638,9 +640,7 @@ def _daily_metrics(days, daily_by_date, today):
                 elapsed_actual_missing += 1
         else:
             landing_missing_days += 1
-            if d <= today:
-                elapsed_actual_missing += 1
-            else:
+            if d > today:
                 future_plan_missing += 1
 
         updated_at = rec.get("updated_at")
@@ -721,12 +721,8 @@ def _summary_status(summary):
     status = []
     if summary["landing_profit"] is not None and summary["landing_profit"] < 0:
         status.append("赤字予測")
-    if summary["daily"]["planned_input_days"] < summary["daily"]["month_days"]:
-        status.append("予定未入力")
     if summary["daily"]["elapsed_actual_missing"] > 0:
         status.append("実績未入力")
-    if summary["daily"]["future_plan_missing"] > 0:
-        status.append("着地予測未完成")
     if summary["unit"]["unit_price"] is None:
         status.append("単価未算出")
     if summary["sga"]["forecast"] is None:
@@ -785,7 +781,6 @@ def _render_summary_cards(summary):
     profit_css = "warn" if summary["planned_profit"] is not None and summary["planned_profit"] < 0 else ""
     landing_profit_css = "warn" if summary["landing_profit"] is not None and summary["landing_profit"] < 0 else ""
     sga_css = "cost"
-    diff_cost_css = "warn" if (summary["sga_diff"] or 0) > 0 else ""
     diff_profit_css = "good" if (summary["profit_diff"] or 0) > 0 else ("warn" if (summary["profit_diff"] or 0) < 0 else "")
     diff_revenue_css = "good" if (summary["revenue_diff"] or 0) > 0 else ("warn" if (summary["revenue_diff"] or 0) < 0 else "")
 
@@ -822,7 +817,6 @@ def _render_summary_cards(summary):
             [
                 ("利用回数差", _fmt_diff_count(summary["usage_diff"]), "good" if summary["usage_diff"] > 0 else ("warn" if summary["usage_diff"] < 0 else "")),
                 ("売上差", _fmt_k_yen(summary["revenue_diff"]), diff_revenue_css),
-                ("販管費差", _fmt_k_yen(summary["sga_diff"]), diff_cost_css),
                 ("利益差", _fmt_k_yen(summary["profit_diff"]), diff_profit_css),
                 ("利益率差", "－" if summary["rate_diff"] is None else f"{summary['rate_diff']:+.1f}%", diff_profit_css),
             ],
@@ -862,7 +856,6 @@ def _render_top_kpis(summary):
     usage_diff_tone = "good" if summary["usage_diff"] > 0 else ("warn" if summary["usage_diff"] < 0 else "")
     revenue_diff_tone = "good" if (summary["revenue_diff"] or 0) > 0 else ("warn" if (summary["revenue_diff"] or 0) < 0 else "")
     profit_diff_tone = "good" if (summary["profit_diff"] or 0) > 0 else ("warn" if (summary["profit_diff"] or 0) < 0 else "")
-    sga_diff_tone = "warn" if (summary["sga_diff"] or 0) > 0 else ""
     expense_unit = (
         summary["landing_sga"] / summary["landing_usage"]
         if summary["landing_sga"] is not None and summary["landing_usage"]
@@ -875,7 +868,12 @@ def _render_top_kpis(summary):
             "予定",
             "月初・事前に入力した計画",
             [
-                ("予定利用回数", _fmt_count(summary["planned_usage"]), "", f"予定入力 {daily['planned_input_days']}/{daily['month_days']}日"),
+                (
+                    "予定利用回数",
+                    _fmt_count(summary["planned_usage"]),
+                    "",
+                    f"営業日 {daily['business_planned_days']}日 / － {daily['landing_missing_days']}日",
+                ),
                 ("予定売上", _fmt_k_yen(summary["planned_revenue"]), ""),
                 ("予定販管費", _fmt_k_yen(summary["planned_sga"]), "cost"),
                 ("予定利益", _fmt_k_yen(summary["planned_profit"]), planned_profit_tone),
@@ -907,7 +905,6 @@ def _render_top_kpis(summary):
             [
                 ("利用回数差", _fmt_diff_count(summary["usage_diff"]), usage_diff_tone),
                 ("売上差", _fmt_diff_k_yen(summary["revenue_diff"]), revenue_diff_tone),
-                ("販管費差", _fmt_diff_k_yen(summary["sga_diff"]), sga_diff_tone, "プラスは費用超過"),
                 ("利益差", _fmt_diff_k_yen(summary["profit_diff"]), profit_diff_tone),
                 ("利益率差", _fmt_diff_pct(summary["rate_diff"]), profit_diff_tone),
             ],
@@ -983,10 +980,10 @@ def _detail_basis_tables(summary):
 def _render_input_status(summary):
     d = summary["daily"]
     cols = st.columns(6)
-    cols[0].metric("予定入力済み", f"{d['planned_input_days']}/{d['month_days']} 日")
-    cols[1].metric("営業予定日数", f"{d['business_planned_days']} 日")
+    cols[0].metric("営業日数", f"{d['business_planned_days']} 日")
+    cols[1].metric("対象月日数", f"{d['month_days']} 日")
     cols[2].metric("実績入力済み", f"{d['actual_input_days']}/{d['elapsed_days']} 日")
-    cols[3].metric("予定未入力", f"{d['month_days'] - d['planned_input_days']} 日")
+    cols[3].metric("－の日数", f"{d['landing_missing_days']} 日")
     cols[4].metric("実績未入力", f"{d['elapsed_actual_missing']} 日")
     cols[5].metric("最終更新", d["last_updated"] or "－")
     if d["last_updated_by"]:
@@ -1197,7 +1194,7 @@ def _render_usage_side_panel(summary):
         ("1日平均利用人数", _fmt_average(avg_users)),
         ("1人売上単価", _fmt_unit_k_yen(summary["unit"]["unit_price"])),
         ("平均経費単価", _fmt_unit_k_yen(expense_unit)),
-        ("予定未入力", f"{daily['month_days'] - daily['planned_input_days']} 日"),
+        ("－の日数", f"{daily['landing_missing_days']} 日"),
         ("実績未入力", f"{daily['elapsed_actual_missing']} 日"),
         ("最終更新", daily["last_updated"] or "－"),
     ]
@@ -1277,24 +1274,33 @@ def _render_daily_editor(facility, target_ym, days, daily_by_date):
         help="オンにすると、プルダウンを何日分も続けて選んでから一括保存できます。",
     )
     if fast_mode:
-        st.caption("予定・実績を続けて選んだあと、下の「変更分をまとめて保存」を押してください。「－」は未入力、「0」は0人です。")
+        st.caption("予定・実績を続けて選んだあと、「変更分をまとめて保存」を押してください。予定欄の「－」は営業日ではない日、「0」は営業日の利用0人です。")
     else:
-        st.caption("選択するたびに自動保存します。入力直後の再表示を軽くするため、保存後の強制更新は行いません。")
+        st.caption("選択するたびに自動保存します。予定欄の「－」は営業日ではない日、「0」は営業日の利用0人です。")
 
     current = auth.current_user() or {}
 
     if fast_mode:
         with st.form(f"forecast_fast_form_{target_ym}_{facility['key']}"):
+            top_submitted = st.form_submit_button(
+                "変更分をまとめて保存",
+                type="primary",
+                use_container_width=True,
+                key=f"forecast_fast_save_top_{target_ym}_{facility['key']}",
+            )
+            st.caption("入力後はこのボタン、またはカレンダー下の同じボタンで保存できます。")
             _, changes = _render_calendar_grid(
                 facility, target_ym, days, daily_by_date, current,
                 auto_save=False,
                 key_prefix="forecast_fast",
             )
-            submitted = st.form_submit_button(
+            bottom_submitted = st.form_submit_button(
                 "変更分をまとめて保存",
                 type="primary",
                 use_container_width=True,
+                key=f"forecast_fast_save_bottom_{target_ym}_{facility['key']}",
             )
+            submitted = top_submitted or bottom_submitted
         if submitted:
             saved_count = 0
             try:
@@ -1337,13 +1343,13 @@ def _summary_to_row(summary):
         "売上差(千円)": _yen_to_thousand(summary["revenue_diff"]),
         "予定販管費(千円)": _yen_to_thousand(summary["planned_sga"]),
         "着地予測販管費(千円)": _yen_to_thousand(summary["landing_sga"]),
-        "販管費差(千円)": _yen_to_thousand(summary["sga_diff"]),
         "予定利益(千円)": _yen_to_thousand(summary["planned_profit"]),
         "着地予測利益(千円)": _yen_to_thousand(summary["landing_profit"]),
         "利益差(千円)": _yen_to_thousand(summary["profit_diff"]),
         "予定利益率": summary["planned_rate"],
         "着地予測利益率": summary["landing_rate"],
-        "予定入力状況": f"{d['planned_input_days']}/{d['month_days']}日",
+        "営業日数": f"{d['business_planned_days']}日",
+        "－の日数": f"{d['landing_missing_days']}日",
         "実績入力状況": f"{d['actual_input_days']}/{d['elapsed_days']}日",
         "最終更新日": d["last_updated"] or "",
         "状態": _summary_status(summary),
@@ -1363,8 +1369,7 @@ def _overview_status_badges(summary):
     badges = []
     if summary["landing_profit"] is not None and summary["landing_profit"] < 0:
         badges.append(("warn", "赤字予測"))
-    if d["planned_input_days"] < d["month_days"]:
-        badges.append(("note", f"予定未入力 {d['month_days'] - d['planned_input_days']}日"))
+    badges.append(("note", f"営業日 {d['business_planned_days']}日"))
     if d["elapsed_actual_missing"] > 0:
         badges.append(("note", f"実績未入力 {d['elapsed_actual_missing']}日"))
     if summary["unit"]["unit_price"] is None:
@@ -1394,7 +1399,6 @@ def _overview_facility_card(summary):
     revenue_diff_class = _overview_value_class(summary["revenue_diff"], positive_good=True)
     profit_diff_class = _overview_value_class(summary["profit_diff"], positive_good=True)
     usage_diff_class = _overview_value_class(summary["usage_diff"], positive_good=True)
-    cost_diff_class = _overview_value_class(summary["sga_diff"], positive_good=False)
     card_class = "loss" if profit_class == "warn" else ("missing" if summary["unit"]["unit_price"] is None else "steady")
     last_updated = d["last_updated"] or "－"
     body = "".join([
@@ -1407,11 +1411,11 @@ def _overview_facility_card(summary):
         _overview_line("予定利益", _fmt_k_yen(summary["planned_profit"]), "warn" if summary["planned_profit"] is not None and summary["planned_profit"] < 0 else ""),
         _overview_line("着地利益", _fmt_k_yen(summary["landing_profit"]), profit_class),
         _overview_line("利益差", _fmt_diff_k_yen(summary["profit_diff"]), profit_diff_class),
-        _overview_line("販管費差", _fmt_diff_k_yen(summary["sga_diff"]), cost_diff_class, "プラスは費用超過"),
     ])
     footer = "".join([
         _overview_line("1人売上単価", _fmt_unit_k_yen(summary["unit"]["unit_price"]), "unit"),
-        _overview_line("予定入力", f"{d['planned_input_days']}/{d['month_days']}日"),
+        _overview_line("営業日数", f"{d['business_planned_days']}日"),
+        _overview_line("－の日数", f"{d['landing_missing_days']}日"),
         _overview_line("実績入力", f"{d['actual_input_days']}/{d['elapsed_days']}日"),
         _overview_line("最終更新", str(last_updated)),
     ])
@@ -1453,7 +1457,6 @@ def _render_all_facilities(summaries):
     total_planned_profit = total_planned_revenue - total_planned_sga
     total_landing_profit = total_landing_revenue - total_landing_sga
     total_revenue_diff = total_landing_revenue - total_planned_revenue
-    total_sga_diff = total_landing_sga - total_planned_sga
     total_profit_diff = total_landing_profit - total_planned_profit
     total_planned_rate = _profit_rate(total_planned_profit, total_planned_revenue)
     total_landing_rate = _profit_rate(total_landing_profit, total_landing_revenue)
@@ -1473,7 +1476,6 @@ def _render_all_facilities(summaries):
             "売上差合計(千円)": _yen_to_thousand(total_revenue_diff),
             "予定販管費合計(千円)": _yen_to_thousand(total_planned_sga),
             "着地予測販管費合計(千円)": _yen_to_thousand(total_landing_sga),
-            "販管費差合計(千円)": _yen_to_thousand(total_sga_diff),
             "予定利益合計(千円)": _yen_to_thousand(total_planned_profit),
             "着地予測利益合計(千円)": _yen_to_thousand(total_landing_profit),
             "利益差合計(千円)": _yen_to_thousand(total_profit_diff),
@@ -1506,7 +1508,7 @@ def _render_all_facilities(summaries):
         styles = [""] * len(row)
         if "赤字予測" in str(row.get("状態")):
             styles = ["background-color:#fff1f2"] * len(row)
-        elif "予定未入力" in str(row.get("状態")) or "実績未入力" in str(row.get("状態")):
+        elif "実績未入力" in str(row.get("状態")):
             styles = ["background-color:#fff7ed"] * len(row)
         return styles
 
@@ -1519,7 +1521,7 @@ def _render_all_facilities(summaries):
             hide_index=True,
             height=520,
         )
-    st.caption("販管費差のプラスは費用超過を意味します。売上差・利益差・利用回数差のプラスとは色分けの意味が異なります。")
+    st.caption("差異は「着地予測 - 予定」です。売上差・利益差・利用回数差は、プラスを上振れとして見ます。")
 
 
 def _set_target_month_state(year, month):
@@ -2448,10 +2450,10 @@ else:
     st.markdown(f"### {selected_facility['label']} ／ {target_year}年{target_month_number}月")
     _render_top_kpis(summary)
     _render_profit_rate_alert(summary)
-    if summary["daily"]["future_plan_missing"] > 0:
-        st.warning("未来日の予定未入力があります。月末着地予測は不完全です。")
+    if summary["daily"]["landing_missing_days"] > 0:
+        st.caption("予定欄が「－」の日は、営業日ではない日として0人扱いです。営業日は0〜30人を選んでください。")
     if summary["daily"]["elapsed_actual_missing"] > 0:
-        st.info("経過日で実績未入力の日があります。月末着地予測では予定人数で補っています。未入力と0人は区別して扱います。")
+        st.info("営業日で実績未入力の日があります。月末着地予測では予定人数で補っています。未入力と0人は区別して扱います。")
     if summary["elapsed_reference_sga"] is not None:
         st.caption(f"経過日ベースの参考販管費: {_fmt_k_yen(summary['elapsed_reference_sga'])}（確定費用ではなく、月間販管費予測の経過日按分です）")
 
