@@ -2678,33 +2678,46 @@ def _page_css():
             gap: 0.05rem !important;
         }
         .forecast-calendar-day.closed-day .forecast-calendar-date-row {
+            display: grid;
+            grid-template-columns: auto 1fr;
             align-items: center;
-            gap: 3px;
+            column-gap: 4px;
+            row-gap: 2px;
         }
         .forecast-calendar-day.closed-day .forecast-calendar-label {
-            display: flex;
-            flex-direction: column;
-            align-items: flex-end;
-            min-width: 48px;
-            font-size: 0.56rem;
-            line-height: 1.05;
+            grid-column: 1 / -1;
+            justify-self: center;
+            display: inline-flex;
+            flex-direction: row;
+            align-items: center;
+            justify-content: center;
+            gap: 2px;
+            max-width: 100%;
+            min-width: 0;
+            font-size: 0.52rem;
+            line-height: 1;
+            text-align: center;
             white-space: nowrap;
+            overflow: hidden;
         }
         .forecast-calendar-day.closed-day .forecast-calendar-label::after {
             content: "営業なし";
             display: inline-flex;
             align-items: center;
-            width: max-content;
-            margin-top: 1px;
-            padding: 1px 3px;
+            justify-content: center;
+            max-width: 44px;
+            margin-top: 0;
+            padding: 1px 2px;
             border: 1px solid rgba(242, 201, 76, 0.7);
             border-radius: 999px;
             background: #fff3bf;
             color: #8a6400;
-            font-size: 0.56rem;
+            font-size: 0.52rem;
             font-weight: 900;
             line-height: 1;
             white-space: nowrap;
+            overflow: hidden;
+            box-sizing: border-box;
         }
         .forecast-calendar-day.today:not(.closed-day) .forecast-calendar-label::after {
             content: "今日";
