@@ -187,6 +187,17 @@ def _fmt_average(value, suffix="人"):
     return f"{value:.1f}{suffix}"
 
 
+def _unit_basis_average_note(unit):
+    rows = unit.get("rows") or []
+    if not rows or unit.get("revenue_total") is None or not unit.get("usage_total"):
+        return "損益データと延べ利用回数を確認"
+    months = len(rows)
+    label = "3カ月平均" if months == 3 else f"採用{months}カ月平均"
+    revenue_avg = unit["revenue_total"] / months
+    usage_avg = unit["usage_total"] / months
+    return f"{label}: 売上 {_fmt_k_yen(revenue_avg)}/月・利用 {_fmt_average(usage_avg, '回/月')}"
+
+
 def _month_label(year, month):
     return f"{int(year)}年{int(month)}月"
 
@@ -595,6 +606,9 @@ def _daily_metrics(days, daily_by_date, today):
     planned_input_days = 0
     actual_input_days = 0
     business_planned_days = 0
+    landing_actual_days = 0
+    landing_plan_fill_days = 0
+    landing_missing_days = 0
     future_plan_missing = 0
     elapsed_actual_missing = 0
     elapsed_days = sum(1 for d in days if d <= today)
@@ -614,16 +628,18 @@ def _daily_metrics(days, daily_by_date, today):
             actual_to_date += int(actual)
             actual_input_days += 1
 
-        if d <= today:
-            if actual is None:
+        if actual is not None:
+            landing_total += int(actual)
+            landing_actual_days += 1
+        elif planned is not None:
+            landing_total += int(planned)
+            landing_plan_fill_days += 1
+            if d <= today:
                 elapsed_actual_missing += 1
-            else:
-                landing_total += int(actual)
         else:
-            if actual is not None:
-                landing_total += int(actual)
-            elif planned is not None:
-                landing_total += int(planned)
+            landing_missing_days += 1
+            if d <= today:
+                elapsed_actual_missing += 1
             else:
                 future_plan_missing += 1
 
@@ -639,6 +655,9 @@ def _daily_metrics(days, daily_by_date, today):
         "planned_input_days": planned_input_days,
         "actual_input_days": actual_input_days,
         "business_planned_days": business_planned_days,
+        "landing_actual_days": landing_actual_days,
+        "landing_plan_fill_days": landing_plan_fill_days,
+        "landing_missing_days": landing_missing_days,
         "future_plan_missing": future_plan_missing,
         "elapsed_actual_missing": elapsed_actual_missing,
         "elapsed_days": elapsed_days,
@@ -713,6 +732,34 @@ def _summary_status(summary):
     if summary["sga"]["forecast"] is None:
         status.append("販管費未算出")
     return " / ".join(status) if status else "順調"
+
+
+def _render_profit_rate_alert(summary):
+    landing_profit = summary.get("landing_profit")
+    landing_rate = summary.get("landing_rate")
+    if landing_profit is None and landing_rate is None:
+        return
+
+    if landing_profit is not None and landing_profit < 0:
+        st.error(
+            "赤字見込みです。営業・利用調整を最優先で動く必要があります。"
+            "新規利用、追加利用、欠席フォロー、売上単価、販管費の根拠をすぐ確認してください。"
+        )
+        return
+
+    if landing_rate is None:
+        return
+
+    if landing_rate < 5:
+        st.warning(
+            f"着地予測利益率が {_fmt_pct(landing_rate)} です。5%を下回っています。"
+            "早急に対策を講じてください。利用回数の上積み、追加利用の声かけ、経費の見直しを確認しましょう。"
+        )
+    elif landing_rate < 10:
+        st.warning(
+            f"着地予測利益率が {_fmt_pct(landing_rate)} です。10%を下回っています。"
+            "月末までに利益を守る対策を講じてください。利用予定、欠席見込み、販管費を確認しましょう。"
+        )
 
 
 def _metric_card(title, rows, accent="#7fb8df"):
@@ -821,11 +868,7 @@ def _render_top_kpis(summary):
         if summary["landing_sga"] is not None and summary["landing_usage"]
         else None
     )
-    unit_rows_note = (
-        f"参照売上 {_fmt_k_yen(unit['revenue_total'])} / 利用 {unit['usage_total']:,}回"
-        if unit["revenue_total"] is not None and unit["usage_total"]
-        else "損益データと延べ利用回数を確認"
-    )
+    unit_rows_note = _unit_basis_average_note(unit)
     unit_basis_tone = "" if unit["unit_price"] is not None else "warn"
     groups = [
         _summary_group(
@@ -842,10 +885,15 @@ def _render_top_kpis(summary):
         ),
         _summary_group(
             "実績・着地予測",
-            "入力済み実績 + 未来予定",
+            "実績優先 + 未入力日は予定",
             [
                 ("現時点実績", _fmt_count(summary["actual_usage"]), "", f"実績入力 {daily['actual_input_days']}/{daily['elapsed_days']}日"),
-                ("月末予測利用回数", _fmt_count(summary["landing_usage"]), ""),
+                (
+                    "月末予測利用回数",
+                    _fmt_count(summary["landing_usage"]),
+                    "",
+                    f"実績 {daily['landing_actual_days']}日 + 予定補完 {daily['landing_plan_fill_days']}日",
+                ),
                 ("現時点実績売上", _fmt_k_yen(summary["current_revenue"]), ""),
                 ("着地予測売上", _fmt_k_yen(summary["landing_revenue"]), ""),
                 ("着地予測利益", _fmt_k_yen(summary["landing_profit"]), landing_profit_tone),
@@ -893,7 +941,7 @@ def _detail_basis_tables(summary):
         else:
             st.caption(
                 f"{unit['source_label']} ／ 採用単価: "
-                f"{int(unit['unit_price']):,} 円/回"
+                f"{int(unit['unit_price']):,} 円/回 ／ {_unit_basis_average_note(unit)}"
             )
         rows = [
             {
@@ -1144,6 +1192,7 @@ def _render_usage_side_panel(summary):
     status_rows = [
         ("月間予定人数", _fmt_count(summary["planned_usage"])),
         ("月末予測人数", _fmt_count(summary["landing_usage"])),
+        ("予測内訳", f"実績{daily['landing_actual_days']}日 + 予定{daily['landing_plan_fill_days']}日"),
         ("今月の営業予定日数", f"{business_days} 日"),
         ("1日平均利用人数", _fmt_average(avg_users)),
         ("1人売上単価", _fmt_unit_k_yen(summary["unit"]["unit_price"])),
@@ -2398,12 +2447,11 @@ else:
     summary = next(s for s in summaries if s["facility"]["key"] == selected_facility["key"])
     st.markdown(f"### {selected_facility['label']} ／ {target_year}年{target_month_number}月")
     _render_top_kpis(summary)
-    if summary["landing_profit"] is not None and summary["landing_profit"] < 0:
-        st.warning("着地予測利益がマイナスです。利用回数、売上単価、販管費の根拠を確認してください。")
+    _render_profit_rate_alert(summary)
     if summary["daily"]["future_plan_missing"] > 0:
         st.warning("未来日の予定未入力があります。月末着地予測は不完全です。")
     if summary["daily"]["elapsed_actual_missing"] > 0:
-        st.info("経過日で実績未入力の日があります。未入力と0人は区別して扱います。")
+        st.info("経過日で実績未入力の日があります。月末着地予測では予定人数で補っています。未入力と0人は区別して扱います。")
     if summary["elapsed_reference_sga"] is not None:
         st.caption(f"経過日ベースの参考販管費: {_fmt_k_yen(summary['elapsed_reference_sga'])}（確定費用ではなく、月間販管費予測の経過日按分です）")
 
