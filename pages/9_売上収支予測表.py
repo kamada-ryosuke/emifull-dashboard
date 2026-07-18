@@ -175,10 +175,10 @@ def _fmt_diff_pct(value):
     return f"{value:+.1f}%"
 
 
-def _fmt_unit_k_yen(value):
+def _fmt_unit_yen(value):
     if value is None:
         return "－"
-    return f"{_yen_to_thousand(value):,} 千円/回"
+    return f"{int(value):,} 円/回"
 
 
 def _fmt_average(value, suffix="人"):
@@ -914,8 +914,8 @@ def _render_top_kpis(summary):
             "単価・根拠",
             "予測計算に使う基準",
             [
-                ("1人売上単価", _fmt_unit_k_yen(unit["unit_price"]), "unit", unit["source_label"]),
-                ("平均経費単価", _fmt_unit_k_yen(expense_unit), "cost", "着地予測販管費 ÷ 月末予測利用回数"),
+                ("1人売上単価", _fmt_unit_yen(unit["unit_price"]), "unit", unit["source_label"]),
+                ("平均経費単価", _fmt_unit_yen(expense_unit), "cost", "着地予測販管費 ÷ 月末予測利用回数"),
                 ("売上単価の元データ", "確認可" if unit["unit_price"] is not None else "未算出", unit_basis_tone, unit_rows_note),
                 ("販管費予測", _fmt_k_yen(summary["planned_sga"]), "cost", "前年同月・前々年同月・直近3カ月の中央値"),
             ],
@@ -1122,6 +1122,8 @@ def _render_month_day_cell(facility, d, rec, current_user, auto_save=True, key_p
     label = holiday_name or _holiday_label(d)
     planned = _as_int_or_none(rec.get("planned_users")) if rec else None
     actual = _as_int_or_none(rec.get("actual_users")) if rec else None
+    if planned is None:
+        classes = f"{classes} closed-day".strip()
 
     st.markdown(
         f"""
@@ -1192,8 +1194,8 @@ def _render_usage_side_panel(summary):
         ("予測内訳", f"実績{daily['landing_actual_days']}日 + 予定{daily['landing_plan_fill_days']}日"),
         ("今月の営業予定日数", f"{business_days} 日"),
         ("1日平均利用人数", _fmt_average(avg_users)),
-        ("1人売上単価", _fmt_unit_k_yen(summary["unit"]["unit_price"])),
-        ("平均経費単価", _fmt_unit_k_yen(expense_unit)),
+        ("1人売上単価", _fmt_unit_yen(summary["unit"]["unit_price"])),
+        ("平均経費単価", _fmt_unit_yen(expense_unit)),
         ("－の日数", f"{daily['landing_missing_days']} 日"),
         ("実績未入力", f"{daily['elapsed_actual_missing']} 日"),
         ("最終更新", daily["last_updated"] or "－"),
@@ -1413,7 +1415,7 @@ def _overview_facility_card(summary):
         _overview_line("利益差", _fmt_diff_k_yen(summary["profit_diff"]), profit_diff_class),
     ])
     footer = "".join([
-        _overview_line("1人売上単価", _fmt_unit_k_yen(summary["unit"]["unit_price"]), "unit"),
+        _overview_line("1人売上単価", _fmt_unit_yen(summary["unit"]["unit_price"]), "unit"),
         _overview_line("営業日数", f"{d['business_planned_days']}日"),
         _overview_line("－の日数", f"{d['landing_missing_days']}日"),
         _overview_line("実績入力", f"{d['actual_input_days']}/{d['elapsed_days']}日"),
@@ -2236,6 +2238,23 @@ def _page_css():
         }
         .forecast-calendar-day.today {
             box-shadow: inset 0 0 0 2px #f5c866;
+        }
+        .forecast-calendar-day.closed-day {
+            border: 3px solid #f2c94c;
+            background: #fff9df;
+            box-shadow: inset 0 0 0 1px rgba(242, 201, 76, 0.32);
+        }
+        div[data-testid="stVerticalBlockBorderWrapper"]:has(.forecast-calendar-day.closed-day) {
+            border: 3px solid #f2c94c !important;
+            background: #fffdf0 !important;
+            box-shadow: 0 0 0 2px rgba(242, 201, 76, 0.16) !important;
+        }
+        .forecast-calendar-day.closed-day .forecast-calendar-label::after {
+            content: "営業なし";
+            display: block;
+            margin-top: 3px;
+            color: #8a6400;
+            font-weight: 900;
         }
         .forecast-calendar-date-row {
             display: flex;
