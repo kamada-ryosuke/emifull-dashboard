@@ -603,6 +603,7 @@ def _daily_metrics(days, daily_by_date, today):
     landing_actual_days = 0
     landing_plan_fill_days = 0
     landing_missing_days = 0
+    remaining_business_days = 0
     future_plan_missing = 0
     elapsed_actual_missing = 0
     elapsed_days = 0
@@ -623,6 +624,8 @@ def _daily_metrics(days, daily_by_date, today):
         if actual is not None and d <= today:
             actual_to_date += int(actual)
             actual_input_days += 1
+        if planned is not None and actual is None and d >= today:
+            remaining_business_days += 1
 
         if actual is not None:
             landing_total += int(actual)
@@ -652,6 +655,7 @@ def _daily_metrics(days, daily_by_date, today):
         "landing_actual_days": landing_actual_days,
         "landing_plan_fill_days": landing_plan_fill_days,
         "landing_missing_days": landing_missing_days,
+        "remaining_business_days": remaining_business_days,
         "future_plan_missing": future_plan_missing,
         "elapsed_actual_missing": elapsed_actual_missing,
         "elapsed_days": elapsed_days,
@@ -709,6 +713,53 @@ def _forecast_summary(facility, target_ym, days, daily_by_date, today, available
         "landing_rate": landing_rate,
         "rate_diff": None if planned_rate is None or landing_rate is None else landing_rate - planned_rate,
     }
+
+
+def _needed_user_targets(summary):
+    unit_price = summary["unit"].get("unit_price")
+    sga_amount = summary.get("landing_sga")
+    landing_revenue = summary.get("landing_revenue")
+    remaining_days = summary["daily"].get("remaining_business_days", 0)
+
+    def calc_needed(target_rate):
+        if unit_price is None or unit_price <= 0 or sga_amount is None or landing_revenue is None:
+            return None
+        required_revenue = sga_amount / (1 - target_rate / 100)
+        shortfall = required_revenue - landing_revenue
+        return 0 if shortfall <= 0 else int(math.ceil(shortfall / unit_price))
+
+    targets = [
+        {"rate": 0, "label": "利益0%", "achieved": "赤字回避予定"},
+        {"rate": 5, "label": "利益5%", "achieved": "利益5%達成"},
+        {"rate": 10, "label": "利益10%", "achieved": "利益10%達成"},
+    ]
+    rows = []
+    for target in targets:
+        needed = calc_needed(target["rate"])
+        if needed is None:
+            value = "算出不可"
+            note = "単価・販管費を確認"
+            css = "missing"
+        elif needed <= 0:
+            value = target["achieved"]
+            note = "達成済み"
+            css = "good"
+        else:
+            value = f"あと {needed:,} 人"
+            if remaining_days > 0:
+                per_day = int(math.ceil(needed / remaining_days))
+                note = f"残り{remaining_days}日なら 1日{per_day:,}人"
+            else:
+                note = "残り営業日なし"
+            css = "warn"
+        rows.append({
+            **target,
+            "needed": needed,
+            "value": value,
+            "note": note,
+            "css": css,
+        })
+    return rows
 
 
 def _summary_status(summary):
@@ -1235,41 +1286,14 @@ def _render_usage_side_panel(summary):
         "</div>"
         for label, value in landing_rows
     )
-    def needed_users_for_rate(target_rate):
-        unit_price = summary["unit"].get("unit_price")
-        sga_amount = summary.get("landing_sga")
-        landing_revenue = summary.get("landing_revenue")
-        if unit_price is None or unit_price <= 0 or sga_amount is None or landing_revenue is None:
-            return None
-        required_revenue = sga_amount / (1 - target_rate / 100)
-        shortfall = required_revenue - landing_revenue
-        return 0 if shortfall <= 0 else int(math.ceil(shortfall / unit_price))
-
-    def needed_users_for_profit_zero():
-        unit_price = summary["unit"].get("unit_price")
-        landing_profit_value = summary.get("landing_profit")
-        if unit_price is None or unit_price <= 0 or landing_profit_value is None:
-            return None
-        shortfall = -landing_profit_value
-        return 0 if shortfall <= 0 else int(math.ceil(shortfall / unit_price))
-
-    def fmt_needed_users(value):
-        if value is None:
-            return "算出不可"
-        if value <= 0:
-            return "達成済み"
-        return f"あと {value:,} 人"
-
-    needed_rows = [
-        ("赤字解消まで", fmt_needed_users(needed_users_for_profit_zero())),
-        ("利益率5%以上まで", fmt_needed_users(needed_users_for_rate(5))),
-        ("利益率10%以上まで", fmt_needed_users(needed_users_for_rate(10))),
-    ]
+    needed_rows = _needed_user_targets(summary)
     needed_body = "".join(
         "<div class='forecast-side-needed-row'>"
-        f"<span>{html.escape(label)}</span><strong>{html.escape(value)}</strong>"
+        f"<span>{html.escape(row['label'])}まで</span>"
+        f"<strong class='{html.escape(row['css'])}'>{html.escape(row['value'])}</strong>"
+        f"<small>{html.escape(row['note'])}</small>"
         "</div>"
-        for label, value in needed_rows
+        for row in needed_rows
     )
     updated_by = html.escape(daily["last_updated_by"] or "－")
     st.markdown(
@@ -1467,11 +1491,28 @@ def _overview_value_class(value, positive_good=True):
     return "warn" if value > 0 else "good"
 
 
+def _overview_progress_badge(summary):
+    target_rows = _needed_user_targets(summary)
+    if not target_rows or any(row["needed"] is None for row in target_rows):
+        return None
+    by_rate = {row["rate"]: row for row in target_rows}
+    if by_rate[10]["needed"] == 0:
+        return ("good", "利益10%達成")
+    if by_rate[5]["needed"] == 0:
+        return ("good", "利益5%達成")
+    if by_rate[0]["needed"] == 0:
+        return ("good", "赤字回避予定")
+    return ("warn", f"赤字回避まで {by_rate[0]['needed']:,}人")
+
+
 def _overview_status_badges(summary):
     d = summary["daily"]
     badges = []
     if summary["landing_profit"] is not None and summary["landing_profit"] < 0:
         badges.append(("warn", "赤字予測"))
+    progress_badge = _overview_progress_badge(summary)
+    if progress_badge:
+        badges.append(progress_badge)
     badges.append(("note", f"営業日 {d['business_planned_days']}日"))
     if d["elapsed_actual_missing"] > 0:
         badges.append(("note", f"実績未入力 {d['elapsed_actual_missing']}日"))
@@ -1481,7 +1522,7 @@ def _overview_status_badges(summary):
         badges.append(("good", "入力確認OK"))
     return "".join(
         f"<span class='forecast-overview-badge {html.escape(css)}'>{html.escape(text)}</span>"
-        for css, text in badges[:3]
+        for css, text in badges[:4]
     )
 
 
@@ -1496,8 +1537,27 @@ def _overview_line(label, value, css="", note=""):
     )
 
 
+def _overview_goal_box(summary):
+    rows = _needed_user_targets(summary)
+    body = "".join(
+        "<div class='forecast-overview-goal-row'>"
+        f"<span>{html.escape(row['label'])}まで</span>"
+        f"<strong class='{html.escape(row['css'])}'>{html.escape(row['value'])}</strong>"
+        f"<small>{html.escape(row['note'])}</small>"
+        "</div>"
+        for row in rows
+    )
+    return (
+        "<div class='forecast-overview-goals'>"
+        "<div class='forecast-overview-goals-title'>必要利用人数</div>"
+        f"{body}"
+        "</div>"
+    )
+
+
 def _overview_facility_card(summary):
     d = summary["daily"]
+    avg_users = summary["landing_usage"] / d["business_planned_days"] if d["business_planned_days"] else None
     profit_class = "warn" if summary["landing_profit"] is not None and summary["landing_profit"] < 0 else ""
     revenue_diff_class = _overview_value_class(summary["revenue_diff"], positive_good=True)
     profit_diff_class = _overview_value_class(summary["profit_diff"], positive_good=True)
@@ -1507,6 +1567,7 @@ def _overview_facility_card(summary):
     body = "".join([
         _overview_line("予定利用", _fmt_count(summary["planned_usage"])),
         _overview_line("月末予測", _fmt_count(summary["landing_usage"])),
+        _overview_line("1日平均利用者数", _fmt_average(avg_users, "名")),
         _overview_line("利用差", _fmt_diff_count(summary["usage_diff"]), usage_diff_class),
         _overview_line("予定売上", _fmt_k_yen(summary["planned_revenue"])),
         _overview_line("着地売上", _fmt_k_yen(summary["landing_revenue"])),
@@ -1529,6 +1590,7 @@ def _overview_facility_card(summary):
         f"<div>{_overview_status_badges(summary)}</div>"
         "</div>"
         f"<div class='forecast-overview-body'>{body}</div>"
+        f"{_overview_goal_box(summary)}"
         f"<div class='forecast-overview-footer'>{footer}</div>"
         "</section>"
     )
@@ -2360,6 +2422,62 @@ def _page_css():
             line-height: 1.3;
             margin-top: -3px;
         }
+        .forecast-overview-goals {
+            margin-top: 10px;
+            padding: 10px 11px 9px;
+            border: 2px solid #ef8b8b;
+            border-left: 6px solid #dc2626;
+            border-radius: 8px;
+            background: #fff8f8;
+            box-shadow: 0 1px 5px rgba(220, 38, 38, 0.07);
+        }
+        .forecast-overview-goals-title {
+            color: #991b1b;
+            font-size: 0.86rem;
+            font-weight: 950;
+            margin-bottom: 5px;
+        }
+        .forecast-overview-goal-row {
+            display: grid;
+            grid-template-columns: minmax(72px, 1fr) auto;
+            gap: 6px 8px;
+            align-items: baseline;
+            padding: 6px 0;
+            border-top: 1px solid #f3c5c5;
+        }
+        .forecast-overview-goal-row span {
+            color: #7f1d1d;
+            font-size: 0.76rem;
+            font-weight: 900;
+        }
+        .forecast-overview-goal-row strong {
+            color: #b91c1c;
+            font-size: 0.94rem;
+            font-weight: 950;
+            text-align: right;
+            white-space: nowrap;
+        }
+        .forecast-overview-goal-row strong.good {
+            color: #137343;
+        }
+        .forecast-overview-goal-row strong.missing {
+            color: #946200;
+        }
+        .forecast-overview-goal-row small {
+            grid-column: 1 / -1;
+            color: #9f2936;
+            font-size: 0.68rem;
+            font-weight: 800;
+            line-height: 1.25;
+            margin-top: -3px;
+            text-align: right;
+        }
+        .forecast-overview-goal-row strong.good + small {
+            color: #3f7a55;
+        }
+        .forecast-overview-goal-row strong.missing + small {
+            color: #996300;
+        }
         .forecast-kpi-grid {
             display: grid;
             grid-template-columns: repeat(4, minmax(150px, 1fr));
@@ -2787,6 +2905,7 @@ def _page_css():
         }
         .forecast-side-needed-row {
             display: flex;
+            flex-wrap: wrap;
             justify-content: space-between;
             align-items: baseline;
             gap: 10px;
@@ -2804,6 +2923,27 @@ def _page_css():
             font-weight: 950;
             text-align: right;
             white-space: nowrap;
+        }
+        .forecast-side-needed-row strong.good {
+            color: #137343;
+        }
+        .forecast-side-needed-row strong.missing {
+            color: #946200;
+        }
+        .forecast-side-needed-row small {
+            flex-basis: 100%;
+            color: #9f2936;
+            font-size: 0.72rem;
+            font-weight: 800;
+            line-height: 1.25;
+            margin-top: -2px;
+            text-align: right;
+        }
+        .forecast-side-needed-row strong.good + small {
+            color: #3f7a55;
+        }
+        .forecast-side-needed-row strong.missing + small {
+            color: #996300;
         }
         .forecast-side-updated {
             color: #7b8794;
