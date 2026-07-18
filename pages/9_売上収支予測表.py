@@ -1273,12 +1273,45 @@ def _render_usage_side_panel(summary):
         "</div>"
         for label, value in status_rows
     )
+    landing_profit = summary.get("landing_profit")
+    landing_rate = summary.get("landing_rate")
+    if landing_profit is not None and landing_profit < 0:
+        landing_tone = "warn"
+        landing_copy = "赤字見込みです。営業・利用調整を急ぎましょう。"
+    elif landing_rate is not None and landing_rate < 5:
+        landing_tone = "warn"
+        landing_copy = "利益率5%未満です。早めの対策が必要です。"
+    elif landing_rate is not None and landing_rate < 10:
+        landing_tone = "caution"
+        landing_copy = "利益率10%未満です。月末までに上積みを確認しましょう。"
+    elif landing_profit is None:
+        landing_tone = "caution"
+        landing_copy = "売上単価や販管費の根拠が不足しています。"
+    else:
+        landing_tone = "good"
+        landing_copy = "このペースなら利益を確保できる見込みです。"
+    landing_rows = [
+        ("売上", _fmt_k_yen(summary.get("landing_revenue"))),
+        ("利益", _fmt_k_yen(summary.get("landing_profit"))),
+        ("利益率", _fmt_pct(summary.get("landing_rate"))),
+    ]
+    landing_body = "".join(
+        "<div class='forecast-side-landing-row'>"
+        f"<span>{html.escape(label)}</span><strong>{html.escape(str(value))}</strong>"
+        "</div>"
+        for label, value in landing_rows
+    )
     updated_by = html.escape(daily["last_updated_by"] or "－")
     st.markdown(
         f"""
         <div class="forecast-side-panel">
             <div class="forecast-side-title">利用状況</div>
             {body}
+            <div class="forecast-side-landing {landing_tone}">
+                <div class="forecast-side-landing-title">着地予測</div>
+                <p>{html.escape(landing_copy)}</p>
+                {landing_body}
+            </div>
             <div class="forecast-side-updated">最終更新者: {updated_by}</div>
         </div>
         """,
@@ -2638,6 +2671,67 @@ def _page_css():
             font-weight: 950;
             text-align: right;
             white-space: nowrap;
+        }
+        .forecast-side-landing {
+            margin-top: 18px;
+            padding: 13px 13px 12px;
+            border: 1px solid #dceaf3;
+            border-left: 5px solid #8dc8ef;
+            border-radius: 8px;
+            background: #f7fbff;
+        }
+        .forecast-side-landing.good {
+            border-left-color: #8ccf9a;
+            background: #f7fcf8;
+        }
+        .forecast-side-landing.caution {
+            border-left-color: #f2c94c;
+            background: #fffdf1;
+        }
+        .forecast-side-landing.warn {
+            border-left-color: #ef8b8b;
+            background: #fff7f7;
+        }
+        .forecast-side-landing-title {
+            color: #17324d;
+            font-size: 0.98rem;
+            font-weight: 950;
+            margin-bottom: 5px;
+        }
+        .forecast-side-landing p {
+            margin: 0 0 9px;
+            color: #526a80;
+            font-size: 0.82rem;
+            font-weight: 800;
+            line-height: 1.45;
+        }
+        .forecast-side-landing-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            gap: 10px;
+            padding: 6px 0;
+            border-top: 1px solid rgba(215, 230, 240, 0.85);
+        }
+        .forecast-side-landing-row span {
+            color: #5d6f82;
+            font-size: 0.8rem;
+            font-weight: 850;
+        }
+        .forecast-side-landing-row strong {
+            color: #10263d;
+            font-size: 1.02rem;
+            font-weight: 950;
+            text-align: right;
+            white-space: nowrap;
+        }
+        .forecast-side-landing.warn .forecast-side-landing-row strong,
+        .forecast-side-landing.warn p {
+            color: #c2410c;
+        }
+        .forecast-side-landing.caution .forecast-side-landing-row strong,
+        .forecast-side-landing.caution p {
+            color: #946200;
         }
         .forecast-side-updated {
             color: #7b8794;
