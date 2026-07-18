@@ -2,7 +2,6 @@
 import calendar
 import html
 import math
-import statistics
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -15,7 +14,8 @@ from lib import auth, db, styling
 
 JP_WEEKDAYS = ["月", "火", "水", "木", "金", "土", "日"]
 CALENDAR_WEEKDAYS = ["日", "月", "火", "水", "木", "金", "土"]
-FORECAST_USER_OPTIONS = [None] + list(range(31))
+FORECAST_EMPTY_OPTION = "__forecast_empty__"
+FORECAST_USER_OPTIONS = [FORECAST_EMPTY_OPTION] + list(range(31))
 SPLIT_GROUP_CODES = {"001", "002", "003"}
 SENIOR_POSITIONS = {"部長", "次長", "課長"}
 
@@ -577,14 +577,7 @@ def _unit_price_basis(facility, target_ym, available_yms, revenue_index,
 
 
 def _sga_basis(facility, target_ym, sga_index, has_sga):
-    year, month = [int(v) for v in target_ym.split("-")]
-    candidate_yms = [
-        f"{year - 1}-{month:02d}",
-        f"{year - 2}-{month:02d}",
-        _ym_shift(target_ym, -3),
-        _ym_shift(target_ym, -2),
-        _ym_shift(target_ym, -1),
-    ]
+    candidate_yms = [_ym_shift(target_ym, -offset) for offset in range(6, 0, -1)]
     rows = []
     values = []
     for ym in candidate_yms:
@@ -595,8 +588,13 @@ def _sga_basis(facility, target_ym, sga_index, has_sga):
         else:
             rows.append({"ym": ym, "amount": None, "status": "損益データなし"})
     if not values:
-        return {"forecast": None, "rows": rows}
-    return {"forecast": statistics.median(values), "rows": rows}
+        return {"forecast": None, "rows": rows, "source_label": "未算出", "months_count": 0}
+    return {
+        "forecast": sum(values) / len(values),
+        "rows": rows,
+        "source_label": f"直近6カ月平均（採用{len(values)}カ月）",
+        "months_count": len(values),
+    }
 
 
 def _daily_metrics(days, daily_by_date, today):
@@ -917,7 +915,7 @@ def _render_top_kpis(summary):
                 ("1人売上単価", _fmt_unit_yen(unit["unit_price"]), "unit", unit["source_label"]),
                 ("平均経費単価", _fmt_unit_yen(expense_unit), "cost", "着地予測販管費 ÷ 月末予測利用回数"),
                 ("売上単価の元データ", "確認可" if unit["unit_price"] is not None else "未算出", unit_basis_tone, unit_rows_note),
-                ("販管費予測", _fmt_k_yen(summary["planned_sga"]), "cost", "前年同月・前々年同月・直近3カ月の中央値"),
+                ("販管費予測", _fmt_k_yen(summary["planned_sga"]), "cost", summary["sga"].get("source_label", "直近6カ月平均")),
             ],
             "unit",
         ),
@@ -965,7 +963,7 @@ def _detail_basis_tables(summary):
         if sga["forecast"] is None:
             st.warning("販管費予測に使用できる過去データがありません。損益データの取込状況を確認してください。")
         else:
-            st.caption(f"採用中央値: {_fmt_k_yen(sga['forecast'])}")
+            st.caption(f"{sga.get('source_label', '直近6カ月平均')} ／ 採用平均: {_fmt_k_yen(sga['forecast'])}")
         rows = [
             {
                 "参照年月": r["ym"],
@@ -1081,7 +1079,15 @@ def _handle_bulk_tools(facility, target_ym, days):
 
 
 def _format_user_option(value):
-    return "－" if value is None else str(int(value))
+    if value is None or value == FORECAST_EMPTY_OPTION:
+        return "－"
+    return str(int(value))
+
+
+def _select_user_value(value):
+    if value == FORECAST_EMPTY_OPTION:
+        return None
+    return _as_int_or_none(value)
 
 
 def _option_index(value):
@@ -1141,26 +1147,28 @@ def _render_month_day_cell(facility, d, rec, current_user, auto_save=True, key_p
         "<div class='forecast-select-label'>予定</div>",
         unsafe_allow_html=True,
     )
-    new_planned = st.selectbox(
+    selected_planned = st.selectbox(
         f"{d.isoformat()} 予定人数",
         FORECAST_USER_OPTIONS,
         index=_option_index(planned),
         format_func=_format_user_option,
-        key=f"{key_prefix}_plan_{facility['key']}_{d.isoformat()}",
+        key=f"{key_prefix}_plan_choice_{facility['key']}_{d.isoformat()}",
         label_visibility="collapsed",
     )
+    new_planned = _select_user_value(selected_planned)
     st.markdown(
         "<div class='forecast-select-label actual'>実績</div>",
         unsafe_allow_html=True,
     )
-    new_actual = st.selectbox(
+    selected_actual = st.selectbox(
         f"{d.isoformat()} 実績人数",
         FORECAST_USER_OPTIONS,
         index=_option_index(actual),
         format_func=_format_user_option,
-        key=f"{key_prefix}_actual_{facility['key']}_{d.isoformat()}",
+        key=f"{key_prefix}_actual_choice_{facility['key']}_{d.isoformat()}",
         label_visibility="collapsed",
     )
+    new_actual = _select_user_value(selected_actual)
 
     saved_count = 0
     changes = []
@@ -2285,15 +2293,15 @@ def _page_css():
             color: #2778b8;
         }
         .forecast-calendar-day {
-            min-height: 42px;
-            margin: -5px -3px 4px;
-            padding: 6px 7px 5px;
+            min-height: 36px;
+            margin: -5px -3px 3px;
+            padding: 4px 6px;
             border-radius: 7px;
             border: 1px solid #e8eef3;
             background: #ffffff;
         }
         .forecast-calendar-day.outside {
-            min-height: 118px;
+            min-height: 102px;
             background: #fbfbfb;
             color: #c8ced6;
             border-style: dashed;
@@ -2324,18 +2332,40 @@ def _page_css():
             box-shadow: 0 0 0 2px rgba(242, 201, 76, 0.16) !important;
         }
         div[data-testid="stVerticalBlockBorderWrapper"]:has(.forecast-calendar-day) {
-            padding: 7px 7px 6px !important;
+            padding: 5px 6px 5px !important;
             border-radius: 8px !important;
         }
         div[data-testid="stVerticalBlockBorderWrapper"]:has(.forecast-calendar-day) div[data-testid="stVerticalBlock"] {
-            gap: 0.15rem !important;
+            gap: 0.05rem !important;
+        }
+        .forecast-calendar-day.closed-day .forecast-calendar-date-row {
+            align-items: center;
+            gap: 3px;
+        }
+        .forecast-calendar-day.closed-day .forecast-calendar-label {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+            min-width: 48px;
+            font-size: 0.56rem;
+            line-height: 1.05;
+            white-space: nowrap;
         }
         .forecast-calendar-day.closed-day .forecast-calendar-label::after {
             content: "営業なし";
-            display: block;
-            margin-top: 3px;
+            display: inline-flex;
+            align-items: center;
+            width: max-content;
+            margin-top: 1px;
+            padding: 1px 3px;
+            border: 1px solid rgba(242, 201, 76, 0.7);
+            border-radius: 999px;
+            background: #fff3bf;
             color: #8a6400;
+            font-size: 0.56rem;
             font-weight: 900;
+            line-height: 1;
+            white-space: nowrap;
         }
         .forecast-calendar-date-row {
             display: flex;
@@ -2370,10 +2400,10 @@ def _page_css():
         }
         .forecast-select-label {
             color: #657789;
-            font-size: 0.68rem;
+            font-size: 0.64rem;
             font-weight: 800;
-            margin: 2px 0 1px;
-            padding: 2px 6px;
+            margin: 1px 0 0;
+            padding: 1px 5px;
             line-height: 1.2;
         }
         .forecast-select-label.actual {
@@ -2392,16 +2422,16 @@ def _page_css():
             box-shadow: 0 0 0 4px rgba(228, 109, 124, 0.18) !important;
         }
         div[data-testid="stMarkdown"]:has(.forecast-select-label) + div[data-testid="stSelectbox"] {
-            margin-bottom: 5px;
+            margin-bottom: 2px;
         }
         div[data-testid="stMarkdown"]:has(.forecast-select-label) + div[data-testid="stSelectbox"] div[data-baseweb="select"] {
             width: 100% !important;
         }
         div[data-testid="stMarkdown"]:has(.forecast-select-label) + div[data-testid="stSelectbox"] div[data-baseweb="select"] > div {
-            min-height: 34px !important;
-            height: 34px !important;
-            padding-left: 8px !important;
-            padding-right: 6px !important;
+            min-height: 29px !important;
+            height: 29px !important;
+            padding-left: 7px !important;
+            padding-right: 5px !important;
             overflow: hidden !important;
         }
         div[data-testid="stMarkdown"]:has(.forecast-select-label) + div[data-testid="stSelectbox"] div[data-baseweb="select"] > div > div:first-child {
@@ -2411,7 +2441,7 @@ def _page_css():
         }
         div[data-testid="stMarkdown"]:has(.forecast-select-label) + div[data-testid="stSelectbox"] div[data-baseweb="select"] span {
             color: #0c2744 !important;
-            font-size: 0.84rem !important;
+            font-size: 0.8rem !important;
             font-weight: 900 !important;
             line-height: 1.2 !important;
             white-space: nowrap !important;
