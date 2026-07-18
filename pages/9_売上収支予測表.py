@@ -1302,6 +1302,7 @@ def _render_calendar_grid(facility, target_ym, days, daily_by_date, current_user
         f"""
         <div class="forecast-calendar-title">
             <strong>{month}月</strong>
+            <em>{html.escape(facility["label"])}</em>
             <span>{year}</span>
         </div>
         """,
@@ -2413,7 +2414,8 @@ def _page_css():
         .forecast-calendar-title {
             display: flex;
             justify-content: space-between;
-            align-items: baseline;
+            align-items: center;
+            gap: 10px;
             margin: 6px 0 3px;
             padding: 0 2px;
         }
@@ -2426,6 +2428,21 @@ def _page_css():
             color: #111827;
             font-size: 1.32rem;
             font-weight: 600;
+        }
+        .forecast-calendar-title em {
+            flex: 1 1 auto;
+            color: #17324d;
+            font-size: 1.08rem;
+            font-style: normal;
+            font-weight: 950;
+            line-height: 1.25;
+            text-align: center;
+            padding: 5px 12px;
+            border: 1px solid #dceaf3;
+            border-radius: 999px;
+            background: #f8fdff;
+            box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.75);
+            overflow-wrap: anywhere;
         }
         .forecast-calendar-weekday.sunday {
             color: #cf445b;
