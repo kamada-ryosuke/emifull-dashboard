@@ -10,6 +10,7 @@ import pandas as pd
 import streamlit as st
 
 from lib import auth, db, styling
+from lib.revenue_forecast_access import facility_forecast_profile
 
 
 JP_WEEKDAYS = ["月", "火", "水", "木", "金", "土", "日"]
@@ -389,8 +390,16 @@ def _is_locked_single_facility_profile(forecast_profile):
     )
 
 
-def _accessible_facilities(facilities):
-    forecast_profile = auth.current_forecast_facility()
+def _current_forecast_profile():
+    profile = auth.current_forecast_facility()
+    if profile:
+        return profile
+    current = auth.current_user() or {}
+    return facility_forecast_profile(current.get("email") or st.session_state.get("user_email"))
+
+
+def _accessible_facilities(facilities, forecast_profile=None):
+    forecast_profile = forecast_profile if forecast_profile is not None else _current_forecast_profile()
     if forecast_profile:
         if forecast_profile.get("all_facilities"):
             return facilities
@@ -3060,13 +3069,17 @@ target_ym = f"{target_year}-{target_month_number:02d}"
 days = _month_days(target_ym)
 month_start, month_end = days[0], days[-1]
 
-facilities = _accessible_facilities(_build_forecast_facilities())
+current = auth.current_user() or {}
+forecast_profile = _current_forecast_profile()
+facilities = _accessible_facilities(_build_forecast_facilities(), forecast_profile)
 if not facilities:
     st.error("このユーザーで閲覧できる施設がありません。施設権限を確認してください。")
     st.stop()
 
-current = auth.current_user() or {}
-forecast_profile = auth.current_forecast_facility()
+allowed_labels = {facility["label"] for facility in facilities}
+if st.session_state.get("forecast_facility_select") not in allowed_labels:
+    st.session_state["forecast_facility_select"] = facilities[0]["label"]
+
 view_mode = _render_view_mode_panel(forecast_profile)
 selected_facility = None
 if view_mode == "施設別入力・予測":
