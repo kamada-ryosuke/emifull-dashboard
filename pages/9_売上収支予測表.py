@@ -756,6 +756,65 @@ def _render_profit_rate_alert(summary):
         )
 
 
+def _render_forecast_guidance(summary):
+    daily = summary["daily"]
+    sga_label = summary["sga"].get("source_label") or "直近6カ月平均"
+    current_sga_note = ""
+    if summary.get("elapsed_reference_sga") is not None:
+        current_sga_note = (
+            f"<li>経過日ベースの参考販管費は <strong>{html.escape(_fmt_k_yen(summary['elapsed_reference_sga']))}</strong> です。"
+            "確定費用ではなく、月間販管費予測を経過日で割った参考値です。</li>"
+        )
+
+    attention_items = []
+    if daily["elapsed_actual_missing"] > 0:
+        attention_items.append(
+            f"営業日で実績が未入力の日が <strong>{daily['elapsed_actual_missing']}日</strong> あります。"
+            "月末着地予測では予定人数で補っています。"
+        )
+    if summary["unit"]["unit_price"] is None:
+        attention_items.append("売上単価を算出できていません。損益データと延べ利用回数を確認してください。")
+    if summary["sga"]["forecast"] is None:
+        attention_items.append("販管費予測を算出できていません。損益データの取込状況を確認してください。")
+    if not attention_items:
+        attention_items.append("入力と損益データに大きな不足はありません。日々の実績入力を続けてください。")
+    attention_html = "".join(f"<li>{item}</li>" for item in attention_items)
+
+    st.markdown(
+        f"""
+        <div class="forecast-guide-box">
+            <div class="forecast-guide-title">補足事項：入力と数値の見方</div>
+            <div class="forecast-guide-grid">
+                <div class="forecast-guide-section">
+                    <strong>操作</strong>
+                    <ul>
+                        <li>予定は月初・事前に入れる計画です。営業日は <b>0〜30</b>、営業なしは <b>－</b> を選びます。</li>
+                        <li>実績は日々入力します。未入力は <b>－</b>、実績0人は <b>0</b> です。</li>
+                        <li>高速入力モードは、入力後に <b>変更分をまとめて保存</b> を押すと保存されます。</li>
+                    </ul>
+                </div>
+                <div class="forecast-guide-section">
+                    <strong>数値の見方</strong>
+                    <ul>
+                        <li>着地予測は、入力済み実績を優先し、未入力日は予定人数で補って計算します。</li>
+                        <li>金額は <b>千円表示・端数切り捨て</b>、1人売上単価と平均経費単価は <b>円/回</b> です。</li>
+                        <li>販管費予測は <b>{html.escape(sga_label)}</b> です。売上単価は直近3カ月相当の売上と利用回数から算出します。</li>
+                        {current_sga_note}
+                    </ul>
+                </div>
+                <div class="forecast-guide-section attention">
+                    <strong>今月の注意</strong>
+                    <ul>
+                        {attention_html}
+                    </ul>
+                </div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def _metric_card(title, rows, accent="#7fb8df"):
     body = "".join(
         "<div class='forecast-metric-row'>"
@@ -2048,6 +2107,58 @@ def _page_css():
             line-height: 1.35;
             margin-top: -3px;
         }
+        .forecast-guide-box {
+            margin: 8px 0 16px;
+            padding: 13px 15px;
+            border: 1px solid #dceaf3;
+            border-left: 5px solid #9cc7e6;
+            border-radius: 8px;
+            background: #ffffff;
+            box-shadow: 0 1px 5px rgba(38, 74, 112, 0.06);
+        }
+        .forecast-guide-title {
+            color: #17324d;
+            font-size: 0.98rem;
+            font-weight: 950;
+            margin-bottom: 10px;
+        }
+        .forecast-guide-grid {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(220px, 1fr));
+            gap: 10px;
+        }
+        .forecast-guide-section {
+            border: 1px solid #e7eff6;
+            border-radius: 8px;
+            background: #fbfdff;
+            padding: 10px 12px;
+        }
+        .forecast-guide-section.attention {
+            border-color: #f2df9b;
+            background: #fffdf1;
+        }
+        .forecast-guide-section > strong {
+            display: block;
+            color: #17324d;
+            font-size: 0.86rem;
+            font-weight: 950;
+            margin-bottom: 5px;
+        }
+        .forecast-guide-section ul {
+            margin: 0;
+            padding-left: 1.1rem;
+        }
+        .forecast-guide-section li {
+            color: #4f6172;
+            font-size: 0.8rem;
+            line-height: 1.48;
+            margin: 3px 0;
+        }
+        .forecast-guide-section li strong,
+        .forecast-guide-section li b {
+            color: #10263d;
+            font-weight: 950;
+        }
         .forecast-total-strip {
             display: grid;
             grid-template-columns: repeat(4, minmax(180px, 1fr));
@@ -2637,12 +2748,7 @@ else:
     st.markdown(f"### {selected_facility['label']} ／ {target_year}年{target_month_number}月")
     _render_top_kpis(summary)
     _render_profit_rate_alert(summary)
-    if summary["daily"]["landing_missing_days"] > 0:
-        st.caption("予定欄が「－」の日は、営業日ではない日として0人扱いです。営業日は0〜30人を選んでください。")
-    if summary["daily"]["elapsed_actual_missing"] > 0:
-        st.info("営業日で実績未入力の日があります。月末着地予測では予定人数で補っています。未入力と0人は区別して扱います。")
-    if summary["elapsed_reference_sga"] is not None:
-        st.caption(f"経過日ベースの参考販管費: {_fmt_k_yen(summary['elapsed_reference_sga'])}（確定費用ではなく、月間販管費予測の経過日按分です）")
+    _render_forecast_guidance(summary)
 
     calendar_col, side_col = st.columns([3.4, 1.15], gap="large")
     with calendar_col:
