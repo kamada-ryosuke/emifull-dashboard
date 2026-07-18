@@ -1333,7 +1333,28 @@ def _render_calendar_grid(facility, target_ym, days, daily_by_date, current_user
     return saved_count, changes
 
 
-def _render_daily_editor(facility, target_ym, days, daily_by_date):
+def _render_calendar_area(facility, target_ym, days, daily_by_date, current_user,
+                          summary=None, auto_save=True, key_prefix="forecast"):
+    if summary is None:
+        return _render_calendar_grid(
+            facility, target_ym, days, daily_by_date, current_user,
+            auto_save=auto_save,
+            key_prefix=key_prefix,
+        )
+
+    calendar_col, side_col = st.columns([4.15, 1.18], gap="medium")
+    with calendar_col:
+        saved_count, changes = _render_calendar_grid(
+            facility, target_ym, days, daily_by_date, current_user,
+            auto_save=auto_save,
+            key_prefix=key_prefix,
+        )
+    with side_col:
+        _render_usage_side_panel(summary)
+    return saved_count, changes
+
+
+def _render_daily_editor(facility, target_ym, days, daily_by_date, summary=None):
     _handle_bulk_tools(facility, target_ym, days)
     st.markdown("#### 日別入力カレンダー")
     fast_mode = st.toggle(
@@ -1358,8 +1379,9 @@ def _render_daily_editor(facility, target_ym, days, daily_by_date):
                 key=f"forecast_fast_save_top_{target_ym}_{facility['key']}",
             )
             st.caption("入力後はこのボタン、またはカレンダー下の同じボタンで保存できます。")
-            _, changes = _render_calendar_grid(
+            _, changes = _render_calendar_area(
                 facility, target_ym, days, daily_by_date, current,
+                summary=summary,
                 auto_save=False,
                 key_prefix="forecast_fast",
             )
@@ -1386,8 +1408,9 @@ def _render_daily_editor(facility, target_ym, days, daily_by_date):
             st.rerun()
         return
 
-    saved_count, _ = _render_calendar_grid(
+    saved_count, _ = _render_calendar_area(
         facility, target_ym, days, daily_by_date, current,
+        summary=summary,
         auto_save=True,
         key_prefix="forecast_auto",
     )
@@ -2750,11 +2773,13 @@ else:
     _render_profit_rate_alert(summary)
     _render_forecast_guidance(summary)
 
-    calendar_col, side_col = st.columns([3.4, 1.15], gap="large")
-    with calendar_col:
-        _render_daily_editor(selected_facility, target_ym, days, daily_by_key.get(selected_facility["key"], {}))
-    with side_col:
-        _render_usage_side_panel(summary)
+    _render_daily_editor(
+        selected_facility,
+        target_ym,
+        days,
+        daily_by_key.get(selected_facility["key"], {}),
+        summary=summary,
+    )
 
     with st.expander("売上単価・販管費予測の根拠を見る", expanded=False):
         _detail_basis_tables(summary)
