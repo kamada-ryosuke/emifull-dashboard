@@ -2476,8 +2476,10 @@ def _page_css():
                 #fff8fb;
             border-color: #f3bed0;
         }
-        .forecast-calendar-day.today {
-            box-shadow: inset 0 0 0 2px #f5c866;
+        .forecast-calendar-day.today:not(.closed-day) {
+            border-color: #86c5ed;
+            background: #f5fbff;
+            box-shadow: inset 0 0 0 2px rgba(134, 197, 237, 0.72);
         }
         .forecast-calendar-day.closed-day {
             border: 3px solid #f2c94c;
@@ -2520,6 +2522,22 @@ def _page_css():
             border-radius: 999px;
             background: #fff3bf;
             color: #8a6400;
+            font-size: 0.56rem;
+            font-weight: 900;
+            line-height: 1;
+            white-space: nowrap;
+        }
+        .forecast-calendar-day.today:not(.closed-day) .forecast-calendar-label::after {
+            content: "今日";
+            display: inline-flex;
+            align-items: center;
+            width: max-content;
+            margin-top: 1px;
+            padding: 1px 4px;
+            border: 1px solid rgba(134, 197, 237, 0.8);
+            border-radius: 999px;
+            background: #e8f6ff;
+            color: #0f5f91;
             font-size: 0.56rem;
             font-weight: 900;
             line-height: 1;
