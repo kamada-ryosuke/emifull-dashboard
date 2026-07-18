@@ -474,6 +474,7 @@ def _render_role_navigation():
             (login_page, "ログイン"),
             ("pages/1_売上一覧／入金管理.py", "売上一覧／入金管理"),
             ("pages/2_損益ダッシュボード.py", "損益ダッシュボード"),
+            ("pages/9_売上収支予測表.py", "売上収支予測表"),
             ("pages/3_財務／経理.py", "財務／経理"),
             ("pages/4_給与台帳.py", "給与台帳"),
             ("pages/5_職員台帳.py", "職員台帳"),
@@ -491,6 +492,7 @@ def _render_role_navigation():
             links = [
                 (login_page, "ログイン"),
                 ("pages/2_損益ダッシュボード.py", "損益ダッシュボード"),
+                ("pages/9_売上収支予測表.py", "売上収支予測表"),
                 ("pages/4_給与台帳.py", "給与台帳"),
                 ("pages/6_車両管理.py", "車両管理"),
             ]

@@ -596,6 +596,7 @@ def init_db():
     init_cash_advance_schema()
     init_profit_reports_schema()
     init_pl_usage_unit_schema()
+    init_revenue_forecast_schema()
 
 
 def ensure_sales_schema():
@@ -3113,6 +3114,221 @@ def save_pl_usage_unit_inputs(target_month, rows, updated_by_user=None):
             ))
             saved += 1
     return saved
+
+
+# =====================================================================
+# 売上収支予測表
+# =====================================================================
+
+def init_revenue_forecast_schema():
+    """日別の予定人数・実績人数を保存する。既存の損益/売上データは変更しない。"""
+    with get_conn() as conn:
+        conn.executescript("""
+        CREATE TABLE IF NOT EXISTS revenue_forecast_daily (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            facility_key TEXT NOT NULL,
+            facility_label TEXT NOT NULL,
+            pl_subunit_id INTEGER REFERENCES pl_subunits(id),
+            pl_subunit_ids TEXT,
+            target_date DATE NOT NULL,
+            planned_users INTEGER CHECK(planned_users IS NULL OR planned_users BETWEEN 0 AND 30),
+            actual_users INTEGER CHECK(actual_users IS NULL OR actual_users BETWEEN 0 AND 30),
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            created_by TEXT,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_by TEXT,
+            UNIQUE(facility_key, target_date)
+        );
+        CREATE INDEX IF NOT EXISTS idx_revenue_forecast_daily_date
+            ON revenue_forecast_daily(target_date);
+        CREATE INDEX IF NOT EXISTS idx_revenue_forecast_daily_facility
+            ON revenue_forecast_daily(facility_key);
+
+        CREATE TABLE IF NOT EXISTS revenue_forecast_change_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            changed_at TEXT NOT NULL,
+            facility_key TEXT NOT NULL,
+            facility_label TEXT NOT NULL,
+            target_date DATE NOT NULL,
+            field_name TEXT NOT NULL,
+            field_label TEXT NOT NULL,
+            old_value TEXT,
+            new_value TEXT,
+            changed_by_user TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_revenue_forecast_logs_facility_date
+            ON revenue_forecast_change_logs(facility_key, target_date);
+        CREATE INDEX IF NOT EXISTS idx_revenue_forecast_logs_changed_at
+            ON revenue_forecast_change_logs(changed_at);
+        """)
+
+        cols = {
+            r['name'] for r in conn.execute(
+                "PRAGMA table_info(revenue_forecast_daily)"
+            ).fetchall()
+        }
+        optional_columns = {
+            'facility_label': "TEXT NOT NULL DEFAULT ''",
+            'pl_subunit_id': "INTEGER REFERENCES pl_subunits(id)",
+            'pl_subunit_ids': "TEXT",
+            'created_by': "TEXT",
+            'updated_by': "TEXT",
+        }
+        for col, ddl in optional_columns.items():
+            if col not in cols:
+                conn.execute(f"ALTER TABLE revenue_forecast_daily ADD COLUMN {col} {ddl}")
+
+
+def _normalize_forecast_user_count(value):
+    if value in (None, ""):
+        return None
+    try:
+        if value != value:
+            return None
+        ivalue = int(float(value))
+    except (TypeError, ValueError):
+        raise ValueError("人数は0〜30の整数で入力してください。")
+    if ivalue < 0 or ivalue > 30:
+        raise ValueError("人数は0〜30の範囲で入力してください。")
+    return ivalue
+
+
+def list_revenue_forecast_daily(start_date, end_date, facility_keys=None):
+    init_revenue_forecast_schema()
+    sql = """
+        SELECT *
+        FROM revenue_forecast_daily
+        WHERE target_date BETWEEN ? AND ?
+    """
+    params = [str(start_date), str(end_date)]
+    if facility_keys:
+        keys = [str(key) for key in facility_keys]
+        placeholders = ",".join("?" for _ in keys)
+        sql += f" AND facility_key IN ({placeholders})"
+        params.extend(keys)
+    sql += " ORDER BY target_date, facility_key"
+    with get_conn() as conn:
+        return [dict(r) for r in conn.execute(sql, params).fetchall()]
+
+
+def save_revenue_forecast_value(facility_key, target_date, field_name, value,
+                                facility_label="", pl_subunit_id=None,
+                                pl_subunit_ids=None, updated_by_user=None):
+    """予定人数または実績人数を1セルだけ保存する。同じ値ならDB更新しない。"""
+    init_revenue_forecast_schema()
+    if field_name not in {"planned_users", "actual_users"}:
+        raise ValueError("保存できる項目は予定人数または実績人数のみです。")
+    clean_value = _normalize_forecast_user_count(value)
+    facility_key = str(facility_key or "").strip()
+    facility_label = str(facility_label or "").strip()
+    if not facility_key:
+        raise ValueError("施設キーが不足しています。")
+    if not target_date:
+        raise ValueError("対象日が不足しています。")
+    field_label = "予定人数" if field_name == "planned_users" else "実績人数"
+    now = datetime.now().isoformat(sep=' ', timespec='seconds')
+    subunit_ids_text = ",".join(str(v) for v in (pl_subunit_ids or []) if v is not None) or None
+
+    with get_conn() as conn:
+        existing = conn.execute(
+            """
+            SELECT *
+            FROM revenue_forecast_daily
+            WHERE facility_key = ? AND target_date = ?
+            """,
+            (facility_key, str(target_date)),
+        ).fetchone()
+
+        old_value = existing[field_name] if existing else None
+        if old_value == clean_value:
+            return {"saved": False, "reason": "unchanged"}
+
+        if existing is None:
+            if clean_value is None:
+                return {"saved": False, "reason": "empty"}
+            columns = [
+                "facility_key", "facility_label", "pl_subunit_id", "pl_subunit_ids",
+                "target_date", field_name, "created_at", "created_by",
+                "updated_at", "updated_by",
+            ]
+            values = [
+                facility_key, facility_label, pl_subunit_id, subunit_ids_text,
+                str(target_date), clean_value, now, updated_by_user, now, updated_by_user,
+            ]
+            placeholders = ",".join("?" for _ in columns)
+            conn.execute(
+                f"INSERT INTO revenue_forecast_daily ({','.join(columns)}) VALUES ({placeholders})",
+                values,
+            )
+        else:
+            conn.execute(
+                f"""
+                UPDATE revenue_forecast_daily
+                   SET {field_name} = ?,
+                       facility_label = ?,
+                       pl_subunit_id = ?,
+                       pl_subunit_ids = ?,
+                       updated_at = ?,
+                       updated_by = ?
+                 WHERE facility_key = ? AND target_date = ?
+                """,
+                (
+                    clean_value, facility_label, pl_subunit_id, subunit_ids_text,
+                    now, updated_by_user, facility_key, str(target_date),
+                ),
+            )
+
+        conn.execute(
+            """
+            INSERT INTO revenue_forecast_change_logs (
+                changed_at, facility_key, facility_label, target_date,
+                field_name, field_label, old_value, new_value, changed_by_user
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                now, facility_key, facility_label, str(target_date), field_name,
+                field_label,
+                "" if old_value is None else str(old_value),
+                "" if clean_value is None else str(clean_value),
+                updated_by_user,
+            ),
+        )
+    return {"saved": True, "old_value": old_value, "new_value": clean_value}
+
+
+def fetch_revenue_forecast_usage_unit_inputs(year_months=None):
+    init_pl_usage_unit_schema()
+    sql = "SELECT * FROM pl_usage_unit_inputs WHERE 1=1"
+    params = []
+    if year_months:
+        yms = [str(ym) for ym in year_months]
+        placeholders = ",".join("?" for _ in yms)
+        sql += f" AND target_month IN ({placeholders})"
+        params.extend(yms)
+    sql += " ORDER BY target_month DESC, facility_name"
+    with get_conn() as conn:
+        return [dict(r) for r in conn.execute(sql, params).fetchall()]
+
+
+def fetch_revenue_forecast_receipt_usage(year_months=None):
+    init_receipt_performance_schema()
+    sql = """
+        SELECT service_year_month, pl_subunit_id, facility_label,
+               monthly_usage_count, business_days, updated_at
+        FROM receipt_performance_reports
+        WHERE 1=1
+    """
+    params = []
+    if year_months:
+        yms = [str(ym) for ym in year_months]
+        placeholders = ",".join("?" for _ in yms)
+        sql += f" AND service_year_month IN ({placeholders})"
+        params.extend(yms)
+    sql += " ORDER BY service_year_month DESC, facility_label"
+    with get_conn() as conn:
+        return [dict(r) for r in conn.execute(sql, params).fetchall()]
 
 
 # =====================================================================
