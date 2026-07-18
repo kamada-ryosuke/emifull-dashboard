@@ -1342,7 +1342,7 @@ def _render_calendar_area(facility, target_ym, days, daily_by_date, current_user
             key_prefix=key_prefix,
         )
 
-    calendar_col, side_col = st.columns([4.15, 1.18], gap="medium")
+    calendar_col, side_col = st.columns([3.85, 1.35], gap="medium")
     with calendar_col:
         saved_count, changes = _render_calendar_grid(
             facility, target_ym, days, daily_by_date, current_user,
@@ -2604,41 +2604,48 @@ def _page_css():
             background: #ffffff;
             border: 1px solid #e4edf5;
             border-radius: 8px;
-            padding: 15px 16px;
-            box-shadow: 0 1px 4px rgba(38, 74, 112, 0.06);
+            padding: 18px 18px 20px;
+            box-shadow: 0 1px 6px rgba(38, 74, 112, 0.08);
             position: sticky;
             top: 76px;
+            min-height: 620px;
+            display: flex;
+            flex-direction: column;
         }
         .forecast-side-title {
             color: #17324d;
-            font-size: 1.05rem;
-            font-weight: 850;
-            margin-bottom: 10px;
+            font-size: 1.18rem;
+            font-weight: 950;
+            margin-bottom: 14px;
         }
         .forecast-side-row {
             display: flex;
             justify-content: space-between;
             align-items: baseline;
-            gap: 10px;
-            padding: 8px 0;
+            gap: 14px;
+            padding: 11px 0;
             border-bottom: 1px solid #edf3f7;
         }
         .forecast-side-row span {
             color: #5d6f82;
-            font-size: 0.82rem;
-            font-weight: 700;
+            font-size: 0.88rem;
+            font-weight: 850;
+            line-height: 1.35;
         }
         .forecast-side-row strong {
             color: #17324d;
-            font-size: 1.02rem;
-            font-weight: 850;
+            font-size: 1.08rem;
+            font-weight: 950;
             text-align: right;
             white-space: nowrap;
         }
         .forecast-side-updated {
             color: #7b8794;
-            font-size: 0.76rem;
-            margin-top: 10px;
+            font-size: 0.78rem;
+            line-height: 1.55;
+            margin-top: auto;
+            padding-top: 14px;
+            overflow-wrap: anywhere;
         }
         @media (max-width: 1120px) {
             .forecast-summary-grid {
