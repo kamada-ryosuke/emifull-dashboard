@@ -1019,9 +1019,9 @@ def _save_cell(facility, d, field, value, current_user):
 
 
 def _handle_bulk_tools(facility, target_ym, days):
-    st.markdown("#### 入力補助")
+    st.caption("必要な場合だけ開いて使う入力補助です。通常はカレンダーで日別に入力してください。")
     current = auth.current_user() or {}
-    with st.expander("予定人数の一括操作", expanded=False):
+    with st.expander("入力補助を開く", expanded=False):
         st.caption("一括操作は新しい予測用テーブルだけを更新します。損益データや売上明細は変更しません。")
         c1, c2, c3 = st.columns(3)
         with c1:
@@ -1136,7 +1136,7 @@ def _render_month_day_cell(facility, d, rec, current_user, auto_save=True, key_p
     )
 
     st.markdown(
-        f"<div class='forecast-select-label'>予定 <strong>{html.escape(_format_user_option(planned))}</strong></div>",
+        "<div class='forecast-select-label'>予定</div>",
         unsafe_allow_html=True,
     )
     new_planned = st.selectbox(
@@ -1148,7 +1148,7 @@ def _render_month_day_cell(facility, d, rec, current_user, auto_save=True, key_p
         label_visibility="collapsed",
     )
     st.markdown(
-        f"<div class='forecast-select-label actual'>実績 <strong>{html.escape(_format_user_option(actual))}</strong></div>",
+        "<div class='forecast-select-label actual'>実績</div>",
         unsafe_allow_html=True,
     )
     new_actual = st.selectbox(
@@ -2267,14 +2267,7 @@ def _page_css():
             color: #657789;
             font-size: 0.72rem;
             font-weight: 800;
-            margin: 2px 0 -2px;
-        }
-        .forecast-select-label strong {
-            display: inline-block;
-            min-width: 20px;
-            margin-left: 3px;
-            color: #17324d;
-            font-size: 0.9rem;
+            margin: 4px 0 0;
         }
         .forecast-select-label.actual {
             color: #365d7a;
