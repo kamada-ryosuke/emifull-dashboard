@@ -1549,7 +1549,7 @@ def _render_target_month_panel(today, year_options):
     with st.container(border=True):
         st.markdown(
             """
-            <div class="forecast-control-title">
+            <div class="forecast-control-title forecast-target-month-title">
                 <span>1</span>
                 <div>
                     <strong>対象年月を選ぶ</strong>
@@ -1574,23 +1574,33 @@ def _render_target_month_panel(today, year_options):
                 _set_target_month_state(new_year, new_month)
                 current_year, current_month = new_year, new_month
         nav_cols[3].markdown(
-            f"<div class='forecast-selected-banner'>選択中：{html.escape(_month_label(current_year, current_month))}</div>",
+            f"<div class='forecast-selected-banner forecast-selected-month-banner'>選択中：{html.escape(_month_label(current_year, current_month))}</div>",
             unsafe_allow_html=True,
         )
 
         c_year, c_month, c_note = st.columns([1.1, 1.1, 3.2], gap="small")
+        c_year.markdown(
+            "<div class='forecast-target-select-marker'>対象年</div>",
+            unsafe_allow_html=True,
+        )
         target_year = c_year.selectbox(
-            "年を選ぶ",
+            "対象年を選ぶ",
             year_options,
             key="forecast_target_year",
             help="対象年を選びます。",
+            label_visibility="collapsed",
+        )
+        c_month.markdown(
+            "<div class='forecast-target-select-marker month'>対象月</div>",
+            unsafe_allow_html=True,
         )
         target_month_number = c_month.selectbox(
-            "月を選ぶ",
+            "対象月を選ぶ",
             list(range(1, 13)),
             format_func=lambda m: f"{m}月",
             key="forecast_target_month",
             help="対象月を選びます。",
+            label_visibility="collapsed",
         )
         c_note.markdown(
             "<div class='forecast-control-note'>過去月・当月・未来月を切り替えて、登録済みの予定人数・実績人数を確認できます。</div>",
@@ -1735,6 +1745,26 @@ def _page_css():
             font-size: 0.82rem;
             margin-top: 2px;
         }
+        div[data-testid="stVerticalBlockBorderWrapper"]:has(.forecast-target-month-title) {
+            border: 3px solid #9bcdea !important;
+            border-radius: 14px !important;
+            background: #f8fcff !important;
+            box-shadow: 0 4px 14px rgba(38, 74, 112, 0.08) !important;
+        }
+        .forecast-target-month-title {
+            padding: 4px 2px 0;
+        }
+        .forecast-target-month-title span {
+            width: 34px;
+            height: 34px;
+            background: #dff5ea;
+            color: #0f7a4b;
+            font-size: 1rem;
+        }
+        .forecast-target-month-title strong {
+            font-size: 1.18rem;
+            font-weight: 950;
+        }
         .forecast-selected-banner {
             display: flex;
             align-items: center;
@@ -1746,6 +1776,52 @@ def _page_css():
             font-weight: 850;
             padding: 9px 12px;
             margin-top: 1px;
+        }
+        .forecast-selected-month-banner {
+            min-height: 52px;
+            border: 3px solid #86c5ed;
+            border-radius: 12px;
+            background: #eef9ff;
+            color: #0c2744;
+            font-size: 1.02rem;
+            font-weight: 950;
+            box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.75);
+        }
+        .forecast-target-select-marker {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            min-height: 40px;
+            margin-top: 8px;
+            padding: 8px 12px;
+            border: 3px solid #86c5ed;
+            border-bottom: 0;
+            border-radius: 12px 12px 0 0;
+            background: #eaf7ff;
+            color: #0c2744;
+            font-size: 0.98rem;
+            font-weight: 950;
+            letter-spacing: 0;
+        }
+        .forecast-target-select-marker::after {
+            content: "選択";
+            color: #0f5f91;
+            font-size: 0.78rem;
+            font-weight: 900;
+        }
+        div[data-testid="stMarkdown"]:has(.forecast-target-select-marker) + div[data-testid="stSelectbox"] {
+            padding: 0 10px 10px;
+            border: 3px solid #86c5ed;
+            border-top: 0;
+            border-radius: 0 0 12px 12px;
+            background: #ffffff;
+            box-shadow: 0 2px 10px rgba(38, 74, 112, 0.08);
+        }
+        div[data-testid="stMarkdown"]:has(.forecast-target-select-marker) + div[data-testid="stSelectbox"] div[data-baseweb="select"] > div {
+            min-height: 48px !important;
+            border: 2px solid #2f8fc8 !important;
+            background: #ffffff !important;
+            font-weight: 900 !important;
         }
         .forecast-control-note {
             color: #607285;
