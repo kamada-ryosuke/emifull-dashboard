@@ -1829,6 +1829,11 @@ def _page_css():
             border-radius: 7px;
             background: #f8fdff;
         }
+        .forecast-select-label.actual {
+            border-color: #f4c5cb;
+            background: #fff7f8;
+            color: #9f2936;
+        }
         .forecast-card {
             background: #ffffff;
             border: 1px solid #e4edf5;
@@ -2270,7 +2275,19 @@ def _page_css():
             margin: 4px 0 0;
         }
         .forecast-select-label.actual {
-            color: #365d7a;
+            color: #9f2936;
+            background: #fff7f8;
+            border-color: #f4c5cb;
+        }
+        div[data-testid="stMarkdown"]:has(.forecast-select-label.actual) + div[data-testid="stSelectbox"] div[data-baseweb="select"] > div {
+            border-color: #f3bdc5 !important;
+            background: #fff8f9 !important;
+            box-shadow: 0 0 0 3px rgba(244, 163, 177, 0.15) !important;
+        }
+        div[data-testid="stMarkdown"]:has(.forecast-select-label.actual) + div[data-testid="stSelectbox"] div[data-baseweb="select"]:hover > div {
+            border-color: #e46d7c !important;
+            background: #fff4f6 !important;
+            box-shadow: 0 0 0 4px rgba(228, 109, 124, 0.18) !important;
         }
         .forecast-side-panel {
             background: #ffffff;
