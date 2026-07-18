@@ -145,6 +145,12 @@ def _fmt_k_yen(value):
     return f"{_yen_to_thousand(value):,} 千円"
 
 
+def _fmt_diff_k_yen(value):
+    if value is None:
+        return "－"
+    return f"{_yen_to_thousand(value):+,} 千円"
+
+
 def _fmt_count(value):
     if value is None:
         return "－"
@@ -163,6 +169,12 @@ def _fmt_pct(value):
     return f"{value:.1f}%"
 
 
+def _fmt_diff_pct(value):
+    if value is None:
+        return "－"
+    return f"{value:+.1f}%"
+
+
 def _fmt_unit_k_yen(value):
     if value is None:
         return "－"
@@ -175,6 +187,15 @@ def _fmt_average(value, suffix="人"):
     return f"{value:.1f}{suffix}"
 
 
+def _month_label(year, month):
+    return f"{int(year)}年{int(month)}月"
+
+
+def _shift_year_month(year, month, delta):
+    total = int(year) * 12 + int(month) - 1 + delta
+    return total // 12, total % 12 + 1
+
+
 def _profit_rate(profit, revenue):
     if revenue is None or revenue == 0 or profit is None:
         return None
@@ -183,6 +204,87 @@ def _profit_rate(profit, revenue):
 
 def _normalize_name(name):
     return str(name or "").replace("　", " ").replace("（", "(").replace("）", ")").strip().lower()
+
+
+HISTORICAL_USAGE_MONTHS = [
+    "2025-04", "2025-05", "2025-06", "2025-07", "2025-08", "2025-09",
+    "2025-10", "2025-11", "2025-12", "2026-01", "2026-02", "2026-03",
+    "2026-04", "2026-05", "2026-06",
+]
+
+HISTORICAL_USAGE_ROWS = {
+    "SORATOいなみ": [195, 214, 222, 230, 174, 212, 229, 180, 199, 205, 198, 225, 222, 207, 252],
+    "UMIEいなみ": [234, 237, 240, 244, 182, 253, 270, 215, 218, 205, 221, 224, 225, 214, 272],
+    "UMIEいなみ第二教室": [234, 236, 243, 253, 191, 243, 247, 216, 227, 201, 198, 244, 239, 200, 244],
+    "SORATOいなみ第二教室": [189, 190, 196, 210, 185, 190, 205, 168, 185, 194, 169, 232, 209, 184, 219],
+    "BLOOMいなみ": [7, 9, 13, 7, 3, 5, 10, 13, 13, 13, 21, 18, 15, 27, 32],
+    "ジョブカレッジかこがわ": [None, None, 181, 209, 204, 228, 222, 210, 224, 211, 214, 239, 228, 199, 236],
+    "カラダキッズかこがわ": [None, None, 215, 223, 196, 216, 241, 194, 211, 214, 214, 268, 275, 238, 287],
+    "SORATOてんり": [169, 184, 187, 217, 198, 214, 220, 207, 212, 211, 203, 218, 201, 206, 206],
+    "UMIEてんり": [219, 230, 228, 245, 206, 230, 245, 219, 219, 218, 219, 220, 229, 224, 238],
+    "BLOOMてんり": [3, 7, 6, 3, 3, 5, 6, 5, 3, 5, 7, 4, 5, 8, 8],
+    "カラダキッズてんり": [None, None, None, None, None, None, None, None, None, None, None, None, None, None, 71],
+    "Hinodeシェアホーム天理１・２": [564, 579, 563, 577, 575, 563, 569, 562, 580, 573, 536, 608, 585, 568, 554],
+    "Hinodeシェアホーム天理３": [111, 120, 117, 162, 181, 177, 198, 201, 208, 214, 214, 255, 224, 177, 182],
+    "Hinodeシェアホーム天理": [675, 699, 680, 739, 756, 740, 767, 763, 788, 787, 750, 863, 809, 745, 736],
+    "SORATO(UMIE)きたはま": [38, 41, 48, 44, None, None, None, None, None, None, None, None, None, None, None],
+    "のじぎく高砂": [424, 437, 441, 450, 408, 423, 434, 393, 424, 425, 382, 521, 532, 507, 503],
+    "のじぎく稲美": [179, 154, 152, 192, 193, 191, 175, 143, 132, 134, 144, 200, 231, 244, 249],
+    "のじぎく加古川": [None, None, None, None, None, None, None, None, None, None, None, None, None, None, 14],
+    "こすもす稲美": [76, 75, 75, 61, 71, 55, 41, 37, 36, 33, 31, 38, 35, 33, 38],
+    "Hinodeシェアホーム加古川": [None, None, None, None, None, None, None, None, None, None, None, 219, 209, 210, 215],
+    "相談支援NOAH加古川": [None, None, None, None, None, None, None, None, None, None, None, 21, 24, 20, 24],
+}
+
+
+def _build_historical_usage_index():
+    index = defaultdict(dict)
+    for facility_name, values in HISTORICAL_USAGE_ROWS.items():
+        key = _normalize_name(facility_name)
+        for ym, value in zip(HISTORICAL_USAGE_MONTHS, values):
+            if value is not None:
+                index[ym][key] = int(value)
+    return index
+
+
+HISTORICAL_USAGE_BY_MONTH = _build_historical_usage_index()
+HISTORICAL_USAGE_ALIASES = {
+    _normalize_name("SORATOいなみ第二"): [_normalize_name("SORATOいなみ第二教室")],
+    _normalize_name("UMIEいなみ第二"): [_normalize_name("UMIEいなみ第二教室")],
+    _normalize_name("Hinode天理"): [_normalize_name("Hinodeシェアホーム天理")],
+    _normalize_name("Hinodeシェアホーム天理1・2"): [_normalize_name("Hinodeシェアホーム天理１・２")],
+    _normalize_name("Hinodeシェアホーム天理3"): [_normalize_name("Hinodeシェアホーム天理３")],
+    _normalize_name("Hinode加古川"): [_normalize_name("Hinodeシェアホーム加古川")],
+    _normalize_name("Hiniodeシェアホーム加古川"): [_normalize_name("Hinodeシェアホーム加古川")],
+}
+
+
+def _historical_usage_keys(name):
+    key = _normalize_name(name)
+    return [key] + HISTORICAL_USAGE_ALIASES.get(key, [])
+
+
+def _historical_usage_for_facility_month(facility, ym):
+    usage_map = HISTORICAL_USAGE_BY_MONTH.get(ym) or {}
+    if not usage_map:
+        return 0, ""
+
+    for preferred in (facility.get("label"), facility.get("group_name")):
+        for key in _historical_usage_keys(preferred):
+            if key in usage_map:
+                return usage_map[key], "過去延べ利用回数表"
+
+    total = 0
+    seen = set()
+    for name in facility.get("search_names", set()):
+        for key in _historical_usage_keys(name):
+            if key in seen:
+                continue
+            seen.add(key)
+            total += usage_map.get(key, 0)
+    if total > 0:
+        return total, "過去延べ利用回数表"
+    return 0, ""
 
 
 def _facility_display_name(group):
@@ -289,6 +391,43 @@ def _index_daily_records(records):
     return indexed
 
 
+def _build_forecast_usage_index(records):
+    indexed = defaultdict(lambda: {
+        "actual_total": 0,
+        "actual_days": 0,
+        "planned_total": 0,
+        "planned_days": 0,
+    })
+    for record in records:
+        try:
+            ym = date.fromisoformat(str(record.get("target_date"))).strftime("%Y-%m")
+        except Exception:
+            continue
+        key = (record.get("facility_key"), ym)
+        actual = record.get("actual_users")
+        planned = record.get("planned_users")
+        if actual is not None:
+            indexed[key]["actual_total"] += int(actual)
+            indexed[key]["actual_days"] += 1
+        if planned is not None:
+            indexed[key]["planned_total"] += int(planned)
+            indexed[key]["planned_days"] += 1
+    return indexed
+
+
+def _forecast_input_usage_for_facility_month(facility, ym, forecast_usage_index):
+    if not forecast_usage_index:
+        return 0, ""
+    row = forecast_usage_index.get((facility["key"], ym))
+    if not row:
+        return 0, ""
+    if row["actual_days"] > 0:
+        return row["actual_total"], "売上収支予測表の実績"
+    if row["planned_days"] > 0:
+        return row["planned_total"], "売上収支予測表の予定"
+    return 0, ""
+
+
 def _build_pl_indexes(entries):
     revenue = defaultdict(int)
     sga = defaultdict(int)
@@ -330,7 +469,11 @@ def _build_usage_indexes(usage_rows, receipt_rows):
     return usage_by_name, receipt_by_subunit
 
 
-def _usage_for_facility_month(facility, ym, usage_by_name, receipt_by_subunit):
+def _usage_for_facility_month(facility, ym, usage_by_name, receipt_by_subunit, forecast_usage_index=None):
+    forecast_count, forecast_source = _forecast_input_usage_for_facility_month(facility, ym, forecast_usage_index)
+    if forecast_count > 0:
+        return forecast_count, forecast_source
+
     receipt_count = sum(receipt_by_subunit.get((ym, sid), 0) for sid in facility["subunit_ids"])
     if receipt_count > 0:
         return receipt_count, "レセ報告"
@@ -345,48 +488,77 @@ def _usage_for_facility_month(facility, ym, usage_by_name, receipt_by_subunit):
         total += usage_by_name.get((ym, key), 0)
     if total > 0:
         return total, "利用単価入力"
+    historical_count, historical_source = _historical_usage_for_facility_month(facility, ym)
+    if historical_count > 0:
+        return historical_count, historical_source
     return 0, ""
 
 
 def _unit_price_basis(facility, target_ym, available_yms, revenue_index,
-                      has_revenue, usage_by_name, receipt_by_subunit):
-    previous_3 = [_ym_shift(target_ym, -3), _ym_shift(target_ym, -2), _ym_shift(target_ym, -1)]
-    basis_rows = []
-    for ym in previous_3:
-        revenue = _sum_by_subunits(revenue_index, ym, facility["subunit_ids"])
-        usage, source = _usage_for_facility_month(facility, ym, usage_by_name, receipt_by_subunit)
-        if usage > 0 and _has_any(has_revenue, ym, facility["subunit_ids"]):
-            basis_rows.append({"ym": ym, "revenue": revenue, "usage": usage, "source": source})
+                      has_revenue, usage_by_name, receipt_by_subunit, forecast_usage_index=None):
+    previous_3 = [_ym_shift(target_ym, -1), _ym_shift(target_ym, -2), _ym_shift(target_ym, -3)]
+    candidate_yms = []
+    seen_yms = set()
+    for offset in range(1, 16):
+        ym = _ym_shift(target_ym, -offset)
+        candidate_yms.append(ym)
+        seen_yms.add(ym)
+    for ym in available_yms:
+        if ym < target_ym and ym not in seen_yms:
+            candidate_yms.append(ym)
+            seen_yms.add(ym)
 
-    if len(basis_rows) == 3:
+    basis_rows = []
+    excluded_rows = []
+    for ym in candidate_yms:
+        revenue = _sum_by_subunits(revenue_index, ym, facility["subunit_ids"])
+        has_month_revenue = _has_any(has_revenue, ym, facility["subunit_ids"])
+        has_usable_revenue = has_month_revenue and revenue > 0
+        usage, source = _usage_for_facility_month(
+            facility, ym, usage_by_name, receipt_by_subunit, forecast_usage_index
+        )
+        if usage > 0 and has_usable_revenue:
+            basis_rows.append({"ym": ym, "revenue": revenue, "usage": usage, "source": source})
+            if len(basis_rows) >= 3:
+                break
+        elif len(excluded_rows) < 6:
+            if not has_month_revenue:
+                reason = "損益売上なし"
+            elif revenue <= 0:
+                reason = "売上0円"
+            elif usage <= 0:
+                reason = "延べ利用回数なし"
+            else:
+                reason = "対象外"
+            excluded_rows.append({
+                "ym": ym,
+                "revenue": revenue if has_month_revenue else None,
+                "usage": usage if usage > 0 else None,
+                "reason": reason,
+            })
+
+    if basis_rows:
         revenue_total = sum(r["revenue"] for r in basis_rows)
         usage_total = sum(r["usage"] for r in basis_rows)
         if usage_total > 0:
+            source_label = "直近3カ月の加重平均"
+            if len(basis_rows) < 3:
+                source_label = "取得可能な過去月（参考）"
+            elif [r["ym"] for r in basis_rows] != previous_3:
+                source_label = "直近3カ月相当（0・未入力月を除外）"
             return {
                 "unit_price": revenue_total / usage_total,
-                "rows": basis_rows,
-                "source_label": "直近3カ月の加重平均",
+                "rows": sorted(basis_rows, key=lambda r: r["ym"]),
+                "excluded_rows": excluded_rows,
+                "source_label": source_label,
                 "revenue_total": revenue_total,
                 "usage_total": usage_total,
-            }
-
-    for ym in available_yms:
-        if ym >= target_ym:
-            continue
-        revenue = _sum_by_subunits(revenue_index, ym, facility["subunit_ids"])
-        usage, source = _usage_for_facility_month(facility, ym, usage_by_name, receipt_by_subunit)
-        if usage > 0 and _has_any(has_revenue, ym, facility["subunit_ids"]):
-            return {
-                "unit_price": revenue / usage,
-                "rows": [{"ym": ym, "revenue": revenue, "usage": usage, "source": source}],
-                "source_label": "取得可能な直近月",
-                "revenue_total": revenue,
-                "usage_total": usage,
             }
 
     return {
         "unit_price": None,
         "rows": [],
+        "excluded_rows": excluded_rows,
         "source_label": "未算出",
         "revenue_total": None,
         "usage_total": None,
@@ -478,11 +650,11 @@ def _daily_metrics(days, daily_by_date, today):
 
 def _forecast_summary(facility, target_ym, days, daily_by_date, today, available_yms,
                       revenue_index, has_revenue, sga_index, has_sga,
-                      usage_by_name, receipt_by_subunit):
+                      usage_by_name, receipt_by_subunit, forecast_usage_index=None):
     daily = _daily_metrics(days, daily_by_date, today)
     unit = _unit_price_basis(
         facility, target_ym, available_yms, revenue_index,
-        has_revenue, usage_by_name, receipt_by_subunit,
+        has_revenue, usage_by_name, receipt_by_subunit, forecast_usage_index,
     )
     sga = _sga_basis(facility, target_ym, sga_index, has_sga)
     unit_price = unit["unit_price"]
@@ -611,12 +783,26 @@ def _render_summary_cards(summary):
         )
 
 
-def _top_kpi(title, value, note="", tone=""):
+def _summary_line(label, value, tone="", note=""):
+    note_html = f"<small>{html.escape(note)}</small>" if note else ""
     return (
-        f"<div class='forecast-kpi {html.escape(tone)}'>"
-        f"<div class='forecast-kpi-title'>{html.escape(title)}</div>"
-        f"<div class='forecast-kpi-value'>{html.escape(value)}</div>"
-        f"<div class='forecast-kpi-note'>{html.escape(note)}</div>"
+        "<div class='forecast-summary-line'>"
+        f"<span>{html.escape(label)}</span>"
+        f"<strong class='{html.escape(tone)}'>{html.escape(value)}</strong>"
+        f"{note_html}"
+        "</div>"
+    )
+
+
+def _summary_group(title, subtitle, rows, tone=""):
+    body = "".join(_summary_line(*row) for row in rows)
+    return (
+        f"<div class='forecast-summary-card {html.escape(tone)}'>"
+        f"<div class='forecast-summary-head'>"
+        f"<strong>{html.escape(title)}</strong>"
+        f"<span>{html.escape(subtitle)}</span>"
+        "</div>"
+        f"{body}"
         "</div>"
     )
 
@@ -624,26 +810,75 @@ def _top_kpi(title, value, note="", tone=""):
 def _render_top_kpis(summary):
     unit = summary["unit"]
     daily = summary["daily"]
-    profit_tone = "warn" if summary["planned_profit"] is not None and summary["planned_profit"] < 0 else ""
+    planned_profit_tone = "warn" if summary["planned_profit"] is not None and summary["planned_profit"] < 0 else ""
     landing_profit_tone = "warn" if summary["landing_profit"] is not None and summary["landing_profit"] < 0 else ""
+    usage_diff_tone = "good" if summary["usage_diff"] > 0 else ("warn" if summary["usage_diff"] < 0 else "")
     revenue_diff_tone = "good" if (summary["revenue_diff"] or 0) > 0 else ("warn" if (summary["revenue_diff"] or 0) < 0 else "")
     profit_diff_tone = "good" if (summary["profit_diff"] or 0) > 0 else ("warn" if (summary["profit_diff"] or 0) < 0 else "")
-    kpis = [
-        _top_kpi("予定売上", _fmt_k_yen(summary["planned_revenue"]), "月間予定から計算"),
-        _top_kpi("予定販管費", _fmt_k_yen(summary["planned_sga"]), "過去データ中央値", "cost"),
-        _top_kpi("予定利益", _fmt_k_yen(summary["planned_profit"]), _fmt_pct(summary["planned_rate"]), profit_tone),
-        _top_kpi("予定延べ利用回数", _fmt_count(summary["planned_usage"]), f"入力 {daily['planned_input_days']}/{daily['month_days']}日"),
-        _top_kpi("1人売上単価", _fmt_unit_k_yen(unit["unit_price"]), unit["source_label"]),
-        _top_kpi("現時点実績", _fmt_count(summary["actual_usage"]), f"入力 {daily['actual_input_days']}/{daily['elapsed_days']}日"),
-        _top_kpi("月末予測利用回数", _fmt_count(summary["landing_usage"]), "実績 + 未来予定"),
-        _top_kpi("着地予測売上", _fmt_k_yen(summary["landing_revenue"]), "月末予測から計算"),
-        _top_kpi("着地予測利益", _fmt_k_yen(summary["landing_profit"]), _fmt_pct(summary["landing_rate"]), landing_profit_tone),
-        _top_kpi("売上差", _fmt_k_yen(summary["revenue_diff"]), "着地予測 - 予定", revenue_diff_tone),
-        _top_kpi("利益差", _fmt_k_yen(summary["profit_diff"]), "着地予測 - 予定", profit_diff_tone),
-        _top_kpi("販管費差", _fmt_k_yen(summary["sga_diff"]), "プラスは費用超過", "cost"),
+    sga_diff_tone = "warn" if (summary["sga_diff"] or 0) > 0 else ""
+    expense_unit = (
+        summary["landing_sga"] / summary["landing_usage"]
+        if summary["landing_sga"] is not None and summary["landing_usage"]
+        else None
+    )
+    unit_rows_note = (
+        f"参照売上 {_fmt_k_yen(unit['revenue_total'])} / 利用 {unit['usage_total']:,}回"
+        if unit["revenue_total"] is not None and unit["usage_total"]
+        else "損益データと延べ利用回数を確認"
+    )
+    unit_basis_tone = "" if unit["unit_price"] is not None else "warn"
+    groups = [
+        _summary_group(
+            "予定",
+            "月初・事前に入力した計画",
+            [
+                ("予定利用回数", _fmt_count(summary["planned_usage"]), "", f"予定入力 {daily['planned_input_days']}/{daily['month_days']}日"),
+                ("予定売上", _fmt_k_yen(summary["planned_revenue"]), ""),
+                ("予定販管費", _fmt_k_yen(summary["planned_sga"]), "cost"),
+                ("予定利益", _fmt_k_yen(summary["planned_profit"]), planned_profit_tone),
+                ("予定利益率", _fmt_pct(summary["planned_rate"]), planned_profit_tone),
+            ],
+            "plan",
+        ),
+        _summary_group(
+            "実績・着地予測",
+            "入力済み実績 + 未来予定",
+            [
+                ("現時点実績", _fmt_count(summary["actual_usage"]), "", f"実績入力 {daily['actual_input_days']}/{daily['elapsed_days']}日"),
+                ("月末予測利用回数", _fmt_count(summary["landing_usage"]), ""),
+                ("現時点実績売上", _fmt_k_yen(summary["current_revenue"]), ""),
+                ("着地予測売上", _fmt_k_yen(summary["landing_revenue"]), ""),
+                ("着地予測利益", _fmt_k_yen(summary["landing_profit"]), landing_profit_tone),
+                ("着地予測利益率", _fmt_pct(summary["landing_rate"]), landing_profit_tone),
+            ],
+            "actual",
+        ),
+        _summary_group(
+            "差異",
+            "着地予測 - 予定",
+            [
+                ("利用回数差", _fmt_diff_count(summary["usage_diff"]), usage_diff_tone),
+                ("売上差", _fmt_diff_k_yen(summary["revenue_diff"]), revenue_diff_tone),
+                ("販管費差", _fmt_diff_k_yen(summary["sga_diff"]), sga_diff_tone, "プラスは費用超過"),
+                ("利益差", _fmt_diff_k_yen(summary["profit_diff"]), profit_diff_tone),
+                ("利益率差", _fmt_diff_pct(summary["rate_diff"]), profit_diff_tone),
+            ],
+            "diff",
+        ),
+        _summary_group(
+            "単価・根拠",
+            "予測計算に使う基準",
+            [
+                ("1人売上単価", _fmt_unit_k_yen(unit["unit_price"]), "unit", unit["source_label"]),
+                ("平均経費単価", _fmt_unit_k_yen(expense_unit), "cost", "着地予測販管費 ÷ 月末予測利用回数"),
+                ("売上単価の元データ", "確認可" if unit["unit_price"] is not None else "未算出", unit_basis_tone, unit_rows_note),
+                ("販管費予測", _fmt_k_yen(summary["planned_sga"]), "cost", "前年同月・前々年同月・直近3カ月の中央値"),
+            ],
+            "unit",
+        ),
     ]
     st.markdown(
-        "<div class='forecast-kpi-grid'>" + "".join(kpis) + "</div>",
+        "<div class='forecast-summary-grid'>" + "".join(groups) + "</div>",
         unsafe_allow_html=True,
     )
 
@@ -665,10 +900,19 @@ def _detail_basis_tables(summary):
                 "参照年月": r["ym"],
                 "売上(千円)": _yen_to_thousand(r["revenue"]),
                 "延べ利用回数": r["usage"],
-                "取得元": r["source"],
+                "取得元・状態": r["source"],
             }
             for r in unit["rows"]
         ]
+        rows.extend(
+            {
+                "参照年月": r["ym"],
+                "売上(千円)": None if r.get("revenue") is None else _yen_to_thousand(r["revenue"]),
+                "延べ利用回数": r.get("usage"),
+                "取得元・状態": f"除外: {r['reason']}",
+            }
+            for r in unit.get("excluded_rows", [])
+        )
         st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
     with c2:
         st.markdown("#### 販管費予測の根拠")
@@ -826,7 +1070,7 @@ def _render_month_outside_cell(d):
     )
 
 
-def _render_month_day_cell(facility, d, rec, current_user):
+def _render_month_day_cell(facility, d, rec, current_user, auto_save=True, key_prefix="forecast"):
     holidays = _japanese_holidays(d.year)
     classes = _calendar_day_classes(d, d.month, holidays, _today_jst())
     holiday_name = holidays.get(d, "")
@@ -855,7 +1099,7 @@ def _render_month_day_cell(facility, d, rec, current_user):
         FORECAST_USER_OPTIONS,
         index=_option_index(planned),
         format_func=_format_user_option,
-        key=f"forecast_plan_{facility['key']}_{d.isoformat()}",
+        key=f"{key_prefix}_plan_{facility['key']}_{d.isoformat()}",
         label_visibility="collapsed",
     )
     st.markdown(
@@ -867,18 +1111,25 @@ def _render_month_day_cell(facility, d, rec, current_user):
         FORECAST_USER_OPTIONS,
         index=_option_index(actual),
         format_func=_format_user_option,
-        key=f"forecast_actual_{facility['key']}_{d.isoformat()}",
+        key=f"{key_prefix}_actual_{facility['key']}_{d.isoformat()}",
         label_visibility="collapsed",
     )
 
     saved_count = 0
+    changes = []
     if new_planned != planned:
-        result = _save_cell(facility, d, "planned_users", new_planned, current_user)
-        saved_count += 1 if result.get("saved") else 0
+        if auto_save:
+            result = _save_cell(facility, d, "planned_users", new_planned, current_user)
+            saved_count += 1 if result.get("saved") else 0
+        else:
+            changes.append((d, "planned_users", new_planned))
     if new_actual != actual:
-        result = _save_cell(facility, d, "actual_users", new_actual, current_user)
-        saved_count += 1 if result.get("saved") else 0
-    return saved_count
+        if auto_save:
+            result = _save_cell(facility, d, "actual_users", new_actual, current_user)
+            saved_count += 1 if result.get("saved") else 0
+        else:
+            changes.append((d, "actual_users", new_actual))
+    return saved_count, changes
 
 
 def _render_usage_side_panel(summary):
@@ -920,11 +1171,8 @@ def _render_usage_side_panel(summary):
     )
 
 
-def _render_daily_editor(facility, target_ym, days, daily_by_date):
-    _handle_bulk_tools(facility, target_ym, days)
-    st.markdown("#### 日別入力カレンダー")
-    st.caption("予定・実績はいずれもプルダウンで選択します。「－」は未入力、「0」は0人として別の状態で保存します。保存ボタンはありません。")
-
+def _render_calendar_grid(facility, target_ym, days, daily_by_date, current_user,
+                          auto_save=True, key_prefix="forecast"):
     year, month = [int(v) for v in target_ym.split("-")]
     month_calendar = calendar.Calendar(firstweekday=6).monthdatescalendar(year, month)
     st.markdown(
@@ -944,8 +1192,8 @@ def _render_daily_editor(facility, target_ym, days, daily_by_date):
             unsafe_allow_html=True,
         )
 
-    current = auth.current_user() or {}
     saved_count = 0
+    changes = []
     try:
         for week in month_calendar:
             cols = st.columns(7, gap="small")
@@ -956,14 +1204,76 @@ def _render_daily_editor(facility, target_ym, days, daily_by_date):
                             _render_month_outside_cell(d)
                             continue
                         rec = daily_by_date.get(d) or {}
-                        saved_count += _render_month_day_cell(facility, d, rec, current)
+                        cell_saved, cell_changes = _render_month_day_cell(
+                            facility, d, rec, current_user,
+                            auto_save=auto_save,
+                            key_prefix=key_prefix,
+                        )
+                        saved_count += cell_saved
+                        changes.extend(cell_changes)
     except Exception:
         st.error("入力内容を保存できませんでした。通信状況を確認して再度入力してください。")
+        return 0, []
+
+    return saved_count, changes
+
+
+def _render_daily_editor(facility, target_ym, days, daily_by_date):
+    _handle_bulk_tools(facility, target_ym, days)
+    st.markdown("#### 日別入力カレンダー")
+    fast_mode = st.toggle(
+        "高速入力モード（まとめて保存）",
+        value=True,
+        key=f"forecast_fast_mode_{target_ym}_{facility['key']}",
+        help="オンにすると、プルダウンを何日分も続けて選んでから一括保存できます。",
+    )
+    if fast_mode:
+        st.caption("予定・実績を続けて選んだあと、下の「変更分をまとめて保存」を押してください。「－」は未入力、「0」は0人です。")
+    else:
+        st.caption("選択するたびに自動保存します。入力直後の再表示を軽くするため、保存後の強制更新は行いません。")
+
+    current = auth.current_user() or {}
+
+    if fast_mode:
+        with st.form(f"forecast_fast_form_{target_ym}_{facility['key']}"):
+            _, changes = _render_calendar_grid(
+                facility, target_ym, days, daily_by_date, current,
+                auto_save=False,
+                key_prefix="forecast_fast",
+            )
+            submitted = st.form_submit_button(
+                "変更分をまとめて保存",
+                type="primary",
+                use_container_width=True,
+            )
+        if submitted:
+            saved_count = 0
+            try:
+                for d, field_name, value in changes:
+                    result = _save_cell(facility, d, field_name, value, current)
+                    saved_count += 1 if result.get("saved") else 0
+            except Exception:
+                st.error("入力内容を保存できませんでした。通信状況を確認して再度入力してください。")
+                return
+            st.session_state["forecast_saved_notice"] = (
+                f"変更分をまとめて保存しました（{saved_count}件）。"
+                if saved_count else "変更はありませんでした。"
+            )
+            st.rerun()
         return
 
+    saved_count, _ = _render_calendar_grid(
+        facility, target_ym, days, daily_by_date, current,
+        auto_save=True,
+        key_prefix="forecast_auto",
+    )
+
     if saved_count:
-        st.session_state["forecast_saved_notice"] = f"入力内容を自動保存しました（{saved_count}件）。"
-        st.rerun()
+        notice = f"入力内容を自動保存しました（{saved_count}件）。"
+        try:
+            st.toast(notice)
+        except Exception:
+            st.caption(notice)
 
 
 def _summary_to_row(summary):
@@ -1038,7 +1348,7 @@ def _render_all_facilities(summaries):
         "着地予測利益(千円)", "着地予測利益率", "月末着地予測利用回数",
     ]
     sc1, sc2 = st.columns([2, 1])
-    sort_col = sc1.selectbox("並び替え", sortable, index=2)
+    sort_col = sc1.selectbox("並び替えを選ぶ", sortable, index=2)
     ascending = sc2.toggle("昇順", value=False)
     df = df.sort_values(sort_col, ascending=ascending, na_position="last")
 
@@ -1064,6 +1374,164 @@ def _render_all_facilities(summaries):
     st.caption("販管費差のプラスは費用超過を意味します。売上差・利益差・利用回数差のプラスとは色分けの意味が異なります。")
 
 
+def _set_target_month_state(year, month):
+    st.session_state["forecast_target_year"] = int(year)
+    st.session_state["forecast_target_month"] = int(month)
+
+
+def _render_target_month_panel(today, year_options):
+    if "forecast_target_year" not in st.session_state:
+        st.session_state["forecast_target_year"] = today.year
+    if "forecast_target_month" not in st.session_state:
+        st.session_state["forecast_target_month"] = today.month
+
+    current_year = int(st.session_state["forecast_target_year"])
+    current_month = int(st.session_state["forecast_target_month"])
+    if current_year not in year_options:
+        current_year = today.year
+        st.session_state["forecast_target_year"] = current_year
+    if current_month < 1 or current_month > 12:
+        current_month = today.month
+        st.session_state["forecast_target_month"] = current_month
+
+    with st.container(border=True):
+        st.markdown(
+            """
+            <div class="forecast-control-title">
+                <span>1</span>
+                <div>
+                    <strong>対象年月を選ぶ</strong>
+                    <small>見たい月を先に選びます。前月・翌月ボタンでも切り替えできます。</small>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        nav_cols = st.columns([1, 1, 1, 3.2], gap="small")
+        if nav_cols[0].button("前月へ", key="forecast_prev_month", use_container_width=True):
+            new_year, new_month = _shift_year_month(current_year, current_month, -1)
+            if new_year in year_options:
+                _set_target_month_state(new_year, new_month)
+                current_year, current_month = new_year, new_month
+        if nav_cols[1].button("今月へ", key="forecast_this_month", use_container_width=True):
+            _set_target_month_state(today.year, today.month)
+            current_year, current_month = today.year, today.month
+        if nav_cols[2].button("翌月へ", key="forecast_next_month", use_container_width=True):
+            new_year, new_month = _shift_year_month(current_year, current_month, 1)
+            if new_year in year_options:
+                _set_target_month_state(new_year, new_month)
+                current_year, current_month = new_year, new_month
+        nav_cols[3].markdown(
+            f"<div class='forecast-selected-banner'>選択中：{html.escape(_month_label(current_year, current_month))}</div>",
+            unsafe_allow_html=True,
+        )
+
+        c_year, c_month, c_note = st.columns([1.1, 1.1, 3.2], gap="small")
+        target_year = c_year.selectbox(
+            "年を選ぶ",
+            year_options,
+            key="forecast_target_year",
+            help="対象年を選びます。",
+        )
+        target_month_number = c_month.selectbox(
+            "月を選ぶ",
+            list(range(1, 13)),
+            format_func=lambda m: f"{m}月",
+            key="forecast_target_month",
+            help="対象月を選びます。",
+        )
+        c_note.markdown(
+            "<div class='forecast-control-note'>過去月・当月・未来月を切り替えて、登録済みの予定人数・実績人数を確認できます。</div>",
+            unsafe_allow_html=True,
+        )
+    return int(target_year), int(target_month_number)
+
+
+def _render_view_mode_panel(forecast_profile):
+    if forecast_profile:
+        st.markdown(
+            f"""
+            <div class="forecast-locked-panel">
+                <strong>施設専用ログイン</strong>
+                <span>{html.escape(forecast_profile['facility_label'])} のカレンダー入力画面を表示します。</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        return "施設別入力・予測"
+
+    if "forecast_view_mode" not in st.session_state:
+        st.session_state["forecast_view_mode"] = "全施設一覧"
+
+    with st.container(border=True):
+        st.markdown(
+            """
+            <div class="forecast-control-title">
+                <span>2</span>
+                <div>
+                    <strong>表示する画面を選ぶ</strong>
+                    <small>全体比較か、施設ごとのカレンダー入力かを選びます。</small>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        c_all, c_detail = st.columns(2, gap="small")
+        all_active = st.session_state["forecast_view_mode"] == "全施設一覧"
+        detail_active = st.session_state["forecast_view_mode"] == "施設別入力・予測"
+        if c_all.button(
+            "全施設一覧を見る",
+            key="forecast_view_all_button",
+            type="primary" if all_active else "secondary",
+            use_container_width=True,
+        ):
+            st.session_state["forecast_view_mode"] = "全施設一覧"
+        c_all.caption("施設ごとの売上・利益・入力状況を一覧で比較します。")
+
+        if c_detail.button(
+            "施設カレンダーに入力する",
+            key="forecast_view_detail_button",
+            type="primary" if detail_active else "secondary",
+            use_container_width=True,
+        ):
+            st.session_state["forecast_view_mode"] = "施設別入力・予測"
+        c_detail.caption("選んだ施設の予定人数・実績人数を日別に入力します。")
+
+    return st.session_state["forecast_view_mode"]
+
+
+def _render_facility_select_panel(facilities):
+    facility_labels = [f["label"] for f in facilities]
+    current_label = st.session_state.get("forecast_facility_select")
+    current_index = facility_labels.index(current_label) if current_label in facility_labels else 0
+    with st.container(border=True):
+        st.markdown(
+            """
+            <div class="forecast-control-title">
+                <span>3</span>
+                <div>
+                    <strong>入力する施設を選ぶ</strong>
+                    <small>施設を切り替えると、その施設のカレンダーと予測値を表示します。</small>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        select_col, note_col = st.columns([2.4, 2], gap="small")
+        selected_label = select_col.selectbox(
+            "施設を選ぶ",
+            facility_labels,
+            index=current_index,
+            key="forecast_facility_select",
+            help="カレンダー入力する施設を選びます。",
+        )
+        note_col.markdown(
+            f"<div class='forecast-selected-banner'>選択中：{html.escape(selected_label)}</div>",
+            unsafe_allow_html=True,
+        )
+    return next(f for f in facilities if f["label"] == selected_label)
+
+
 def _page_css():
     st.markdown(
         """
@@ -1084,6 +1552,132 @@ def _page_css():
             margin: 0;
             color: #5d6f82;
             font-size: 0.95rem;
+        }
+        .forecast-control-title {
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
+            margin-bottom: 12px;
+        }
+        .forecast-control-title span {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 30px;
+            height: 30px;
+            border-radius: 999px;
+            background: #e6f4ee;
+            color: #167047;
+            font-weight: 900;
+            flex: 0 0 auto;
+        }
+        .forecast-control-title strong {
+            display: block;
+            color: #17324d;
+            font-size: 1.05rem;
+            line-height: 1.3;
+        }
+        .forecast-control-title small {
+            display: block;
+            color: #6b7c8d;
+            font-size: 0.82rem;
+            margin-top: 2px;
+        }
+        .forecast-selected-banner {
+            display: flex;
+            align-items: center;
+            min-height: 40px;
+            border-radius: 8px;
+            border: 1px solid #cfe5f4;
+            background: #f4fbff;
+            color: #17324d;
+            font-weight: 850;
+            padding: 9px 12px;
+            margin-top: 1px;
+        }
+        .forecast-control-note {
+            color: #607285;
+            font-size: 0.86rem;
+            line-height: 1.65;
+            padding: 8px 2px 0;
+        }
+        .forecast-locked-panel {
+            border: 1px solid #d7eadc;
+            border-radius: 8px;
+            background: #f6fcf7;
+            padding: 12px 14px;
+            margin: 8px 0 14px;
+        }
+        .forecast-locked-panel strong {
+            display: block;
+            color: #167047;
+            font-size: 0.9rem;
+            margin-bottom: 3px;
+        }
+        .forecast-locked-panel span {
+            color: #17324d;
+            font-weight: 800;
+        }
+        div[data-testid="stSelectbox"] label,
+        div[data-testid="stRadio"] label,
+        div[data-testid="stToggle"] label {
+            color: #17324d !important;
+            font-weight: 900 !important;
+        }
+        div[data-baseweb="select"] > div {
+            min-height: 42px !important;
+            border: 2px solid #86c5ed !important;
+            border-radius: 10px !important;
+            background: #ffffff !important;
+            box-shadow: 0 0 0 3px rgba(134, 197, 237, 0.16) !important;
+            transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+        }
+        div[data-baseweb="select"]:hover > div {
+            border-color: #3b93cf !important;
+            background: #f7fcff !important;
+            box-shadow: 0 0 0 4px rgba(59, 147, 207, 0.18) !important;
+        }
+        div[data-baseweb="select"] svg {
+            color: #0f5f91 !important;
+        }
+        div[data-testid="stRadio"] {
+            width: fit-content;
+            max-width: 100%;
+            padding: 9px 12px 8px;
+            border: 2px solid #cfe5f4;
+            border-radius: 12px;
+            background: #ffffff;
+            box-shadow: 0 1px 5px rgba(38, 74, 112, 0.06);
+        }
+        div[data-testid="stToggle"] {
+            padding: 10px 12px;
+            border: 2px solid #d7eadc;
+            border-radius: 12px;
+            background: #f7fcf8;
+            box-shadow: 0 1px 5px rgba(38, 74, 112, 0.05);
+        }
+        div.stButton > button,
+        div[data-testid="stFormSubmitButton"] button {
+            min-height: 42px;
+            border: 2px solid #9bcdea !important;
+            border-radius: 10px !important;
+            font-weight: 900 !important;
+            box-shadow: 0 1px 5px rgba(38, 74, 112, 0.08);
+        }
+        div.stButton > button:hover,
+        div[data-testid="stFormSubmitButton"] button:hover {
+            border-color: #2f8fc8 !important;
+            box-shadow: 0 0 0 4px rgba(47, 143, 200, 0.16);
+        }
+        .forecast-select-label {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 4px;
+            padding: 3px 5px;
+            border: 1px solid #d7eaf6;
+            border-radius: 7px;
+            background: #f8fdff;
         }
         .forecast-card {
             background: #ffffff;
@@ -1124,6 +1718,96 @@ def _page_css():
         }
         .forecast-metric-row strong.cost {
             color: #7c3aed;
+        }
+        .forecast-summary-grid {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(220px, 1fr));
+            gap: 12px;
+            margin: 12px 0 18px;
+        }
+        .forecast-summary-card {
+            background: #ffffff;
+            border: 1px solid #e4edf5;
+            border-top: 6px solid #9cc7e6;
+            border-radius: 8px;
+            padding: 14px 15px;
+            box-shadow: 0 1px 5px rgba(38, 74, 112, 0.07);
+            min-height: 304px;
+        }
+        .forecast-summary-card.plan {
+            border-top-color: #f5a8be;
+            background: linear-gradient(180deg, #fff9fb 0%, #ffffff 34%);
+        }
+        .forecast-summary-card.actual {
+            border-top-color: #8dc8ef;
+            background: linear-gradient(180deg, #f7fbff 0%, #ffffff 34%);
+        }
+        .forecast-summary-card.diff {
+            border-top-color: #a8dca0;
+            background: linear-gradient(180deg, #f8fff7 0%, #ffffff 34%);
+        }
+        .forecast-summary-card.unit {
+            border-top-color: #e5c0f1;
+            background: linear-gradient(180deg, #fcf8ff 0%, #ffffff 34%);
+        }
+        .forecast-summary-head {
+            margin-bottom: 10px;
+            padding-bottom: 9px;
+            border-bottom: 1px solid #edf3f7;
+        }
+        .forecast-summary-head strong {
+            display: block;
+            color: #17324d;
+            font-size: 1.08rem;
+            font-weight: 900;
+            line-height: 1.25;
+        }
+        .forecast-summary-head span {
+            display: block;
+            color: #647789;
+            font-size: 0.78rem;
+            font-weight: 700;
+            margin-top: 2px;
+        }
+        .forecast-summary-line {
+            display: grid;
+            grid-template-columns: 1fr auto;
+            gap: 8px 10px;
+            align-items: baseline;
+            padding: 8px 0;
+            border-bottom: 1px solid #eef3f7;
+        }
+        .forecast-summary-line span {
+            color: #5d6f82;
+            font-size: 0.84rem;
+            font-weight: 760;
+            line-height: 1.3;
+        }
+        .forecast-summary-line strong {
+            color: #10263d;
+            font-size: 1.08rem;
+            font-weight: 900;
+            text-align: right;
+            white-space: nowrap;
+        }
+        .forecast-summary-line strong.good {
+            color: #137343;
+        }
+        .forecast-summary-line strong.warn {
+            color: #c2410c;
+        }
+        .forecast-summary-line strong.cost {
+            color: #7c3aed;
+        }
+        .forecast-summary-line strong.unit {
+            color: #0f5f91;
+        }
+        .forecast-summary-line small {
+            grid-column: 1 / -1;
+            color: #8795a3;
+            font-size: 0.72rem;
+            line-height: 1.35;
+            margin-top: -3px;
         }
         .forecast-kpi-grid {
             display: grid;
@@ -1319,6 +2003,9 @@ def _page_css():
             margin-top: 10px;
         }
         @media (max-width: 1120px) {
+            .forecast-summary-grid {
+                grid-template-columns: repeat(2, minmax(220px, 1fr));
+            }
             .forecast-kpi-grid {
                 grid-template-columns: repeat(2, minmax(150px, 1fr));
             }
@@ -1327,6 +2014,9 @@ def _page_css():
             }
         }
         @media (max-width: 720px) {
+            .forecast-summary-grid {
+                grid-template-columns: 1fr;
+            }
             .forecast-kpi-grid {
                 grid-template-columns: 1fr;
             }
@@ -1366,9 +2056,7 @@ if st.session_state.get("forecast_saved_notice"):
 
 today = _today_jst()
 year_options = list(range(today.year - 2, today.year + 3))
-c_year, c_month = st.columns([1, 1])
-target_year = c_year.selectbox("対象年", year_options, index=year_options.index(today.year), key="forecast_target_year")
-target_month_number = c_month.selectbox("対象月", list(range(1, 13)), index=today.month - 1, format_func=lambda m: f"{m}月", key="forecast_target_month")
+target_year, target_month_number = _render_target_month_panel(today, year_options)
 target_ym = f"{target_year}-{target_month_number:02d}"
 days = _month_days(target_ym)
 month_start, month_end = days[0], days[-1]
@@ -1380,12 +2068,16 @@ if not facilities:
 
 current = auth.current_user() or {}
 forecast_profile = auth.current_forecast_facility()
-if forecast_profile:
-    st.caption(f"{forecast_profile['facility_label']} の入力画面を表示しています。")
-elif not auth.is_admin() and (current.get("position") or "") not in SENIOR_POSITIONS:
+view_mode = _render_view_mode_panel(forecast_profile)
+selected_facility = None
+if view_mode == "施設別入力・予測":
+    selected_facility = facilities[0] if forecast_profile else _render_facility_select_panel(facilities)
+
+if not forecast_profile and not auth.is_admin() and (current.get("position") or "") not in SENIOR_POSITIONS:
     st.caption("施設別の閲覧権限テーブルは未設定のため、現在は登録済み施設を表示しています。")
 
-facility_keys = [f["key"] for f in facilities]
+active_facilities = facilities if view_mode == "全施設一覧" else [selected_facility or facilities[0]]
+facility_keys = [f["key"] for f in active_facilities]
 daily_records = db.list_revenue_forecast_daily(month_start, month_end, facility_keys)
 daily_by_key = _index_daily_records(daily_records)
 
@@ -1394,47 +2086,39 @@ available_yms = sorted(available_yms, reverse=True)
 same_month_candidates = [f"{target_year - 1}-{target_month_number:02d}", f"{target_year - 2}-{target_month_number:02d}"]
 previous_3 = [_ym_shift(target_ym, -3), _ym_shift(target_ym, -2), _ym_shift(target_ym, -1)]
 needed_yms = sorted(set(available_yms + same_month_candidates + previous_3))
+active_subunit_ids = sorted({
+    sid for facility in active_facilities for sid in facility["subunit_ids"]
+})
 pl_entries = db.fetch_pl_entries(
     year_months=needed_yms,
+    subunit_ids=active_subunit_ids,
     categories=["revenue_total", "sga_total"],
 ) if needed_yms else []
 revenue_index, sga_index, has_revenue, has_sga = _build_pl_indexes(pl_entries)
 usage_rows = db.fetch_revenue_forecast_usage_unit_inputs(needed_yms)
 receipt_usage_rows = db.fetch_revenue_forecast_receipt_usage(needed_yms)
 usage_by_name, receipt_by_subunit = _build_usage_indexes(usage_rows, receipt_usage_rows)
+forecast_usage_yms = [ym for ym in needed_yms if "2026-07" <= ym < target_ym]
+forecast_usage_records = []
+if forecast_usage_yms:
+    usage_start = min(_month_bounds(ym)[0] for ym in forecast_usage_yms)
+    usage_end = max(_month_bounds(ym)[1] for ym in forecast_usage_yms)
+    forecast_usage_records = db.list_revenue_forecast_daily(usage_start, usage_end, facility_keys)
+forecast_usage_index = _build_forecast_usage_index(forecast_usage_records)
 
 summaries = [
     _forecast_summary(
         facility, target_ym, days, daily_by_key.get(facility["key"], {}), today,
         available_yms, revenue_index, has_revenue, sga_index, has_sga,
-        usage_by_name, receipt_by_subunit,
+        usage_by_name, receipt_by_subunit, forecast_usage_index,
     )
-    for facility in facilities
+    for facility in active_facilities
 ]
-
-if forecast_profile:
-    view_mode = "施設別入力・予測"
-else:
-    view_mode = st.radio(
-        "表示",
-        ["全施設一覧", "施設別入力・予測"],
-        horizontal=True,
-        key="forecast_view_mode",
-    )
 
 if view_mode == "全施設一覧":
     _render_all_facilities(summaries)
 else:
-    if forecast_profile:
-        selected_facility = facilities[0]
-    else:
-        facility_labels = [f["label"] for f in facilities]
-        selected_label = st.selectbox(
-            "施設",
-            facility_labels,
-            key="forecast_facility_select",
-        )
-        selected_facility = next(f for f in facilities if f["label"] == selected_label)
+    selected_facility = selected_facility or facilities[0]
     summary = next(s for s in summaries if s["facility"]["key"] == selected_facility["key"])
     st.markdown(f"### {selected_facility['label']} ／ {target_year}年{target_month_number}月")
     _render_top_kpis(summary)
