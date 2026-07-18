@@ -1302,7 +1302,10 @@ def _render_calendar_grid(facility, target_ym, days, daily_by_date, current_user
         f"""
         <div class="forecast-calendar-title">
             <strong>{month}月</strong>
-            <em>{html.escape(facility["label"])}</em>
+            <div class="forecast-calendar-facility-name">
+                <small>入力施設</small>
+                <b>{html.escape(facility["label"])}</b>
+            </div>
             <span>{year}</span>
         </div>
         """,
@@ -2412,36 +2415,54 @@ def _page_css():
             margin-bottom: 3px;
         }
         .forecast-calendar-title {
-            display: flex;
-            justify-content: space-between;
+            display: grid;
+            grid-template-columns: minmax(72px, auto) minmax(220px, 1fr) minmax(72px, auto);
             align-items: center;
             gap: 10px;
-            margin: 6px 0 3px;
+            margin: 6px 0 4px;
             padding: 0 2px;
         }
         .forecast-calendar-title strong {
             color: #111827;
             font-size: 1.72rem;
             line-height: 1.1;
+            justify-self: start;
         }
         .forecast-calendar-title span {
             color: #111827;
             font-size: 1.32rem;
             font-weight: 600;
+            justify-self: end;
         }
-        .forecast-calendar-title em {
-            flex: 1 1 auto;
+        .forecast-calendar-facility-name {
+            justify-self: stretch;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
             color: #17324d;
-            font-size: 1.08rem;
-            font-style: normal;
-            font-weight: 950;
-            line-height: 1.25;
+            min-height: 38px;
             text-align: center;
-            padding: 5px 12px;
-            border: 1px solid #dceaf3;
-            border-radius: 999px;
-            background: #f8fdff;
-            box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.75);
+            padding: 6px 14px;
+            border: 2px solid #8cc7ee;
+            border-radius: 12px;
+            background: linear-gradient(90deg, #f7fcff 0%, #edf8ff 100%);
+            box-shadow: 0 2px 8px rgba(49, 116, 165, 0.08);
+            min-width: 0;
+        }
+        .forecast-calendar-facility-name small {
+            flex: 0 0 auto;
+            color: #4d6880;
+            font-size: 0.78rem;
+            font-weight: 850;
+            line-height: 1;
+            white-space: nowrap;
+        }
+        .forecast-calendar-facility-name b {
+            color: #0b2744;
+            font-size: 1.18rem;
+            font-weight: 950;
+            line-height: 1.15;
             overflow-wrap: anywhere;
         }
         .forecast-calendar-weekday.sunday {
@@ -2819,6 +2840,13 @@ def _page_css():
             }
             .forecast-kpi-grid {
                 grid-template-columns: 1fr;
+            }
+            .forecast-calendar-title {
+                grid-template-columns: 1fr auto;
+            }
+            .forecast-calendar-facility-name {
+                grid-column: 1 / -1;
+                grid-row: 2;
             }
             .forecast-calendar-date {
                 font-size: 1rem;
