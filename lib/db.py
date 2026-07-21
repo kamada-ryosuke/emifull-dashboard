@@ -13,6 +13,7 @@ LOCAL_REPLICA_PATH = Path(__file__).resolve().parent.parent / "data" / "cloud_re
 _CLOUD_CONNECTION = None
 _CLOUD_CONNECTION_KEY = None
 _PRIME_SCHEMA_READY = False
+_REVENUE_FORECAST_SCHEMA_READY = False
 
 USER_POSITION_PRESETS = {
     "kamada.rusk@emifull-group.or.jp": "部長",
@@ -3194,6 +3195,9 @@ def save_pl_usage_unit_inputs(target_month, rows, updated_by_user=None):
 
 def init_revenue_forecast_schema():
     """日別の予定人数・実績人数を保存する。既存の損益/売上データは変更しない。"""
+    global _REVENUE_FORECAST_SCHEMA_READY
+    if _REVENUE_FORECAST_SCHEMA_READY:
+        return
     with get_conn() as conn:
         conn.executescript("""
         CREATE TABLE IF NOT EXISTS revenue_forecast_daily (
@@ -3250,6 +3254,7 @@ def init_revenue_forecast_schema():
         for col, ddl in optional_columns.items():
             if col not in cols:
                 conn.execute(f"ALTER TABLE revenue_forecast_daily ADD COLUMN {col} {ddl}")
+    _REVENUE_FORECAST_SCHEMA_READY = True
 
 
 def _normalize_forecast_user_count(value):

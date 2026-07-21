@@ -24,7 +24,14 @@ SENIOR_POSITIONS = {"部長", "次長", "課長"}
 styling.inject_global_css()
 auth.require_login()
 auth.render_sidebar_navigation()
-db.init_revenue_forecast_schema()
+
+
+@st.cache_resource(show_spinner=False)
+def _ensure_revenue_forecast_schema():
+    db.init_revenue_forecast_schema()
+
+
+_ensure_revenue_forecast_schema()
 
 
 def _today_jst():
@@ -334,6 +341,7 @@ def _facility_row_from_subunits(group, label, subunits, key_suffix=""):
     }
 
 
+@st.cache_data(ttl=120, show_spinner=False)
 def _build_forecast_facilities():
     groups = db.list_pl_groups()
     subunits = db.list_pl_subunits()
@@ -370,6 +378,30 @@ def _build_forecast_facilities():
         label = _facility_display_name(group)
         rows.append(_facility_row_from_subunits(group, label, group_subs))
     return rows
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _cached_pl_year_months():
+    return db.list_pl_year_months()
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _cached_pl_entries(year_months, subunit_ids):
+    return db.fetch_pl_entries(
+        year_months=list(year_months),
+        subunit_ids=list(subunit_ids),
+        categories=["revenue_total", "sga_total"],
+    )
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _cached_usage_unit_inputs(year_months):
+    return db.fetch_revenue_forecast_usage_unit_inputs(list(year_months))
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _cached_receipt_usage(year_months):
+    return db.fetch_revenue_forecast_receipt_usage(list(year_months))
 
 
 def _forecast_profile_labels(forecast_profile):
@@ -2572,6 +2604,19 @@ def _page_css():
             border-bottom: 2px solid #d9e6ef;
             margin-bottom: 3px;
         }
+        div[data-testid="stVerticalBlock"]:has(.forecast-calendar-title) {
+            overflow-x: auto !important;
+            padding-bottom: 8px;
+        }
+        div[data-testid="stHorizontalBlock"]:has(.forecast-calendar-weekday),
+        div[data-testid="stHorizontalBlock"]:has(.forecast-calendar-day) {
+            min-width: 920px !important;
+            flex-wrap: nowrap !important;
+        }
+        div[data-testid="stHorizontalBlock"]:has(.forecast-calendar-weekday) > div,
+        div[data-testid="stHorizontalBlock"]:has(.forecast-calendar-day) > div {
+            min-width: 118px !important;
+        }
         .forecast-calendar-title {
             display: grid;
             grid-template-columns: minmax(72px, auto) minmax(220px, 1fr) minmax(72px, auto);
@@ -2579,6 +2624,7 @@ def _page_css():
             gap: 10px;
             margin: 6px 0 4px;
             padding: 0 2px;
+            min-width: 920px;
         }
         .forecast-calendar-title strong {
             color: #111827;
@@ -2630,15 +2676,15 @@ def _page_css():
             color: #2778b8;
         }
         .forecast-calendar-day {
-            min-height: 36px;
-            margin: -5px -3px 3px;
-            padding: 4px 6px;
+            min-height: 32px;
+            margin: -6px -3px 1px;
+            padding: 3px 5px;
             border-radius: 7px;
             border: 1px solid #e8eef3;
             background: #ffffff;
         }
         .forecast-calendar-day.outside {
-            min-height: 102px;
+            min-height: 90px;
             background: #fbfbfb;
             color: #c8ced6;
             border-style: dashed;
@@ -2671,11 +2717,12 @@ def _page_css():
             box-shadow: 0 0 0 2px rgba(242, 201, 76, 0.16) !important;
         }
         div[data-testid="stVerticalBlockBorderWrapper"]:has(.forecast-calendar-day) {
-            padding: 5px 6px 5px !important;
+            min-width: 108px !important;
+            padding: 4px 6px 4px !important;
             border-radius: 8px !important;
         }
         div[data-testid="stVerticalBlockBorderWrapper"]:has(.forecast-calendar-day) div[data-testid="stVerticalBlock"] {
-            gap: 0.05rem !important;
+            gap: 0.02rem !important;
         }
         .forecast-calendar-day.closed-day .forecast-calendar-date-row {
             display: grid;
@@ -2705,7 +2752,7 @@ def _page_css():
             display: inline-flex;
             align-items: center;
             justify-content: center;
-            max-width: 44px;
+            max-width: 58px;
             margin-top: 0;
             padding: 1px 2px;
             border: 1px solid rgba(242, 201, 76, 0.7);
@@ -2799,8 +2846,8 @@ def _page_css():
             width: 100% !important;
         }
         div[data-testid="stMarkdown"]:has(.forecast-select-label) + div[data-testid="stSelectbox"] div[data-baseweb="select"] > div {
-            min-height: 29px !important;
-            height: 29px !important;
+            min-height: 27px !important;
+            height: 27px !important;
             padding-left: 6px !important;
             padding-right: 3px !important;
             overflow: hidden !important;
@@ -2840,20 +2887,20 @@ def _page_css():
         div[data-testid="stElementContainer"][class*="_plan_choice_"] div[data-baseweb="select"],
         div[data-testid="stElementContainer"][class*="_actual_choice_"] div[data-baseweb="select"] {
             width: 100% !important;
-            min-width: 42px !important;
+            min-width: 68px !important;
         }
         div[data-testid="stElementContainer"][class*="_plan_choice_"] div[data-baseweb="select"] > div,
         div[data-testid="stElementContainer"][class*="_actual_choice_"] div[data-baseweb="select"] > div {
             min-height: 27px !important;
             height: 27px !important;
-            padding-left: 5px !important;
+            padding-left: 7px !important;
             padding-right: 2px !important;
             overflow: hidden !important;
         }
         div[data-testid="stElementContainer"][class*="_plan_choice_"] div[data-baseweb="select"] > div > div:first-child,
         div[data-testid="stElementContainer"][class*="_actual_choice_"] div[data-baseweb="select"] > div > div:first-child {
             flex: 1 1 auto !important;
-            min-width: 24px !important;
+            min-width: 40px !important;
             overflow: visible !important;
         }
         div[data-testid="stElementContainer"][class*="_plan_choice_"] div[data-baseweb="select"] div[value],
@@ -3046,6 +3093,21 @@ def _page_css():
             padding-top: 14px;
             overflow-wrap: anywhere;
         }
+        @media (max-width: 1500px) {
+            div[data-testid="stHorizontalBlock"]:has(.forecast-side-panel) {
+                flex-direction: column !important;
+            }
+            div[data-testid="stHorizontalBlock"]:has(.forecast-side-panel) > div {
+                width: 100% !important;
+                flex: 1 1 100% !important;
+            }
+            .forecast-side-panel {
+                position: static;
+                top: auto;
+                min-height: auto;
+                margin-top: 12px;
+            }
+        }
         @media (max-width: 1120px) {
             .forecast-summary-grid {
                 grid-template-columns: repeat(2, minmax(220px, 1fr));
@@ -3060,7 +3122,7 @@ def _page_css():
                 grid-template-columns: repeat(2, minmax(150px, 1fr));
             }
             .forecast-calendar-day.outside {
-                min-height: 120px;
+                min-height: 90px;
             }
         }
         @media (max-width: 720px) {
@@ -3150,7 +3212,7 @@ facility_keys = [f["key"] for f in active_facilities]
 daily_records = db.list_revenue_forecast_daily(month_start, month_end, facility_keys)
 daily_by_key = _index_daily_records(daily_records)
 
-available_yms = [ym for ym in db.list_pl_year_months() if ym < target_ym]
+available_yms = [ym for ym in _cached_pl_year_months() if ym < target_ym]
 available_yms = sorted(available_yms, reverse=True)
 same_month_candidates = [f"{target_year - 1}-{target_month_number:02d}", f"{target_year - 2}-{target_month_number:02d}"]
 previous_3 = [_ym_shift(target_ym, -3), _ym_shift(target_ym, -2), _ym_shift(target_ym, -1)]
@@ -3158,14 +3220,13 @@ needed_yms = sorted(set(available_yms + same_month_candidates + previous_3))
 active_subunit_ids = sorted({
     sid for facility in active_facilities for sid in facility["subunit_ids"]
 })
-pl_entries = db.fetch_pl_entries(
-    year_months=needed_yms,
-    subunit_ids=active_subunit_ids,
-    categories=["revenue_total", "sga_total"],
-) if needed_yms else []
+pl_entries = _cached_pl_entries(
+    tuple(needed_yms),
+    tuple(active_subunit_ids),
+) if needed_yms and active_subunit_ids else []
 revenue_index, sga_index, has_revenue, has_sga = _build_pl_indexes(pl_entries)
-usage_rows = db.fetch_revenue_forecast_usage_unit_inputs(needed_yms)
-receipt_usage_rows = db.fetch_revenue_forecast_receipt_usage(needed_yms)
+usage_rows = _cached_usage_unit_inputs(tuple(needed_yms)) if needed_yms else []
+receipt_usage_rows = _cached_receipt_usage(tuple(needed_yms)) if needed_yms else []
 usage_by_name, receipt_by_subunit = _build_usage_indexes(usage_rows, receipt_usage_rows)
 forecast_usage_yms = [ym for ym in needed_yms if "2026-07" <= ym < target_ym]
 forecast_usage_records = []
