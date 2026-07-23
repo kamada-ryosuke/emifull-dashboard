@@ -68,16 +68,25 @@ def _is_summary_label(label: str) -> bool:
 
 
 def _to_int(val):
-    """数値化（カンマ・スペース除去、空文字→None、'-' →0）"""
+    """数値化（カンマ・スペース除去）。空文字・'-'（値なし）は None。
+    給与ソフトの負数表記 '△1,234' '▲1,234' '(1,234)' はマイナスとして扱う。"""
     if val is None:
         return None
     s = str(val).strip().replace(',', '').replace(' ', '').replace('　', '')
     if s == '' or s == '-':
         return None
+    negative = False
+    if s.startswith(('△', '▲')):
+        negative = True
+        s = s[1:]
+    elif s.startswith('(') and s.endswith(')'):
+        negative = True
+        s = s[1:-1]
     try:
-        return int(float(s))
+        n = int(float(s))
     except (ValueError, TypeError):
         return None
+    return -n if negative else n
 
 
 def _parse_jp_date(text: str) -> tuple[str, str]:

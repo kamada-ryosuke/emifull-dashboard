@@ -129,7 +129,15 @@ REPORTER_ROLES = ["部長", "次長", "課長", "係長", "主任", "副主任",
 styling.inject_global_css()
 auth.require_prime_access()
 auth.render_sidebar_navigation()
-db.init_prime_schema()
+
+
+@st.cache_resource(show_spinner=False)
+def _init_prime_schema_once():
+    db.init_prime_schema()
+    return True
+
+
+_init_prime_schema_once()
 
 st.title("PRIME")
 st.caption("株式会社PRIMEの試算表（損益計算書）CSVを、障がい事業部データとは分けて管理します。")

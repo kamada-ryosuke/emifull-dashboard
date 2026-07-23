@@ -713,7 +713,15 @@ def _add_manual_kokuho_record(service_ym, facility_id, cert_number, child_name,
 styling.inject_global_css()
 auth.require_admin()
 auth.render_sidebar_navigation()
-_ensure_sales_schema()
+
+
+@st.cache_resource(show_spinner=False)
+def _ensure_sales_schema_once():
+    _ensure_sales_schema()
+    return True
+
+
+_ensure_sales_schema_once()
 
 st.title("売上一覧 / 入金管理")
 

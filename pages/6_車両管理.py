@@ -37,7 +37,15 @@ if APP_PACKAGES.exists() and str(APP_PACKAGES) not in sys.path:
 
 styling.inject_global_css()
 auth.require_login()
-db.init_vehicle_schema(allow_data_migration=False)
+
+
+@st.cache_resource(show_spinner=False)
+def _init_vehicle_schema_once():
+    db.init_vehicle_schema(allow_data_migration=False)
+    return True
+
+
+_init_vehicle_schema_once()
 auth.render_sidebar_navigation()
 _is_admin = auth.is_admin()
 

@@ -21,10 +21,41 @@ from __future__ import annotations
 import csv
 import io
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Iterable
 
 import openpyxl
+
+
+def parse_amount(value) -> tuple[int, bool]:
+    """金額セルを int に変換する。戻り値: (金額, 変換成功か)。
+
+    会計資料で使われる表記に対応する:
+      - カンマ・空白・全角数字・'円'
+      - 負数表記: '-1,234' / '△1,234' / '▲1,234' / '(1,234)'
+    変換できない非空文字列は (0, False) を返し、呼び出し側で警告に回す。
+    """
+    if value is None or value == '':
+        return 0, True
+    if isinstance(value, (int, float)):
+        return int(round(float(value))), True
+    s = unicodedata.normalize('NFKC', str(value)).strip()
+    if s in ('', '-', '−'):
+        return 0, True
+    negative = False
+    if s.startswith(('△', '▲')):
+        negative = True
+        s = s[1:].strip()
+    elif s.startswith('(') and s.endswith(')'):
+        negative = True
+        s = s[1:-1].strip()
+    s = s.replace(',', '').replace(' ', '').replace('円', '')
+    try:
+        amount = int(round(float(s)))
+    except (ValueError, TypeError):
+        return 0, False
+    return -amount if negative else amount, True
 
 
 SHEET_MONTH_RE = re.compile(r'(\d{1,2})\s*月')
@@ -81,6 +112,8 @@ class SheetParseResult:
     # entries: subunit_excel_name -> [(account_name, amount), ...]
     entries: dict[str, list[tuple[str, int]]] = field(default_factory=dict)
     skipped_reason: str | None = None
+    # 数値化できず0扱いにしたセル: ['科目名/部門名: 元の値', ...]
+    unparsed_cells: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -181,12 +214,9 @@ def _build_account_row_map(ws, header_row: int, known_account_names: set[str]) -
 
 
 def _read_amount(cell_value) -> int:
-    if cell_value is None or cell_value == '':
-        return 0
-    try:
-        return int(round(float(cell_value)))
-    except (ValueError, TypeError):
-        return 0
+    """旧互換API。詳細な失敗検知には parse_amount() を使う。"""
+    amount, _ok = parse_amount(cell_value)
+    return amount
 
 
 def parse_pl_workbook(
@@ -248,7 +278,9 @@ def parse_pl_workbook(
             entries: list[tuple[str, int]] = []
             for account_name, row in row_map.items():
                 cell = ws.cell(row=row, column=col).value
-                amount = _read_amount(cell)
+                amount, ok = parse_amount(cell)
+                if not ok:
+                    sr.unparsed_cells.append(f"{account_name}/{excel_name}: {cell!r}")
                 entries.append((account_name, amount))
             sr.entries[excel_name] = entries
 
@@ -358,13 +390,9 @@ def parse_pl_csv(
             if c_idx >= len(r):
                 continue
             cell = (r[c_idx] or '').strip()
-            if cell == '':
-                amount = 0
-            else:
-                try:
-                    amount = int(round(float(cell.replace(',', ''))))
-                except (ValueError, TypeError):
-                    amount = 0
+            amount, ok = parse_amount(cell)
+            if not ok:
+                sr.unparsed_cells.append(f"{account_name}/{excel_name}: {cell!r}")
             sr.entries.setdefault(excel_name, []).append((account_name, amount))
 
     sr.unknown_account_rows = unknown_rows

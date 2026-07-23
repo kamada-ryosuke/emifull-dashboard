@@ -16,6 +16,73 @@ import pandas as pd
 from lib import db, styling, auth, pl_parser, journal_parser
 
 
+# =============================================================
+# 読み取り専用DBアクセスのキャッシュ層
+#   クラウドDB(Turso)への往復回数を減らして表示を高速化する。
+#   取込・削除・保存などの更新後は _clear_pl_caches() で無効化する。
+# =============================================================
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _c_fetch_pl_entries(year_months=None, group_ids=None, subunit_ids=None,
+                        categories=None, account_ids=None):
+    return db.fetch_pl_entries(
+        year_months=year_months, group_ids=group_ids, subunit_ids=subunit_ids,
+        categories=categories, account_ids=account_ids,
+    )
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _c_list_pl_groups():
+    return db.list_pl_groups()
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _c_list_pl_subunits(group_id=None):
+    return db.list_pl_subunits(group_id=group_id)
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _c_list_pl_accounts(category=None, include_total=True):
+    return db.list_pl_accounts(category=category, include_total=include_total)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _c_list_pl_year_months():
+    return db.list_pl_year_months()
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _c_list_pl_fiscal_years(start_month):
+    return db.list_pl_fiscal_years(start_month=start_month)
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _c_get_profit_reports(target_month=None, facility_name=None,
+                          created_by_user=None):
+    return db.get_profit_reports(
+        target_month=target_month, facility_name=facility_name,
+        created_by_user=created_by_user,
+    )
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _c_list_journal_imports(limit=10):
+    return db.list_journal_imports(limit=limit)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _c_journal_item_diffs_for_account(account_name, curr_yms, prev_yms,
+                                      subunit_ids=None, top_n=5):
+    return db.journal_item_diffs_for_account(
+        account_name, curr_yms, prev_yms, subunit_ids=subunit_ids, top_n=top_n,
+    )
+
+
+def _clear_pl_caches():
+    """取込・削除・保存の後に呼び、このページのキャッシュを無効化する。"""
+    st.cache_data.clear()
+
+
 def _safe_filename(s: str) -> str:
     """Windows/Mac/Linux いずれでも問題ないファイル名に変換。"""
     s = s.replace('／', '_').replace('（', '(').replace('）', ')').replace('/', '_')
@@ -66,7 +133,7 @@ def _scope_subunit_ids(group_id: int | None = None,
     if subunit_id:
         return [subunit_id]
     if group_id:
-        return [s['id'] for s in db.list_pl_subunits(group_id=group_id)]
+        return [s['id'] for s in _c_list_pl_subunits(group_id=group_id)]
     return None
 
 
@@ -86,7 +153,7 @@ def _pl_csv_bytes(scope_label: str, year_months: list[str],
     elif group_id:
         fetch_kwargs['group_ids'] = [group_id]
 
-    rows = db.fetch_pl_entries(year_months=year_months, **fetch_kwargs) if year_months else []
+    rows = _c_fetch_pl_entries(year_months=year_months, **fetch_kwargs) if year_months else []
     df = pd.DataFrame(rows)
     if df.empty:
         df = pd.DataFrame(columns=[
@@ -216,7 +283,7 @@ if _is_admin:
 # =============================================================
 # 取込セクション
 # =============================================================
-existing_yms = db.list_pl_year_months()
+existing_yms = _c_list_pl_year_months()
 data_exists = len(existing_yms) > 0
 
 if show_import_tools:
@@ -253,8 +320,8 @@ if show_import_tools:
     uploaded = st.file_uploader("Excelファイル(.xlsx)", type=['xlsx'], key='pl_uploader')
 
     if uploaded is not None:
-        sub_lookup = pl_parser.build_subunit_lookup(db.list_pl_subunits())
-        known_accs = [a['name'] for a in db.list_pl_accounts()]
+        sub_lookup = pl_parser.build_subunit_lookup(_c_list_pl_subunits())
+        known_accs = [a['name'] for a in _c_list_pl_accounts()]
 
         with st.spinner("解析中..."):
             parse_result = pl_parser.parse_pl_workbook(
@@ -298,21 +365,32 @@ if show_import_tools:
 
             unknown_cols = set()
             unknown_rows = set()
+            unparsed_cells_all = []
             for sr in chosen_sheets:
                 unknown_cols.update(sr.unknown_subunit_columns)
                 unknown_rows.update(sr.unknown_account_rows)
+                unparsed_cells_all.extend(getattr(sr, 'unparsed_cells', []))
             if unknown_cols:
                 with st.expander(f"⚠️ マスタに無い部門列 (取込しない): {len(unknown_cols)}件"):
                     st.write(sorted(unknown_cols))
             if unknown_rows:
                 with st.expander(f"⚠️ マスタに無い科目行 (取込しない): {len(unknown_rows)}件"):
                     st.write(sorted(unknown_rows))
+            if unparsed_cells_all:
+                st.error(
+                    f"🚨 数値として読めなかったセルが {len(unparsed_cells_all)} 件あり、"
+                    "0円として扱われます。元のExcelを確認してから取込んでください。"
+                )
+                with st.expander("数値化できなかったセルの一覧"):
+                    for c in unparsed_cells_all[:100]:
+                        st.text(c)
 
             confirmed = st.button("🚀 この内容で取込を実行", type='primary', key='pl_import_run')
             if confirmed and chosen_sheets:
                 filtered = pl_parser.ParseResult(fiscal_start_ym=fiscal_start_ym)
                 filtered.sheets = chosen_sheets
                 summary = pl_parser.import_parse_result_to_db(filtered, db)
+                _clear_pl_caches()
                 db.record_pl_import(
                     filename=uploaded.name, fiscal_label=fiscal_label,
                     fiscal_start_ym=fiscal_start_ym,
@@ -349,8 +427,8 @@ if show_import_tools:
     )
 
     if csv_uploaded:
-        sub_lookup = pl_parser.build_subunit_lookup(db.list_pl_subunits())
-        known_accs = [a['name'] for a in db.list_pl_accounts()]
+        sub_lookup = pl_parser.build_subunit_lookup(_c_list_pl_subunits())
+        known_accs = [a['name'] for a in _c_list_pl_accounts()]
 
         with st.spinner("解析中..."):
             csv_results = []
@@ -379,9 +457,19 @@ if show_import_tools:
         # 不明科目 / 列 をまとめて出す
         unk_cols_all = set()
         unk_rows_all = set()
+        unparsed_all = []
         for sr in csv_results:
             unk_cols_all.update(sr.unknown_subunit_columns)
             unk_rows_all.update(sr.unknown_account_rows)
+            unparsed_all.extend(getattr(sr, 'unparsed_cells', []))
+        if unparsed_all:
+            st.error(
+                f"🚨 数値として読めなかったセルが {len(unparsed_all)} 件あり、"
+                "0円として扱われます。元のCSVを確認してから取込んでください。"
+            )
+            with st.expander("数値化できなかったセルの一覧"):
+                for c in unparsed_all[:100]:
+                    st.text(c)
         if unk_cols_all:
             with st.expander(f"⚠️ マスタに無い部門列 (取込しない): {len(unk_cols_all)}件"):
                 st.write(sorted(unk_cols_all))
@@ -398,6 +486,7 @@ if show_import_tools:
             filtered = pl_parser.ParseResult(fiscal_start_ym='(CSV)')
             filtered.sheets = valid_csv
             summary = pl_parser.import_parse_result_to_db(filtered, db)
+            _clear_pl_caches()
             db.record_pl_import(
                 filename=f"CSV×{len(valid_csv)}件: " + ', '.join(s.sheet_name[:30] for s in valid_csv[:3]) + ('...' if len(valid_csv) > 3 else ''),
                 fiscal_label='(旧CSV)',
@@ -434,7 +523,7 @@ if show_import_tools:
     )
 
     if journal_uploaded is not None:
-        sub_lookup_j = journal_parser.build_subunit_lookup_for_journal(db.list_pl_subunits())
+        sub_lookup_j = journal_parser.build_subunit_lookup_for_journal(_c_list_pl_subunits())
         with st.spinner("解析中..."):
             j_result = journal_parser.parse_journal_csv(journal_uploaded, sub_lookup_j)
 
@@ -467,6 +556,7 @@ if show_import_tools:
                 filename=journal_uploaded.name,
                 file_hash=j_result['file_hash'],
             )
+            _clear_pl_caches()
             st.success(
                 f"✅ 取込完了: 新規 {res['inserted']} / スキップ {res['skipped']} / "
                 f"対象期間 {res.get('date_range', '対象行なし')}"
@@ -474,7 +564,7 @@ if show_import_tools:
             st.rerun()
 
 if show_import_tools:
-    journal_imports_log = db.list_journal_imports(limit=5)
+    journal_imports_log = _c_list_journal_imports(limit=5)
     if journal_imports_log:
         with st.expander(f"📜 仕訳帳 取込履歴 (直近{len(journal_imports_log)}件)"):
             st.dataframe(pd.DataFrame([
@@ -571,7 +661,7 @@ def sum_by_cat(entries, cat):
 
 
 def fetch_pl(year_months, group_id=None, subunit_id=None, subunit_ids=None):
-    return db.fetch_pl_entries(
+    return _c_fetch_pl_entries(
         year_months=year_months,
         group_ids=[group_id] if group_id else None,
         subunit_ids=list(subunit_ids) if subunit_ids else ([subunit_id] if subunit_id else None),
@@ -588,8 +678,8 @@ c_target, c_mode = st.columns([2, 1])
 
 with c_target:
     # 階層型セレクタ: 親(グループ)と子(サブ部門)どちらでも選べる
-    groups_all = db.list_pl_groups()
-    all_subs = db.list_pl_subunits()
+    groups_all = _c_list_pl_groups()
+    all_subs = _c_list_pl_subunits()
     group_by_id = {g['id']: g for g in groups_all}
     subs_by_group = defaultdict(list)
     for s in all_subs:
@@ -813,7 +903,7 @@ NPO_REPORT_STRUCTURE = [
 ]
 
 # excel_name → subunit_id (PDF/業績会議で頻繁に使う)
-_pl_subunits_all = db.list_pl_subunits()
+_pl_subunits_all = _c_list_pl_subunits()
 subs_by_excel = {s['excel_name']: s['id'] for s in _pl_subunits_all}
 subunit_by_id = {s['id']: s for s in _pl_subunits_all}
 
@@ -924,7 +1014,7 @@ def _pct(v):
 def _pl_metrics_for_excel_names(target_month, excel_names):
     sub_ids = {subs_by_excel[n] for n in excel_names if n in subs_by_excel}
     entries = [
-        e for e in db.fetch_pl_entries(year_months=[target_month])
+        e for e in _c_fetch_pl_entries(year_months=[target_month])
         if e['subunit_id'] in sub_ids
     ]
     rev = sum(e['amount'] for e in entries if e['category'] == 'revenue_total')
@@ -1077,7 +1167,7 @@ def _refresh_facility_month_summary(target_month, facility_name):
     fac = REPORT_FACILITY_BY_NAME.get(facility_name)
     if not fac:
         return None
-    reports = db.get_profit_reports(target_month=target_month, facility_name=facility_name)
+    reports = _c_get_profit_reports(target_month=target_month, facility_name=facility_name)
     if not reports:
         return None
     summary = build_facility_report_summary(
@@ -1085,12 +1175,13 @@ def _refresh_facility_month_summary(target_month, facility_name):
     )
     for r in reports:
         db.update_profit_report_ai_summary(r['id'], summary)
+    _clear_pl_caches()
     return summary
 
 
 def _reports_for_month_by_facility(target_month):
     grouped = defaultdict(list)
-    for r in db.get_profit_reports(target_month=target_month):
+    for r in _c_get_profit_reports(target_month=target_month):
         grouped[r['facility_name']].append(r)
     return grouped
 
@@ -1470,7 +1561,7 @@ with tab_ratio:
             ratio_yms = sorted([ym for ym in existing_yms if rs <= ym <= re_])
             ratio_label = f"{rs} 〜 {re_}"
         else:
-            fy_list = db.list_pl_fiscal_years(start_month=fy_start_month)
+            fy_list = _c_list_pl_fiscal_years(start_month=fy_start_month)
             ratio_fy = st.selectbox(
                 "対象期", fy_list,
                 format_func=fy_label,
@@ -1605,7 +1696,7 @@ with tab_ratio:
                 fetch_kwargs['subunit_ids'] = [subunit_id]
             elif group_id:
                 fetch_kwargs['group_ids'] = [group_id]
-            ent = db.fetch_pl_entries(
+            ent = _c_fetch_pl_entries(
                 year_months=scope_yms,
                 **fetch_kwargs,
             ) if scope_yms else []
@@ -1683,7 +1774,7 @@ with tab_ratio:
         with cc2:
             if st.button("📁 全親グループ 個別PDF (ZIP)", key='ratio_pdf_groups_btn'):
                 items = []
-                for g in db.list_pl_groups():
+                for g in _c_list_pl_groups():
                     label = f"{g['code']}.{g['name']}"
                     if g.get('note'):
                         label += f"（{g['note']}）"
@@ -1706,7 +1797,7 @@ with tab_ratio:
         with cc3:
             if st.button("📁 全子サブ部門 個別PDF (ZIP)", key='ratio_pdf_subs_btn'):
                 items = []
-                for s in db.list_pl_subunits():
+                for s in _c_list_pl_subunits():
                     items.append((s['display_name'], _build_composition_for(
                         scope_label=s['display_name'], scope_yms=ratio_yms,
                         subunit_id=s['id'],
@@ -1728,7 +1819,7 @@ with tab_ratio:
             "損益計算書CSVは、選択中の期間・施設範囲だけを切り出します。"
             "仕訳帳を取り込んでいる場合は、同じ範囲の仕訳帳CSVも出力できます。"
         )
-        has_journal_csv = bool(db.list_journal_imports(limit=1))
+        has_journal_csv = bool(_c_list_journal_imports(limit=1))
         c_csv1, c_csv2, c_csv3 = st.columns(3)
         with c_csv1:
             st.download_button(
@@ -1757,7 +1848,7 @@ with tab_ratio:
         with c_csv2:
             if st.button("📁 全親グループ 個別CSV (ZIP)", key='ratio_csv_groups_btn'):
                 items = []
-                for g in db.list_pl_groups():
+                for g in _c_list_pl_groups():
                     label = f"{g['code']}.{g['name']}"
                     if g.get('note'):
                         label += f"（{g['note']}）"
@@ -1790,7 +1881,7 @@ with tab_ratio:
                         'year_months': ratio_yms,
                         'subunit_id': s['id'],
                     }
-                    for s in db.list_pl_subunits()
+                    for s in _c_list_pl_subunits()
                 ]
                 st.session_state['ratio_csv_subs'] = (
                     _build_scope_csv_zip(
@@ -1813,7 +1904,7 @@ with tab_ratio:
 # TAB 4: 比較 (当月 / 前月 / 前年 単月比較)
 # =============================================================
 with tab_yoy:
-    fy_list = db.list_pl_fiscal_years(start_month=fy_start_month)
+    fy_list = _c_list_pl_fiscal_years(start_month=fy_start_month)
     if len(fy_list) < 1:
         st.info("データがありません。")
     else:
@@ -2038,7 +2129,7 @@ with tab_yoy:
             elif sel_subunit_id:
                 _journal_sub_ids = [sel_subunit_id]
             elif sel_group_id:
-                _journal_sub_ids = [s['id'] for s in db.list_pl_subunits(group_id=sel_group_id)]
+                _journal_sub_ids = [s['id'] for s in _c_list_pl_subunits(group_id=sel_group_id)]
             else:
                 _journal_sub_ids = None  # 全グループ → 制約なし
 
@@ -2079,7 +2170,7 @@ with tab_yoy:
                     # ===== 各科目の何に差があるか (仕訳帳の品目/取引先で分析) =====
                     st.markdown("---")
                     st.markdown("##### 何に差があったか (仕訳帳より) — 取引先・品目別 当月/前年 比較")
-                    if not db.list_journal_imports(limit=1):
+                    if not _c_list_journal_imports(limit=1):
                         st.info(
                             "仕訳帳が未取込です。"
                             "上の「📒 仕訳帳CSV取込」から取込むと、ここに具体的な内訳が表示されます。"
@@ -2090,7 +2181,7 @@ with tab_yoy:
                             "完全に不明な行(社内振替など)は除外。差額の絶対値が大きい順に上位5件。"
                         )
                         for name, c, m, p, d, pct in yoy_top10:
-                            items = db.journal_item_diffs_for_account(
+                            items = _c_journal_item_diffs_for_account(
                                 name, curr_yms=curr_yms, prev_yms=prev_yms,
                                 subunit_ids=_journal_sub_ids, top_n=5,
                             )
@@ -2157,9 +2248,9 @@ with tab_yoy:
                 elif group_id:
                     fetch_kwargs['group_ids'] = [group_id]
 
-                ent_c = db.fetch_pl_entries(year_months=scope_curr_yms, **fetch_kwargs) if scope_curr_yms else []
-                ent_m = db.fetch_pl_entries(year_months=scope_prev_month_yms, **fetch_kwargs) if scope_prev_month_yms else []
-                ent_p = db.fetch_pl_entries(year_months=scope_prev_yms, **fetch_kwargs) if scope_prev_yms else []
+                ent_c = _c_fetch_pl_entries(year_months=scope_curr_yms, **fetch_kwargs) if scope_curr_yms else []
+                ent_m = _c_fetch_pl_entries(year_months=scope_prev_month_yms, **fetch_kwargs) if scope_prev_month_yms else []
+                ent_p = _c_fetch_pl_entries(year_months=scope_prev_yms, **fetch_kwargs) if scope_prev_yms else []
 
                 # account_id 単位で集計
                 by_acc_c = defaultdict(int)
@@ -2172,7 +2263,7 @@ with tab_yoy:
                 for e in ent_p:
                     by_acc_p[e['account_id']] += e['amount']
 
-                all_accs = db.list_pl_accounts()
+                all_accs = _c_list_pl_accounts()
 
                 # 売上総額 (利益率の分母)
                 rev_total_id = next(
@@ -2260,15 +2351,15 @@ with tab_yoy:
 
                 # 仕訳帳明細 (上位科目から差額の大きい取引先・品目を集めて、全体から TOP10)
                 journal_top10 = []
-                if db.list_journal_imports(limit=1):
+                if _c_list_journal_imports(limit=1):
                     j_sub_ids = (
                         list(subunit_ids) if subunit_ids else
                         ([subunit_id] if subunit_id else
-                         ([s['id'] for s in db.list_pl_subunits(group_id=group_id)] if group_id else None))
+                         ([s['id'] for s in _c_list_pl_subunits(group_id=group_id)] if group_id else None))
                     )
                     merged = []
                     for name, *_ in top10:
-                        items = db.journal_item_diffs_for_account(
+                        items = _c_journal_item_diffs_for_account(
                             name, curr_yms=scope_curr_yms, prev_yms=scope_prev_yms,
                             subunit_ids=j_sub_ids, top_n=8,
                         )
@@ -2316,7 +2407,7 @@ with tab_yoy:
             with cc_pdf2:
                 if st.button("📁 全親グループ 個別PDF (ZIP)", key='pl_pdf_all_btn'):
                     items = []
-                    for g in db.list_pl_groups():
+                    for g in _c_list_pl_groups():
                         label = f"{g['code']}.{g['name']}"
                         if g.get('note'):
                             label += f"（{g['note']}）"
@@ -2401,7 +2492,7 @@ with tab_yoy:
                 "仕訳帳を取り込んでいる場合は、同じ月・同じ施設範囲の仕訳帳CSVも出力できます。"
             )
             compare_csv_yms = _unique_yms(curr_yms, prev_month_yms, prev_yms)
-            has_journal_csv = bool(db.list_journal_imports(limit=1))
+            has_journal_csv = bool(_c_list_journal_imports(limit=1))
             c_csv1, c_csv2, c_csv3 = st.columns(3)
             with c_csv1:
                 st.download_button(
@@ -2430,7 +2521,7 @@ with tab_yoy:
             with c_csv2:
                 if st.button("📁 全親グループ 個別CSV (ZIP)", key='pl_csv_all_btn'):
                     items = []
-                    for g in db.list_pl_groups():
+                    for g in _c_list_pl_groups():
                         label = f"{g['code']}.{g['name']}"
                         if g.get('note'):
                             label += f"（{g['note']}）"
@@ -2823,7 +2914,7 @@ with tab_report:
             key='profit_report_love',
         )
 
-        same_reports = db.get_profit_reports(
+        same_reports = _c_get_profit_reports(
             target_month=report_month,
             facility_name=facility_name,
             created_by_user=current_email if not _is_admin else None,
@@ -2854,6 +2945,7 @@ with tab_report:
             st.warning("前月の振り返り、現在の課題、次月以降の対策を入力してください。")
         else:
             report_id = same_reporter[0]['id'] if same_reporter and duplicate_mode == "上書き" else None
+            _clear_pl_caches()
             saved_id = db.save_profit_report(
                 fiscal_year_type=fy_mode_label,
                 target_month=report_month,
@@ -2872,7 +2964,7 @@ with tab_report:
 
     st.markdown("---")
     st.markdown("##### 自分の提出内容")
-    my_reports = db.get_profit_reports(created_by_user=current_email)
+    my_reports = _c_get_profit_reports(created_by_user=current_email)
     if my_reports:
         my_df = pd.DataFrame(my_reports)[[
             'target_month', 'facility_name', 'reporter_role', 'reporter_name',
@@ -2935,7 +3027,7 @@ with tab_report:
         st.info("まだ提出はありません。")
 
     editable_reports = [
-        r for r in db.get_profit_reports()
+        r for r in _c_get_profit_reports()
         if _is_admin or r.get('created_by_user') == current_email
     ]
     if editable_reports:
@@ -2992,6 +3084,7 @@ with tab_report:
             if edit_submit:
                 old_month = edit_r['target_month']
                 old_facility = edit_r['facility_name']
+                _clear_pl_caches()
                 db.save_profit_report(
                     fiscal_year_type=edit_r.get('fiscal_year_type') or fy_mode_label,
                     target_month=emonth,
@@ -3019,6 +3112,7 @@ with tab_report:
                     old_month = edit_r['target_month']
                     old_facility = edit_r['facility_name']
                     deleted = db.delete_profit_report(edit_r['id'])
+                    _clear_pl_caches()
                     if deleted:
                         st.success("報告書を削除しました。")
                         st.rerun()
@@ -3074,6 +3168,7 @@ with tab_report:
                 for r in reports:
                     db.update_profit_report_ai_summary(r['id'], summary)
                     updated += 1
+            _clear_pl_caches()
             st.success(f"AI要約を更新しました（{updated}件）。")
 
 
@@ -3109,11 +3204,11 @@ with tab_meeting:
     yms_to_fetch = [sel_meeting_ym]
     if has_prev: yms_to_fetch.append(prev_ym)
     if has_yoy: yms_to_fetch.append(yoy_ym)
-    all_e_for_meeting = db.fetch_pl_entries(year_months=yms_to_fetch)
+    all_e_for_meeting = _c_fetch_pl_entries(year_months=yms_to_fetch)
     by_ym = {ym: [e for e in all_e_for_meeting if e['year_month'] == ym] for ym in yms_to_fetch}
 
     # excel_name → subunit_id 解決マップ
-    subs_by_excel = {s['excel_name']: s['id'] for s in db.list_pl_subunits()}
+    subs_by_excel = {s['excel_name']: s['id'] for s in _c_list_pl_subunits()}
 
     def _metrics(entries_list, excel_names):
         """指定 entries 配列から、与えられた excel_names に該当する subunit のみで4指標を集計。"""
@@ -3566,7 +3661,7 @@ with tab_meeting:
         for row_label, names in excluded_rows:
             for n in names:
                 excel_to_report_label[n] = row_label
-        sub_id_to_excel = {s['id']: s['excel_name'] for s in db.list_pl_subunits()}
+        sub_id_to_excel = {s['id']: s['excel_name'] for s in _c_list_pl_subunits()}
         sub_id_to_label = {
             sid: excel_to_report_label.get(en, en)
             for sid, en in sub_id_to_excel.items()
@@ -3761,11 +3856,11 @@ with tab_meeting:
     )
 
     # 全データを取得
-    all_accounts = db.list_pl_accounts()
+    all_accounts = _c_list_pl_accounts()
     yms_for_pl = [sel_meeting_ym]
     if has_prev: yms_for_pl.append(prev_ym)
     if has_yoy: yms_for_pl.append(yoy_ym)
-    pl_entries_all = db.fetch_pl_entries(year_months=yms_for_pl)
+    pl_entries_all = _c_fetch_pl_entries(year_months=yms_for_pl)
 
     by_key = defaultdict(int)  # (ym, sub_id, acc_id) -> amount
     for e in pl_entries_all:
@@ -4066,13 +4161,13 @@ with tab_sga_trend:
     )
 
     sga_accounts = [
-        a for a in db.list_pl_accounts(category='sga', include_total=False)
+        a for a in _c_list_pl_accounts(category='sga', include_total=False)
         if not a.get('is_total')
     ]
     if not sga_accounts:
         st.info("販管費の勘定科目がありません。")
     else:
-        fy_list_trend = db.list_pl_fiscal_years(start_month=fy_start_month)
+        fy_list_trend = _c_list_pl_fiscal_years(start_month=fy_start_month)
         if not fy_list_trend:
             st.info("損益データがありません。")
         else:
@@ -4121,7 +4216,7 @@ with tab_sga_trend:
                 journal_subunit_ids = [sel_subunit_id]
             elif sel_group_id:
                 journal_subunit_ids = [s['id'] for s in all_subs if s['group_id'] == sel_group_id]
-            has_journal = bool(db.list_journal_imports(limit=1))
+            has_journal = bool(_c_list_journal_imports(limit=1))
 
             left, right = st.columns([1.45, 1])
             with left:
@@ -4213,7 +4308,7 @@ with tab_usage_unit:
         if not facilities:
             st.info("選択中の対象に表示できる施設がありません。")
         else:
-            unit_entries = db.fetch_pl_entries(year_months=[unit_ym])
+            unit_entries = _c_fetch_pl_entries(year_months=[unit_ym])
             revenue_by_subunit = defaultdict(int)
             for e in unit_entries:
                 if e['category'] == 'revenue_total':
@@ -4281,6 +4376,7 @@ with tab_usage_unit:
                     updated_by_user=current.get('email'),
                 )
                 st.success(f"{unit_ym} の利用単価入力を保存しました（{saved_count}施設）。")
+                _clear_pl_caches()
                 st.rerun()
 
 # =============================================================
@@ -4311,6 +4407,7 @@ if _is_admin:
             st.write(f"対象エントリ数: **{cnt}** 件")
             if cnt > 0 and st.button("⚠️ 削除を実行", type='secondary', key='pl_del_run'):
                 n = db.delete_pl_entries(year_month=del_ym, group_id=del_grp_id)
+                _clear_pl_caches()
                 st.success(f"{n} 件削除しました。")
                 st.rerun()
 

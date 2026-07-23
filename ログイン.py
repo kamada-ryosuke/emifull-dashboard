@@ -16,10 +16,27 @@ st.set_page_config(
 )
 
 styling.inject_global_css()
-if getattr(db, "_use_cloud_db", lambda: False)():
-    db.init_login_schema()
-else:
-    db.init_db()
+
+
+@st.cache_resource(show_spinner=False)
+def _init_schema_once():
+    """スキーマ初期化はプロセスにつき1回だけ実行する。
+    毎回のrerunでクラウドDBへDDLを送るのを防ぎ、表示を高速化する。"""
+    if getattr(db, "_use_cloud_db", lambda: False)():
+        db.init_login_schema()
+    else:
+        db.init_db()
+    return True
+
+
+try:
+    _init_schema_once()
+except Exception:
+    st.error(
+        "データベースに接続できませんでした。\n\n"
+        "時間をおいて再読み込みしてください。改善しない場合は管理者に連絡してください。"
+    )
+    st.stop()
 auth.init_session()
 auth.auto_login_for_codex()
 auth.render_sidebar_navigation()

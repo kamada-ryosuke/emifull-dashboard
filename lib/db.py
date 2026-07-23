@@ -2928,6 +2928,11 @@ def fetch_pl_entries(year_months=None, group_ids=None,
     """フィルタ条件付きで損益データを取得。
     戻り値: [{year_month, group_id, group_code, group_name, subunit_id,
               subunit_name, account_id, account_name, category, is_total, amount}, ...]"""
+    # 空リストは「絞り込み結果なし」を意味する（None=絞り込みなし とは区別する）。
+    # 以前は空リストが全件取得になっており、誤集計の危険があった。
+    for flt in (year_months, group_ids, subunit_ids, categories, account_ids):
+        if flt is not None and len(flt) == 0:
+            return []
     sql = """
         SELECT e.year_month,
                g.id AS group_id, g.code AS group_code, g.name AS group_name,
@@ -2968,7 +2973,13 @@ def fetch_pl_entries(year_months=None, group_ids=None,
 # 損益報告書（月次振り返り）
 # =====================================================================
 
+_PROFIT_REPORTS_SCHEMA_READY = False
+
+
 def init_profit_reports_schema():
+    global _PROFIT_REPORTS_SCHEMA_READY
+    if _PROFIT_REPORTS_SCHEMA_READY:
+        return
     with get_conn() as conn:
         conn.executescript("""
         CREATE TABLE IF NOT EXISTS profit_reports (
@@ -3000,6 +3011,7 @@ def init_profit_reports_schema():
         }
         if 'previous_review' not in cols:
             conn.execute("ALTER TABLE profit_reports ADD COLUMN previous_review TEXT")
+    _PROFIT_REPORTS_SCHEMA_READY = True
 
 
 def save_profit_report(fiscal_year_type, target_month, facility_id, facility_name,
