@@ -3207,6 +3207,18 @@ with tab_meeting:
     all_e_for_meeting = _c_fetch_pl_entries(year_months=yms_to_fetch)
     by_ym = {ym: [e for e in all_e_for_meeting if e['year_month'] == ym] for ym in yms_to_fetch}
 
+    # 選択月より後のデータを混ぜず、その時点までの過去順位を判定する。
+    # 王冠対象は、業績会議表の「売上 実績」と「営業利益 実績」のみ。
+    historical_yms = sorted(ym for ym in existing_yms if ym <= sel_meeting_ym)
+    historical_entries = _c_fetch_pl_entries(
+        year_months=historical_yms,
+        categories=['revenue_total', 'op_profit'],
+    )
+    historical_by_ym = {
+        ym: [e for e in historical_entries if e['year_month'] == ym]
+        for ym in historical_yms
+    }
+
     # excel_name → subunit_id 解決マップ
     subs_by_excel = {s['excel_name']: s['id'] for s in _c_list_pl_subunits()}
 
@@ -3274,11 +3286,14 @@ with tab_meeting:
     def render_meeting_section(section_title, structure, excluded_rows, dl_suffix, highlight_top_n=5):
         """1セクション(EMIFULL or NPO)の業績会議表を描画"""
         rows = []
+        row_excel_names = []
+        main_excel_names = []
         grand_curr = {'rev': 0, 'exp': 0, 'pers': 0, 'op': 0}
         grand_prev = {'rev': 0, 'exp': 0, 'pers': 0, 'op': 0}
         grand_yoy = {'rev': 0, 'exp': 0, 'pers': 0, 'op': 0}
 
         for region_label, subrows in structure:
+            region_excel_names = []
             region_curr = {'rev': 0, 'exp': 0, 'pers': 0, 'op': 0}
             region_prev = {'rev': 0, 'exp': 0, 'pers': 0, 'op': 0}
             region_yoy = {'rev': 0, 'exp': 0, 'pers': 0, 'op': 0}
@@ -3287,6 +3302,9 @@ with tab_meeting:
                 m_p = _metrics(by_ym[prev_ym], excel_names) if has_prev else None
                 m_y = _metrics(by_ym[yoy_ym], excel_names) if has_yoy else None
                 rows.append(('detail', row_label, m_c, m_p, m_y))
+                row_excel_names.append(list(excel_names))
+                region_excel_names.extend(excel_names)
+                main_excel_names.extend(excel_names)
                 region_curr = _add(region_curr, m_c)
                 grand_curr = _add(grand_curr, m_c)
                 if m_p:
@@ -3301,6 +3319,7 @@ with tab_meeting:
                 region_prev if has_prev else None,
                 region_yoy if has_yoy else None,
             ))
+            row_excel_names.append(region_excel_names)
 
         if excluded_rows:
             rows.append((
@@ -3309,6 +3328,7 @@ with tab_meeting:
                 grand_prev if has_prev else None,
                 grand_yoy if has_yoy else None,
             ))
+            row_excel_names.append(list(main_excel_names))
             excluded_curr = {'rev': 0, 'exp': 0, 'pers': 0, 'op': 0}
             excluded_prev = {'rev': 0, 'exp': 0, 'pers': 0, 'op': 0}
             excluded_yoy = {'rev': 0, 'exp': 0, 'pers': 0, 'op': 0}
@@ -3317,6 +3337,7 @@ with tab_meeting:
                 m_p = _metrics(by_ym[prev_ym], excel_names) if has_prev else None
                 m_y = _metrics(by_ym[yoy_ym], excel_names) if has_yoy else None
                 rows.append(('detail_excl', row_label, m_c, m_p, m_y))
+                row_excel_names.append(list(excel_names))
                 excluded_curr = _add(excluded_curr, m_c)
                 if m_p: excluded_prev = _add(excluded_prev, m_p)
                 if m_y: excluded_yoy = _add(excluded_yoy, m_y)
@@ -3324,6 +3345,9 @@ with tab_meeting:
             total_prev = _add(grand_prev, excluded_prev) if has_prev else None
             total_yoy = _add(grand_yoy, excluded_yoy) if has_yoy else None
             rows.append(('grand_full', '総計(全体)', total_curr, total_prev, total_yoy))
+            row_excel_names.append(
+                list(main_excel_names) + [n for _, names in excluded_rows for n in names]
+            )
         else:
             rows.append((
                 'grand_full', '総計',
@@ -3331,6 +3355,43 @@ with tab_meeting:
                 grand_prev if has_prev else None,
                 grand_yoy if has_yoy else None,
             ))
+            row_excel_names.append(list(main_excel_names))
+
+        def _historical_rank(excel_names, metric_key, current_value):
+            """同じ行の同じ指標を選択月以前で比較し、上位3位だけ返す。
+
+            同額は同順位とし、次の順位は同額の件数分を飛ばす（標準競争順位）。
+            対象行のデータが存在しない月は、0円とみなさず比較から除外する。
+            """
+            # 業績会議表は0を空欄表示するため、王冠だけが残らないようにする。
+            if current_value == 0:
+                return None
+            sub_ids = {subs_by_excel[n] for n in excel_names if n in subs_by_excel}
+            category = 'revenue_total' if metric_key == 'rev' else 'op_profit'
+            historical_values = []
+            selected_month_has_value = False
+            for ym in historical_yms:
+                matched = [
+                    e for e in historical_by_ym.get(ym, [])
+                    if e['subunit_id'] in sub_ids and e['category'] == category
+                ]
+                if not matched:
+                    continue
+                value = sum(e['amount'] for e in matched)
+                historical_values.append(value)
+                if ym == sel_meeting_ym:
+                    selected_month_has_value = True
+            if not selected_month_has_value:
+                return None
+            rank = 1 + sum(value > current_value for value in historical_values)
+            return rank if rank <= 3 else None
+
+        rank_by_row_metric = {}
+        for row_idx, ((_, _, m_c, _, _), excel_names) in enumerate(zip(rows, row_excel_names)):
+            for metric_key in ('rev', 'op'):
+                rank_by_row_metric[(row_idx, metric_key)] = _historical_rank(
+                    excel_names, metric_key, m_c[metric_key]
+                )
 
         columns = [('', '部門')]
         for _, cat_label in metric_cols:
@@ -3359,6 +3420,20 @@ with tab_meeting:
         df_section = pd.DataFrame(data_rows, columns=pd.MultiIndex.from_tuples(columns))
         df_section = df_section.replace({None: '－', 'None': '－'})
 
+        # 画面表示だけ王冠を数値の左に加え、集計・色判定用の元データは数値のまま保つ。
+        display_df = df_section.copy()
+        crown_columns = {
+            'rev': ('売上', '実績'),
+            'op': ('営業利益', '実績'),
+        }
+        for col in crown_columns.values():
+            display_df[col] = display_df[col].astype(object)
+        for row_idx in range(len(display_df)):
+            for metric_key, col in crown_columns.items():
+                rank = rank_by_row_metric.get((row_idx, metric_key))
+                if rank:
+                    display_df.at[row_idx, col] = f"👑{rank}位 {_fmt(df_section.at[row_idx, col])}"
+
         def _style_row(row):
             rt = local_row_types[row.name]
             styles = [''] * len(row)
@@ -3374,7 +3449,8 @@ with tab_meeting:
             for i, col in enumerate(list(row.index)):
                 if col == ('', '部門'):
                     continue
-                v = row[col]
+                # 王冠付き表示文字列でも、色は元の数値で判定する。
+                v = df_section.at[row.name, col]
                 if v is None or pd.isna(v):
                     continue
                 cat_label, kind = col
@@ -3393,12 +3469,13 @@ with tab_meeting:
 
         fmt_dict = {col: _fmt for col in df_section.columns if col != ('', '部門')}
         styled_section = (
-            df_section.style.apply(_style_row, axis=1).format(fmt_dict, na_rep='－')
+            display_df.style.apply(_style_row, axis=1).format(fmt_dict, na_rep='－')
         )
         row_count = len(df_section)
         height = min(38 * (row_count + 2) + 5, 900)
 
         st.markdown(f"##### {section_title}")
+        st.caption("👑1位 / 👑2位 / 👑3位 = 選択月を含む、その時点までの売上・営業利益の実績順位")
         st.dataframe(styled_section, hide_index=True, width='stretch', height=height)
         report_facilities = _report_facilities_for_structure(structure, excluded_rows)
         report_preview_rows = _report_preview_rows(sel_meeting_ym, report_facilities)
@@ -3478,6 +3555,11 @@ with tab_meeting:
 
                 for col_idx, col in enumerate(excel_columns, start=1):
                     value = '' if col in usage_columns else row[col]
+                    raw_value = value
+                    metric_key = 'rev' if col == ('売上', '実績') else ('op' if col == ('営業利益', '実績') else None)
+                    rank = rank_by_row_metric.get((row_idx - 6, metric_key)) if metric_key else None
+                    if rank and isinstance(value, (int, float)):
+                        value = f"👑{rank}位 {_fmt(value)}"
                     if value is None or (isinstance(value, float) and pd.isna(value)) or str(value) == 'None':
                         value = '－'
                     if col == ('営業利益', '営業利益率') and isinstance(value, (int, float)):
@@ -3489,11 +3571,12 @@ with tab_meeting:
                     if row_fill:
                         cell.fill = row_fill
                         cell.font = bold_font
-                    if isinstance(value, (int, float)):
-                        cell.number_format = '0.0%' if col == ('営業利益', '営業利益率') else '#,##0'
-                        if value < 0:
+                    if isinstance(raw_value, (int, float)):
+                        if isinstance(value, (int, float)):
+                            cell.number_format = '0.0%' if col == ('営業利益', '営業利益率') else '#,##0'
+                        if raw_value < 0:
                             cell.font = red_font
-                        elif col[0] == '営業利益' and col[1] in ('実績', '営業利益率') and value > 0:
+                        elif col[0] == '営業利益' and col[1] in ('実績', '営業利益率') and raw_value > 0:
                             cell.font = green_font
                     if col in usage_columns:
                         cell.fill = row_fill if row_fill else _Fill(fill_type=None)
@@ -3510,7 +3593,7 @@ with tab_meeting:
 
             widths = {1: 22}
             for idx, col in enumerate(excel_columns[1:], start=2):
-                widths[idx] = 9
+                widths[idx] = 14 if col in crown_columns.values() else 9
             for col_idx, width in widths.items():
                 ws.column_dimensions[get_column_letter(col_idx)].width = width
             ws.freeze_panes = 'B6'
