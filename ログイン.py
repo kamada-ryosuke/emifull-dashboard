@@ -31,10 +31,10 @@ def _init_schema_once():
 
 try:
     _init_schema_once()
-except Exception:
+except Exception as exc:
     st.error(
         "データベースに接続できませんでした。\n\n"
-        "時間をおいて再読み込みしてください。改善しない場合は管理者に連絡してください。"
+        + auth._login_database_error_message(exc)
     )
     st.stop()
 auth.init_session()
