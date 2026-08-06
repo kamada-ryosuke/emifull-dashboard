@@ -301,12 +301,20 @@ def _connect_cloud():
 
 
 def _replace_cloud_connection(libsql_module, database, auth_token):
-    """Create a fresh Turso connection and make it the shared connection."""
+    """Create and sync an embedded replica, then make it the shared connection.
+
+    Direct Hrana reads can be interrupted by an upstream chunked-response EOF.
+    Turso's embedded replica serves reads from the local file while forwarding
+    writes to the configured cloud primary, avoiding that fragile read path.
+    """
     global _CLOUD_CONNECTION, _CLOUD_CONNECTION_KEY
+    LOCAL_REPLICA_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = libsql_module.connect(
-        database=database,
+        database=str(LOCAL_REPLICA_PATH),
+        sync_url=database,
         auth_token=auth_token,
     )
+    conn.sync()
     _CLOUD_CONNECTION = conn
     _CLOUD_CONNECTION_KEY = (database, auth_token)
     return conn

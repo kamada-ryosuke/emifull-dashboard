@@ -44,6 +44,24 @@ class _ContextConnection:
         pass
 
 
+class _ReplicaConnection(_ContextConnection):
+    def __init__(self):
+        self.sync_calls = 0
+
+    def sync(self):
+        self.sync_calls += 1
+
+
+class _FakeLibsql:
+    def __init__(self):
+        self.connection = _ReplicaConnection()
+        self.connect_kwargs = None
+
+    def connect(self, **kwargs):
+        self.connect_kwargs = kwargs
+        return self.connection
+
+
 class CloudConnectionCompatibilityTests(unittest.TestCase):
     def test_execute_omits_empty_parameters(self):
         raw = _RecordingConnection()
@@ -85,6 +103,23 @@ class CloudConnectionCompatibilityTests(unittest.TestCase):
             conn.execute("INSERT INTO users (email) VALUES (?)", ("a@example.com",))
 
         self.assertEqual(reconnect_calls, [])
+
+    def test_cloud_connection_uses_and_syncs_embedded_replica(self):
+        fake_libsql = _FakeLibsql()
+        database_url = "libsql://uriage-example.turso.io"
+
+        conn = db._replace_cloud_connection(fake_libsql, database_url, "token")
+
+        self.assertIs(conn, fake_libsql.connection)
+        self.assertEqual(fake_libsql.connection.sync_calls, 1)
+        self.assertEqual(
+            fake_libsql.connect_kwargs,
+            {
+                "database": str(db.LOCAL_REPLICA_PATH),
+                "sync_url": database_url,
+                "auth_token": "token",
+            },
+        )
 
     def test_cloud_contexts_are_serialized(self):
         original_use_cloud = db._use_cloud_db
