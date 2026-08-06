@@ -2,6 +2,7 @@
 import os
 import re
 import sqlite3
+import threading
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -12,6 +13,7 @@ DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 LOCAL_REPLICA_PATH = Path(__file__).resolve().parent.parent / "data" / "cloud_replica.db"
 _CLOUD_CONNECTION = None
 _CLOUD_CONNECTION_KEY = None
+_CLOUD_CONNECTION_LOCK = threading.RLock()
 _PRIME_SCHEMA_READY = False
 _REVENUE_FORECAST_SCHEMA_READY = False
 
@@ -192,6 +194,10 @@ class _CloudConnection:
             params = ()
         elif isinstance(params, list):
             params = tuple(params)
+        # libsqlのリモート接続では、PRAGMAなど引数なしのSQLに
+        # 空のparametersを明示的に渡すとValueErrorになるバージョンがある。
+        if not params:
+            return _CloudCursor(self._conn.execute(sql))
         return _CloudCursor(self._conn.execute(sql, params))
 
     def executemany(self, sql, seq_of_params):
@@ -391,14 +397,19 @@ def _ensure_revenue_forecast_facility_users(conn):
 def get_conn():
     global _CLOUD_CONNECTION, _CLOUD_CONNECTION_KEY
     use_cloud = _use_cloud_db()
+    conn = None
     if use_cloud:
-        conn = _connect_cloud()
-    else:
-        conn = sqlite3.connect(str(DB_PATH))
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode = WAL")
-        conn.execute("PRAGMA foreign_keys = ON")
+        # Streamlitは複数セッションを別スレッドで実行する。
+        # libsqlの1接続を共有する場合は、同時execute/commitを防ぐ。
+        _CLOUD_CONNECTION_LOCK.acquire()
     try:
+        if use_cloud:
+            conn = _connect_cloud()
+        else:
+            conn = sqlite3.connect(str(DB_PATH))
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode = WAL")
+            conn.execute("PRAGMA foreign_keys = ON")
         yield conn
         conn.commit()
     except Exception:
@@ -406,7 +417,7 @@ def get_conn():
             conn.rollback()
         except Exception:
             pass
-        if use_cloud:
+        if use_cloud and conn is not None:
             try:
                 conn.close()
             except Exception:
@@ -415,8 +426,10 @@ def get_conn():
             _CLOUD_CONNECTION_KEY = None
         raise
     finally:
-        if not use_cloud:
+        if not use_cloud and conn is not None:
             conn.close()
+        if use_cloud:
+            _CLOUD_CONNECTION_LOCK.release()
 
 
 def init_db():
@@ -1417,7 +1430,6 @@ def get_user_by_email(email):
     if not email:
         return None
     with get_conn() as conn:
-        _ensure_user_position_presets(conn)
         row = conn.execute(
             "SELECT * FROM users WHERE email = ?", (email.strip().lower(),)
         ).fetchone()
@@ -1426,7 +1438,6 @@ def get_user_by_email(email):
 
 def list_users():
     with get_conn() as conn:
-        _ensure_user_position_presets(conn)
         return [dict(r) for r in conn.execute(
             "SELECT * FROM users ORDER BY role DESC, email"
         ).fetchall()]
@@ -1436,7 +1447,6 @@ def add_user(email, role, name=None, position=None):
     if role not in ('admin', 'user'):
         raise ValueError(f"role は 'admin' または 'user': {role}")
     with get_conn() as conn:
-        _ensure_user_position_presets(conn)
         conn.execute(
             "INSERT INTO users (email, role, name, position) VALUES (?, ?, ?, ?)",
             (email.strip().lower(), role, name, position)
@@ -1532,7 +1542,6 @@ def update_user(user_id, email=None, role=None, name=None, position=None):
         return
     params.append(user_id)
     with get_conn() as conn:
-        _ensure_user_position_presets(conn)
         conn.execute(f"UPDATE users SET {', '.join(sets)} WHERE id = ?", params)
 
 
