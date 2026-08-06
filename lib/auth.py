@@ -250,11 +250,35 @@ def admin_reset_password(email: str, new_password: str) -> bool:
     return True
 
 
+def _login_database_error_message(exc: Exception) -> str:
+    """ログイン時のDBエラーを、秘密情報を出さずに原因別の案内にする。"""
+    message = str(exc).lower()
+    if any(token in message for token in ('401', 'unauthorized', 'authentication', 'auth token', 'jwt')):
+        return (
+            "クラウドDBの認証設定を更新する必要があります。"
+            "管理者にTursoの接続トークン確認を依頼してください。"
+        )
+    if any(token in message for token in ('timeout', 'timed out', 'network', 'transport', 'connection', 'dns')):
+        return (
+            "クラウドDBとの通信に失敗しました。"
+            "少し時間をおいてもう一度ログインしてください。"
+        )
+    if 'no such table' in message or 'no such column' in message:
+        return "クラウドDBの初期化が必要です。管理者に連絡してください。"
+    return (
+        "クラウドDBの照会に失敗しました。"
+        "時間をおいて再試行し、改善しない場合は管理者に連絡してください。"
+    )
+
+
 def login(email: str, password: str) -> tuple[bool, str]:
     """ログイン。(成功フラグ, メッセージ) を返す"""
     if not email or not password:
         return False, "メールアドレスとパスワードを入力してください"
-    user = db.get_user_by_email(email)
+    try:
+        user = db.get_user_by_email(email)
+    except (ValueError, RuntimeError) as exc:
+        return False, _login_database_error_message(exc)
     if not user:
         return False, "登録されていないメールアドレスです。管理者に追加を依頼してください。"
     if not user['password_hash']:

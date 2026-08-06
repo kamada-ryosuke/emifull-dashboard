@@ -2,7 +2,7 @@ import threading
 import time
 import unittest
 
-from lib import db
+from lib import auth, db
 
 
 class _FakeCursor:
@@ -78,6 +78,17 @@ class CloudConnectionCompatibilityTests(unittest.TestCase):
         finally:
             db._use_cloud_db = original_use_cloud
             db._connect_cloud = original_connect_cloud
+
+    def test_login_database_errors_are_safely_classified(self):
+        auth_message = auth._login_database_error_message(
+            ValueError("server returned HTTP status 401")
+        )
+        network_message = auth._login_database_error_message(
+            ValueError("connection timed out")
+        )
+
+        self.assertIn("認証設定", auth_message)
+        self.assertIn("通信に失敗", network_message)
 
 
 if __name__ == "__main__":
