@@ -3,6 +3,7 @@ import os
 import re
 import sqlite3
 import threading
+import time
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -16,6 +17,17 @@ _CLOUD_CONNECTION_KEY = None
 _CLOUD_CONNECTION_LOCK = threading.RLock()
 _PRIME_SCHEMA_READY = False
 _REVENUE_FORECAST_SCHEMA_READY = False
+
+_CLOUD_READ_RETRY_COUNT = 3
+_CLOUD_RETRYABLE_ERROR_MARKERS = (
+    "unexpected eof",
+    "error reading a body from connection",
+    "connection reset",
+    "connection aborted",
+    "connection timed out",
+    "timed out",
+    "temporarily unavailable",
+)
 
 USER_POSITION_PRESETS = {
     "kamada.rusk@emifull-group.or.jp": "部長",
@@ -173,15 +185,28 @@ class _CloudCursor:
             yield self._row(row)
 
 
+def _is_retryable_cloud_error(exc):
+    """Return True only for transient transport errors from the Turso client."""
+    message = str(exc).lower()
+    return any(marker in message for marker in _CLOUD_RETRYABLE_ERROR_MARKERS)
+
+
+def _is_safe_cloud_retry_sql(sql):
+    """Only retry statements that cannot duplicate a write after a lost response."""
+    first_word = str(sql).lstrip().split(None, 1)[0].upper() if str(sql).strip() else ""
+    return first_word in {"SELECT", "PRAGMA", "EXPLAIN"}
+
+
 class _CloudConnection:
-    def __init__(self, conn):
+    def __init__(self, conn, reconnect=None):
         object.__setattr__(self, "_conn", conn)
+        object.__setattr__(self, "_reconnect", reconnect)
 
     def __getattr__(self, name):
         return getattr(self._conn, name)
 
     def __setattr__(self, name, value):
-        if name == "_conn":
+        if name in {"_conn", "_reconnect"}:
             object.__setattr__(self, name, value)
             return
         try:
@@ -194,11 +219,29 @@ class _CloudConnection:
             params = ()
         elif isinstance(params, list):
             params = tuple(params)
-        # libsqlのリモート接続では、PRAGMAなど引数なしのSQLに
-        # 空のparametersを明示的に渡すとValueErrorになるバージョンがある。
-        if not params:
-            return _CloudCursor(self._conn.execute(sql))
-        return _CloudCursor(self._conn.execute(sql, params))
+        retryable_sql = _is_safe_cloud_retry_sql(sql)
+        for attempt in range(_CLOUD_READ_RETRY_COUNT):
+            try:
+                # libsqlのリモート接続では、PRAGMAなど引数なしのSQLに
+                # 空のparametersを明示的に渡すとValueErrorになるバージョンがある。
+                if not params:
+                    return _CloudCursor(self._conn.execute(sql))
+                return _CloudCursor(self._conn.execute(sql, params))
+            except Exception as exc:
+                can_retry = (
+                    retryable_sql
+                    and self._reconnect is not None
+                    and _is_retryable_cloud_error(exc)
+                    and attempt < _CLOUD_READ_RETRY_COUNT - 1
+                )
+                if not can_retry:
+                    raise
+                try:
+                    self._conn.close()
+                except Exception:
+                    pass
+                self._conn = self._reconnect()
+                time.sleep(0.2 * (2 ** attempt))
 
     def executemany(self, sql, seq_of_params):
         return _CloudCursor(self._conn.executemany(sql, seq_of_params))
@@ -241,19 +284,32 @@ def _connect_cloud():
             "クラウドDBへ接続するには requirements.txt の libsql が必要です。"
         ) from exc
 
-    database = _secret_value("TURSO_DATABASE_URL")
-    auth_token = _secret_value("TURSO_AUTH_TOKEN")
+    database = str(_secret_value("TURSO_DATABASE_URL") or "").strip()
+    auth_token = str(_secret_value("TURSO_AUTH_TOKEN") or "").strip()
     key = (database, auth_token)
     if _CLOUD_CONNECTION is not None and _CLOUD_CONNECTION_KEY == key:
-        return _CloudConnection(_CLOUD_CONNECTION)
+        return _CloudConnection(
+            _CLOUD_CONNECTION,
+            reconnect=lambda: _replace_cloud_connection(libsql, database, auth_token),
+        )
 
-    conn = libsql.connect(
+    conn = _replace_cloud_connection(libsql, database, auth_token)
+    return _CloudConnection(
+        conn,
+        reconnect=lambda: _replace_cloud_connection(libsql, database, auth_token),
+    )
+
+
+def _replace_cloud_connection(libsql_module, database, auth_token):
+    """Create a fresh Turso connection and make it the shared connection."""
+    global _CLOUD_CONNECTION, _CLOUD_CONNECTION_KEY
+    conn = libsql_module.connect(
         database=database,
         auth_token=auth_token,
     )
     _CLOUD_CONNECTION = conn
-    _CLOUD_CONNECTION_KEY = key
-    return _CloudConnection(conn)
+    _CLOUD_CONNECTION_KEY = (database, auth_token)
+    return conn
 
 
 # 事前登録する施設マスタ (short_code, 施設名, CSV事業所番号)

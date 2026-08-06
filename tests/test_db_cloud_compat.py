@@ -21,6 +21,18 @@ class _RecordingConnection:
         return _FakeCursor()
 
 
+class _FailOnceConnection(_RecordingConnection):
+    def execute(self, sql, *args):
+        self.execute_calls.append((sql, args))
+        raise ValueError(
+            "Hrana: cursor error: error reading a body from connection: "
+            "unexpected EOF during chunk size line"
+        )
+
+    def close(self):
+        pass
+
+
 class _ContextConnection:
     def commit(self):
         pass
@@ -45,6 +57,34 @@ class CloudConnectionCompatibilityTests(unittest.TestCase):
             raw.execute_calls[1],
             ("SELECT * FROM users WHERE email = ?", (("a@example.com",),)),
         )
+
+    def test_transient_read_error_reconnects_and_retries(self):
+        first = _FailOnceConnection()
+        second = _RecordingConnection()
+        reconnect_calls = []
+
+        def reconnect():
+            reconnect_calls.append(True)
+            return second
+
+        conn = db._CloudConnection(first, reconnect=reconnect)
+        conn.execute("PRAGMA table_info(users)")
+
+        self.assertEqual(len(reconnect_calls), 1)
+        self.assertEqual(second.execute_calls, [("PRAGMA table_info(users)", ())])
+
+    def test_transient_write_error_is_not_retried(self):
+        first = _FailOnceConnection()
+        reconnect_calls = []
+        conn = db._CloudConnection(
+            first,
+            reconnect=lambda: reconnect_calls.append(True),
+        )
+
+        with self.assertRaises(ValueError):
+            conn.execute("INSERT INTO users (email) VALUES (?)", ("a@example.com",))
+
+        self.assertEqual(reconnect_calls, [])
 
     def test_cloud_contexts_are_serialized(self):
         original_use_cloud = db._use_cloud_db
