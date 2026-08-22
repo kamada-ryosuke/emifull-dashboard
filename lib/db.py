@@ -3305,6 +3305,22 @@ def init_revenue_forecast_schema():
         CREATE INDEX IF NOT EXISTS idx_revenue_forecast_daily_facility
             ON revenue_forecast_daily(facility_key);
 
+        CREATE TABLE IF NOT EXISTS revenue_forecast_monthly_inputs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            facility_key TEXT NOT NULL,
+            facility_label TEXT NOT NULL,
+            target_month TEXT NOT NULL,
+            production_activity_revenue INTEGER NOT NULL DEFAULT 0
+                CHECK(production_activity_revenue >= 0),
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            created_by TEXT,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_by TEXT,
+            UNIQUE(facility_key, target_month)
+        );
+        CREATE INDEX IF NOT EXISTS idx_revenue_forecast_monthly_inputs_month
+            ON revenue_forecast_monthly_inputs(target_month);
+
         CREATE TABLE IF NOT EXISTS revenue_forecast_change_logs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             changed_at TEXT NOT NULL,
@@ -3372,6 +3388,83 @@ def list_revenue_forecast_daily(start_date, end_date, facility_keys=None):
     sql += " ORDER BY target_date, facility_key"
     with get_conn() as conn:
         return [dict(r) for r in conn.execute(sql, params).fetchall()]
+
+
+def list_revenue_forecast_monthly_inputs(year_months=None, facility_keys=None):
+    """月次の手入力値（現在は生産活動収益）を取得する。"""
+    init_revenue_forecast_schema()
+    sql = "SELECT * FROM revenue_forecast_monthly_inputs WHERE 1=1"
+    params = []
+    if year_months:
+        months = [str(ym) for ym in year_months]
+        placeholders = ",".join("?" for _ in months)
+        sql += f" AND target_month IN ({placeholders})"
+        params.extend(months)
+    if facility_keys:
+        keys = [str(key) for key in facility_keys]
+        placeholders = ",".join("?" for _ in keys)
+        sql += f" AND facility_key IN ({placeholders})"
+        params.extend(keys)
+    sql += " ORDER BY target_month, facility_key"
+    with get_conn() as conn:
+        return [dict(r) for r in conn.execute(sql, params).fetchall()]
+
+
+def save_revenue_forecast_production_revenue(facility_key, facility_label,
+                                              target_month, value,
+                                              updated_by_user=None):
+    """施設・月ごとの生産活動収益を保存する。"""
+    init_revenue_forecast_schema()
+    try:
+        clean_value = int(value or 0)
+    except (TypeError, ValueError):
+        raise ValueError("生産活動収益は0円以上の整数で入力してください。")
+    if clean_value < 0:
+        raise ValueError("生産活動収益は0円以上で入力してください。")
+    facility_key = str(facility_key or "").strip()
+    facility_label = str(facility_label or "").strip()
+    target_month = str(target_month or "").strip()
+    if not facility_key or not re.fullmatch(r"\d{4}-\d{2}", target_month):
+        raise ValueError("施設または対象月が正しくありません。")
+
+    now = datetime.now().isoformat(sep=' ', timespec='seconds')
+    with get_conn() as conn:
+        existing = conn.execute(
+            """
+            SELECT production_activity_revenue
+            FROM revenue_forecast_monthly_inputs
+            WHERE facility_key = ? AND target_month = ?
+            """,
+            (facility_key, target_month),
+        ).fetchone()
+        old_value = existing['production_activity_revenue'] if existing else None
+        if old_value == clean_value:
+            return {"saved": False, "reason": "unchanged"}
+
+        if existing:
+            conn.execute(
+                """
+                UPDATE revenue_forecast_monthly_inputs
+                   SET facility_label = ?, production_activity_revenue = ?,
+                       updated_at = ?, updated_by = ?
+                 WHERE facility_key = ? AND target_month = ?
+                """,
+                (facility_label, clean_value, now, updated_by_user,
+                 facility_key, target_month),
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO revenue_forecast_monthly_inputs (
+                    facility_key, facility_label, target_month,
+                    production_activity_revenue, created_at, created_by,
+                    updated_at, updated_by
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (facility_key, facility_label, target_month, clean_value,
+                 now, updated_by_user, now, updated_by_user),
+            )
+    return {"saved": True, "old_value": old_value, "new_value": clean_value}
 
 
 def save_revenue_forecast_value(facility_key, target_date, field_name, value,
@@ -3478,7 +3571,8 @@ def fetch_revenue_forecast_receipt_usage(year_months=None):
     init_receipt_performance_schema()
     sql = """
         SELECT service_year_month, pl_subunit_id, facility_label,
-               monthly_usage_count, business_days, updated_at
+               monthly_usage_count, production_activity_revenue,
+               business_days, updated_at
         FROM receipt_performance_reports
         WHERE 1=1
     """

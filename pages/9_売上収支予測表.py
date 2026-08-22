@@ -196,7 +196,7 @@ def _unit_basis_average_note(unit):
     if not rows or unit.get("revenue_total") is None or not unit.get("usage_total"):
         return "損益データと延べ利用回数を確認"
     months = len(rows)
-    label = "3カ月平均" if months == 3 else f"採用{months}カ月平均"
+    label = "3カ月加重平均" if months == 3 else f"採用{months}カ月加重平均"
     revenue_avg = unit["revenue_total"] / months
     usage_avg = unit["usage_total"] / months
     return f"{label}: 売上 {_fmt_k_yen(revenue_avg)}/月・利用 {_fmt_average(usage_avg, '回/月')}"
@@ -219,6 +219,21 @@ def _profit_rate(profit, revenue):
 
 def _normalize_name(name):
     return str(name or "").replace("　", " ").replace("（", "(").replace("）", ")").strip().lower()
+
+
+PRODUCTION_REVENUE_INPUT_FACILITIES = {
+    _normalize_name("のじぎく加古川"),
+    _normalize_name("のじぎく稲美"),
+    _normalize_name("のじぎく高砂"),
+}
+PRODUCTION_REVENUE_EXCLUDED_FACILITIES = {
+    _normalize_name("のじぎく稲美"),
+    _normalize_name("のじぎく高砂"),
+}
+FORECAST_ENTRY_NOTICE = (
+    "予定は前月末までの確定数値です。月途中の変更は禁止です。"
+    "月途中は新規利用・途中終了のみ予定を変更し、毎日実績を入力してください。"
+)
 
 
 HISTORICAL_USAGE_MONTHS = [
@@ -362,9 +377,15 @@ def _build_forecast_facilities():
         if group.get("code") == "012":
             kakogawa_subs = [
                 sub for sub in group_subs
-                if "加古川" in (sub.get("display_name") or sub.get("excel_name") or "")
+                if _normalize_name(sub.get("display_name") or sub.get("excel_name"))
+                == _normalize_name("のじぎく加古川")
             ]
-            inami_subs = [sub for sub in group_subs if sub not in kakogawa_subs]
+            # 同じ損益グループの他3事業を混ぜず、のじぎく稲美列だけを採用する。
+            inami_subs = [
+                sub for sub in group_subs
+                if _normalize_name(sub.get("display_name") or sub.get("excel_name"))
+                == _normalize_name("のじぎく稲美")
+            ]
             if inami_subs:
                 rows.append(_facility_row_from_subunits(group, "のじぎく稲美", inami_subs, "inami"))
             if kakogawa_subs:
@@ -390,7 +411,7 @@ def _cached_pl_entries(year_months, subunit_ids):
     return db.fetch_pl_entries(
         year_months=list(year_months),
         subunit_ids=list(subunit_ids),
-        categories=["revenue_total", "sga_total"],
+        categories=["revenue", "revenue_total", "sga_total"],
     )
 
 
@@ -402,6 +423,14 @@ def _cached_usage_unit_inputs(year_months):
 @st.cache_data(ttl=60, show_spinner=False)
 def _cached_receipt_usage(year_months):
     return db.fetch_revenue_forecast_receipt_usage(list(year_months))
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _cached_forecast_monthly_inputs(year_months, facility_keys):
+    return db.list_revenue_forecast_monthly_inputs(
+        year_months=list(year_months),
+        facility_keys=list(facility_keys),
+    )
 
 
 def _forecast_profile_labels(forecast_profile):
@@ -498,18 +527,26 @@ def _forecast_input_usage_for_facility_month(facility, ym, forecast_usage_index)
 
 def _build_pl_indexes(entries):
     revenue = defaultdict(int)
+    production_revenue = defaultdict(int)
     sga = defaultdict(int)
     has_sga = set()
     has_revenue = set()
+    has_production_revenue = set()
     for entry in entries:
         key = (entry["year_month"], entry["subunit_id"])
         if entry["category"] == "revenue_total":
             revenue[key] += int(entry["amount"] or 0)
             has_revenue.add(key)
+        elif entry["category"] == "revenue" and entry.get("account_name") == "生産活動収益":
+            production_revenue[key] += int(entry["amount"] or 0)
+            has_production_revenue.add(key)
         elif entry["category"] == "sga_total":
             sga[key] += int(entry["amount"] or 0)
             has_sga.add(key)
-    return revenue, sga, has_revenue, has_sga
+    return (
+        revenue, production_revenue, sga,
+        has_revenue, has_production_revenue, has_sga,
+    )
 
 
 def _sum_by_subunits(index, ym, subunit_ids):
@@ -529,12 +566,24 @@ def _build_usage_indexes(usage_rows, receipt_rows):
         usage_by_name[(row.get("target_month"), _normalize_name(row.get("facility_name")))] += count
 
     receipt_by_subunit = defaultdict(int)
+    receipt_production_by_subunit = defaultdict(int)
     for row in receipt_rows:
         count = int(row.get("monthly_usage_count") or 0)
-        if count <= 0:
-            continue
-        receipt_by_subunit[(row.get("service_year_month"), row.get("pl_subunit_id"))] += count
-    return usage_by_name, receipt_by_subunit
+        key = (row.get("service_year_month"), row.get("pl_subunit_id"))
+        if count > 0:
+            receipt_by_subunit[key] += count
+        production_revenue = int(row.get("production_activity_revenue") or 0)
+        if production_revenue > 0:
+            receipt_production_by_subunit[key] += production_revenue
+    return usage_by_name, receipt_by_subunit, receipt_production_by_subunit
+
+
+def _build_monthly_production_index(rows):
+    return {
+        (row.get("facility_key"), row.get("target_month")):
+            int(row.get("production_activity_revenue") or 0)
+        for row in rows
+    }
 
 
 def _usage_for_facility_month(facility, ym, usage_by_name, receipt_by_subunit, forecast_usage_index=None):
@@ -563,7 +612,11 @@ def _usage_for_facility_month(facility, ym, usage_by_name, receipt_by_subunit, f
 
 
 def _unit_price_basis(facility, target_ym, available_yms, revenue_index,
-                      has_revenue, usage_by_name, receipt_by_subunit, forecast_usage_index=None):
+                      pl_production_index, has_revenue, has_pl_production,
+                      usage_by_name, receipt_by_subunit,
+                      receipt_production_by_subunit, monthly_production_index,
+                      forecast_usage_index=None):
+    # 直近3カ月分の「対象売上合計 ÷ 延べ利用回数合計」で加重平均する。
     previous_3 = [_ym_shift(target_ym, -1), _ym_shift(target_ym, -2), _ym_shift(target_ym, -3)]
     candidate_yms = []
     seen_yms = set()
@@ -578,22 +631,45 @@ def _unit_price_basis(facility, target_ym, available_yms, revenue_index,
 
     basis_rows = []
     excluded_rows = []
+    excludes_production = _normalize_name(facility.get("label")) in PRODUCTION_REVENUE_EXCLUDED_FACILITIES
     for ym in candidate_yms:
-        revenue = _sum_by_subunits(revenue_index, ym, facility["subunit_ids"])
+        gross_revenue = _sum_by_subunits(revenue_index, ym, facility["subunit_ids"])
         has_month_revenue = _has_any(has_revenue, ym, facility["subunit_ids"])
+        production_revenue = 0
+        if excludes_production:
+            monthly_key = (facility["key"], ym)
+            if _has_any(has_pl_production, ym, facility["subunit_ids"]):
+                production_revenue = _sum_by_subunits(
+                    pl_production_index, ym, facility["subunit_ids"]
+                )
+            elif monthly_key in monthly_production_index:
+                production_revenue = monthly_production_index[monthly_key]
+            else:
+                production_revenue = sum(
+                    receipt_production_by_subunit.get((ym, sid), 0)
+                    for sid in facility["subunit_ids"]
+                )
+        revenue = max(0, gross_revenue - production_revenue)
         has_usable_revenue = has_month_revenue and revenue > 0
         usage, source = _usage_for_facility_month(
             facility, ym, usage_by_name, receipt_by_subunit, forecast_usage_index
         )
         if usage > 0 and has_usable_revenue:
-            basis_rows.append({"ym": ym, "revenue": revenue, "usage": usage, "source": source})
+            basis_rows.append({
+                "ym": ym,
+                "revenue": revenue,
+                "gross_revenue": gross_revenue,
+                "production_revenue": production_revenue,
+                "usage": usage,
+                "source": source,
+            })
             if len(basis_rows) >= 3:
                 break
         elif len(excluded_rows) < 6:
             if not has_month_revenue:
                 reason = "損益売上なし"
             elif revenue <= 0:
-                reason = "売上0円"
+                reason = "生産活動収益控除後の売上0円" if production_revenue else "売上0円"
             elif usage <= 0:
                 reason = "延べ利用回数なし"
             else:
@@ -601,6 +677,8 @@ def _unit_price_basis(facility, target_ym, available_yms, revenue_index,
             excluded_rows.append({
                 "ym": ym,
                 "revenue": revenue if has_month_revenue else None,
+                "gross_revenue": gross_revenue if has_month_revenue else None,
+                "production_revenue": production_revenue,
                 "usage": usage if usage > 0 else None,
                 "reason": reason,
             })
@@ -727,12 +805,18 @@ def _daily_metrics(days, daily_by_date, today):
 
 
 def _forecast_summary(facility, target_ym, days, daily_by_date, today, available_yms,
-                      revenue_index, has_revenue, sga_index, has_sga,
-                      usage_by_name, receipt_by_subunit, forecast_usage_index=None):
+                      revenue_index, pl_production_index, has_revenue,
+                      has_pl_production, sga_index, has_sga,
+                      usage_by_name, receipt_by_subunit,
+                      receipt_production_by_subunit, monthly_production_index,
+                      forecast_usage_index=None):
     daily = _daily_metrics(days, daily_by_date, today)
     unit = _unit_price_basis(
         facility, target_ym, available_yms, revenue_index,
-        has_revenue, usage_by_name, receipt_by_subunit, forecast_usage_index,
+        pl_production_index, has_revenue, has_pl_production,
+        usage_by_name, receipt_by_subunit,
+        receipt_production_by_subunit, monthly_production_index,
+        forecast_usage_index,
     )
     sga = _sga_basis(facility, target_ym, sga_index, has_sga)
     unit_price = unit["unit_price"]
@@ -906,7 +990,7 @@ def _render_forecast_guidance(summary):
                     <ul>
                         <li>着地予測は、入力済み実績を優先し、未入力日は予定人数で補って計算します。</li>
                         <li>金額は <b>千円表示・端数切り捨て</b>、1人売上単価と平均経費単価は <b>円/回</b> です。</li>
-                        <li>販管費予測は <b>{html.escape(sga_label)}</b> です。売上単価は直近3カ月相当の売上と利用回数から算出します。</li>
+                        <li>販管費予測は <b>{html.escape(sga_label)}</b> です。売上単価は直近3カ月相当の売上合計を利用回数合計で割った加重平均です。</li>
                         {current_sga_note}
                     </ul>
                 </div>
@@ -1093,6 +1177,49 @@ def _render_top_kpis(summary):
     )
 
 
+def _render_forecast_entry_notice():
+    st.markdown(
+        f"<p class='forecast-entry-notice'>{html.escape(FORECAST_ENTRY_NOTICE)}</p>",
+        unsafe_allow_html=True,
+    )
+
+
+def _render_production_revenue_input(facility, target_ym, monthly_production_index,
+                                     current_user):
+    if _normalize_name(facility.get("label")) not in PRODUCTION_REVENUE_INPUT_FACILITIES:
+        return
+    current_value = int(monthly_production_index.get((facility["key"], target_ym), 0))
+    c1, _ = st.columns([1, 3])
+    with c1:
+        with st.form(f"forecast_production_revenue_{facility['key']}_{target_ym}"):
+            value = st.number_input(
+                "生産活動収益（円）",
+                min_value=0,
+                step=1_000,
+                value=current_value,
+                help="予定売上と1人売上単価には加算しません。",
+            )
+            st.caption("予定利益率の補足入力（予測売上・単価の計算対象外）")
+            submitted = st.form_submit_button("生産活動収益を保存", use_container_width=True)
+        if submitted:
+            try:
+                result = db.save_revenue_forecast_production_revenue(
+                    facility_key=facility["key"],
+                    facility_label=facility["label"],
+                    target_month=target_ym,
+                    value=value,
+                    updated_by_user=(current_user or {}).get("email") or st.session_state.get("user_email"),
+                )
+                if result.get("saved"):
+                    _cached_forecast_monthly_inputs.clear()
+                    st.session_state["forecast_saved_notice"] = "生産活動収益を保存しました。"
+                    st.rerun()
+                else:
+                    st.info("変更はありません。")
+            except ValueError as exc:
+                st.error(str(exc))
+
+
 def _detail_basis_tables(summary):
     c1, c2 = st.columns(2)
     with c1:
@@ -1108,6 +1235,8 @@ def _detail_basis_tables(summary):
         rows = [
             {
                 "参照年月": r["ym"],
+                "損益売上(千円)": _yen_to_thousand(r.get("gross_revenue", r["revenue"])),
+                "生産活動収益控除(千円)": _yen_to_thousand(r.get("production_revenue", 0)),
                 "売上(千円)": _yen_to_thousand(r["revenue"]),
                 "延べ利用回数": r["usage"],
                 "取得元・状態": r["source"],
@@ -1117,6 +1246,8 @@ def _detail_basis_tables(summary):
         rows.extend(
             {
                 "参照年月": r["ym"],
+                "損益売上(千円)": None if r.get("gross_revenue") is None else _yen_to_thousand(r["gross_revenue"]),
+                "生産活動収益控除(千円)": _yen_to_thousand(r.get("production_revenue", 0)),
                 "売上(千円)": None if r.get("revenue") is None else _yen_to_thousand(r["revenue"]),
                 "延べ利用回数": r.get("usage"),
                 "取得元・状態": f"除外: {r['reason']}",
@@ -1949,6 +2080,13 @@ def _page_css():
             margin: 0;
             color: #5d6f82;
             font-size: 0.95rem;
+        }
+        .forecast-entry-notice {
+            margin: -0.35rem 0 1rem;
+            color: #dc2626;
+            font-size: 0.92rem;
+            font-weight: 700;
+            line-height: 1.65;
         }
         .forecast-control-title {
             display: flex;
@@ -3224,10 +3362,20 @@ pl_entries = _cached_pl_entries(
     tuple(needed_yms),
     tuple(active_subunit_ids),
 ) if needed_yms and active_subunit_ids else []
-revenue_index, sga_index, has_revenue, has_sga = _build_pl_indexes(pl_entries)
+(
+    revenue_index, pl_production_index, sga_index,
+    has_revenue, has_pl_production, has_sga,
+) = _build_pl_indexes(pl_entries)
 usage_rows = _cached_usage_unit_inputs(tuple(needed_yms)) if needed_yms else []
 receipt_usage_rows = _cached_receipt_usage(tuple(needed_yms)) if needed_yms else []
-usage_by_name, receipt_by_subunit = _build_usage_indexes(usage_rows, receipt_usage_rows)
+usage_by_name, receipt_by_subunit, receipt_production_by_subunit = _build_usage_indexes(
+    usage_rows, receipt_usage_rows
+)
+monthly_input_yms = tuple(sorted(set(needed_yms + [target_ym])))
+monthly_input_rows = _cached_forecast_monthly_inputs(
+    monthly_input_yms, tuple(facility_keys)
+) if facility_keys else []
+monthly_production_index = _build_monthly_production_index(monthly_input_rows)
 forecast_usage_yms = [ym for ym in needed_yms if "2026-07" <= ym < target_ym]
 forecast_usage_records = []
 if forecast_usage_yms:
@@ -3239,8 +3387,10 @@ forecast_usage_index = _build_forecast_usage_index(forecast_usage_records)
 summaries = [
     _forecast_summary(
         facility, target_ym, days, daily_by_key.get(facility["key"], {}), today,
-        available_yms, revenue_index, has_revenue, sga_index, has_sga,
-        usage_by_name, receipt_by_subunit, forecast_usage_index,
+        available_yms, revenue_index, pl_production_index,
+        has_revenue, has_pl_production, sga_index, has_sga,
+        usage_by_name, receipt_by_subunit, receipt_production_by_subunit,
+        monthly_production_index, forecast_usage_index,
     )
     for facility in active_facilities
 ]
@@ -3251,7 +3401,11 @@ else:
     selected_facility = selected_facility or facilities[0]
     summary = next(s for s in summaries if s["facility"]["key"] == selected_facility["key"])
     st.markdown(f"### {selected_facility['label']} ／ {target_year}年{target_month_number}月")
+    _render_forecast_entry_notice()
     _render_top_kpis(summary)
+    _render_production_revenue_input(
+        selected_facility, target_ym, monthly_production_index, current
+    )
     _render_profit_rate_alert(summary)
     _render_forecast_guidance(summary)
 
