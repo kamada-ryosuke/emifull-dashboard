@@ -738,12 +738,8 @@ def init_db():
     # 損益スキーマ初期化（with get_conn() を抜けてから別トランザクションで実行）
     init_pl_schema()
     init_receipt_performance_schema()
-    init_sales_change_log_schema()
     init_journal_schema()
     init_payroll_schema()
-    init_debit_schema()
-    init_vehicle_schema()
-    init_cash_advance_schema()
     init_profit_reports_schema()
     init_pl_usage_unit_schema()
     init_revenue_forecast_schema()

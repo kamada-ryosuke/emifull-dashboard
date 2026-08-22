@@ -6,8 +6,6 @@
 
 - `profit_dashboard_overview.svg`
   - 損益ダッシュボード用
-- `vehicle_management_overview.svg`
-  - 車両管理用
 
 本物のスクリーンショットに差し替える場合は、同じファイル名で保存してください。
 PNGにしたい場合は、`lib/manuals.py` の `MANUALS` 内にある `image` のファイル名も変更してください。

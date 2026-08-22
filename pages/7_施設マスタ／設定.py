@@ -11,11 +11,10 @@ auth.render_sidebar_navigation()
 
 st.title("施設マスタ / 設定")
 
-tab_facility, tab_users, tab_mypw, tab_notion, tab_about, tab_login_history = st.tabs([
+tab_facility, tab_users, tab_mypw, tab_about, tab_login_history = st.tabs([
     "🏢 施設マスタ",
     "👥 ユーザー管理",
     "🔑 自分のパスワード変更",
-    "🔗 Notion連携",
     "ℹ️ アプリ情報",
     "🛡️ ログイン履歴",
 ])
@@ -86,7 +85,7 @@ with tab_users:
     st.markdown(
         "メールアドレスを登録すると、そのユーザがログインできるようになります。\n\n"
         f"- **管理者(admin)**: {auth.ADMIN_EMAIL} のみ。すべての機能を利用可\n"
-        "- **一般(user)**: 損益ダッシュボード・車両管理の閲覧のみ\n"
+        "- **一般(user)**: 許可されたダッシュボードを利用\n"
         "- 登録時に管理者が初期パスワードを設定します"
     )
 
@@ -291,9 +290,9 @@ with tab_mypw:
                     st.error("現在のパスワードが違います")
 
 # ============================================================
-# Notion連携
+# 旧職員台帳向けNotion連携（画面廃止に伴い停止）
 # ============================================================
-with tab_notion:
+if False:
     import json
     from pathlib import Path
     from lib import notion_staff as ns

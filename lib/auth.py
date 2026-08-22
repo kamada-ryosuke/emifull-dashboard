@@ -7,7 +7,7 @@
 
 役割：
   admin … 全機能利用可
-  user  … 損益ダッシュボード・車両管理の閲覧のみ
+  user  … 許可されたダッシュボードの閲覧・入力
 """
 import hashlib
 import os
@@ -388,92 +388,6 @@ def require_prime_access():
         st.stop()
 
 
-@st.cache_data(ttl=300, show_spinner=False)
-def _cached_sidebar_vehicles():
-    return db.list_vehicles(include_scrapped=False)
-
-
-def clear_sidebar_vehicle_alert_cache():
-    """Refresh the sidebar vehicle alert after vehicle records are changed."""
-    try:
-        _cached_sidebar_vehicles.clear()
-    except Exception:
-        pass
-
-
-def _render_sidebar_vehicle_alert():
-    """サイドバー: 車検満了 1か月以内の車両を簡素表示。
-
-    管理者ログイン時のみ表示。表示項目: 施設名 / 車種 / ナンバー / 残日数。
-    車両管理ページや別画面に居ても、左側でいつでも確認できるようにする。
-    """
-    if not is_logged_in() or not is_admin():
-        return
-    try:
-        # 循環import回避のため遅延import
-        from lib import vehicle_pdf as vp
-        from datetime import date
-        ALERT_DAYS_SIDEBAR = 30
-        rows = _cached_sidebar_vehicles()
-        today = date.today()
-        items = []
-        for r in rows:
-            d = r.get('current_expiry_date')
-            if not d:
-                continue
-            try:
-                expiry = date.fromisoformat(str(d))
-            except Exception:
-                continue
-            days = (expiry - today).days
-            if days <= ALERT_DAYS_SIDEBAR:
-                items.append((days, r))
-        if not items:
-            return
-        items.sort(key=lambda x: x[0])
-        with st.sidebar:
-            st.markdown(
-                "<div style='background:#fef2f2; border:1px solid #fecaca; "
-                "border-left:4px solid #dc2626; border-radius:8px; "
-                "padding:10px 12px; margin-bottom:8px;'>"
-                "<div style='font-size:11px; color:#991b1b; font-weight:700; margin-bottom:6px;'>"
-                "🚨 車検 1か月以内</div>",
-                unsafe_allow_html=True,
-            )
-            for days, r in items:
-                car = ' '.join(filter(None, [r.get('maker') or '', r.get('car_name') or ''])).strip() or '車種未登録'
-                reg = r.get('registration_number') or '?'
-                fac = r.get('facility_name') or '—'
-                if days < 0:
-                    days_color = '#dc2626'
-                    days_label = f'{-days}日超過'
-                elif days == 0:
-                    days_color = '#dc2626'
-                    days_label = '本日満了'
-                else:
-                    days_color = '#9a3412'
-                    days_label = f'残{days}日'
-                # 1行目: 施設名 ↔ 残期限   /   2行目: 車種 ↔ ナンバー
-                st.markdown(
-                    f"<div style='background:#fff; border-radius:6px; padding:6px 8px; "
-                    f"margin-bottom:4px; font-size:11px; line-height:1.4;'>"
-                    f"<div style='display:flex; justify-content:space-between; gap:6px; align-items:center;'>"
-                    f"<span style='color:#475569; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;'>{fac}</span>"
-                    f"<span style='color:{days_color}; font-weight:700; flex-shrink:0;'>{days_label}</span>"
-                    f"</div>"
-                    f"<div style='display:flex; justify-content:space-between; gap:6px; align-items:center; margin-top:2px;'>"
-                    f"<span style='color:#0f172a; font-weight:700; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;'>{car}</span>"
-                    f"<span style='color:#64748b; flex-shrink:0;'>{reg}</span>"
-                    f"</div>"
-                    f"</div>",
-                    unsafe_allow_html=True,
-                )
-            st.markdown("</div>", unsafe_allow_html=True)
-    except Exception:
-        # 車両管理スキーマが未初期化等でも他ページの動作を妨げない
-        pass
-
-
 def _inject_sidebar_permissions_css():
     """一般ユーザーには閲覧可能なページだけをサイドバーに残す。"""
     st.markdown(
@@ -527,13 +441,9 @@ def _render_role_navigation():
     if is_admin():
         links = [
             (login_page, "ログイン"),
-            ("pages/1_売上一覧／入金管理.py", "売上一覧／入金管理"),
             ("pages/2_損益ダッシュボード.py", "損益ダッシュボード"),
             ("pages/9_売上収支予測表.py", "売上収支予測表"),
-            ("pages/3_財務／経理.py", "財務／経理"),
             ("pages/4_給与台帳.py", "給与台帳"),
-            ("pages/5_職員台帳.py", "職員台帳"),
-            ("pages/6_車両管理.py", "車両管理"),
             ("pages/7_施設マスタ／設定.py", "施設マスタ／設定"),
             ("pages/8_PRIME.py", "PRIME"),
         ]
@@ -554,7 +464,6 @@ def _render_role_navigation():
                 ("pages/2_損益ダッシュボード.py", "損益ダッシュボード"),
                 ("pages/9_売上収支予測表.py", "売上収支予測表"),
                 ("pages/4_給与台帳.py", "給与台帳"),
-                ("pages/6_車両管理.py", "車両管理"),
             ]
             if can_view_prime():
                 links.append(("pages/8_PRIME.py", "PRIME"))
@@ -582,7 +491,6 @@ def render_sidebar_user_box():
     st.session_state._sidebar_user_box_rendered = True
     _inject_sidebar_permissions_css()
     touch_login_history()
-    _render_sidebar_vehicle_alert()
     with st.sidebar:
         if is_logged_in():
             st.markdown("<div class='emifull-sidebar-spacer'></div>", unsafe_allow_html=True)
