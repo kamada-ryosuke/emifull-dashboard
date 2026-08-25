@@ -106,6 +106,16 @@ def _color_emp_type(v):
     return 'background-color:#f1f5f9; color:#64748b'
 
 
+def _overtime_department_label(value) -> str:
+    """残業対象者一覧で使う所属名を統一する。"""
+    if value is None or pd.isna(value):
+        return 'のじぎく'
+    label = str(value).strip()
+    if not label or label in {'無所属', '(未設定)', '未設定'}:
+        return 'のじぎく'
+    return label
+
+
 def _color_total_amount(val):
     """計上額の値に応じて色を変える。
     プラス: 青ハイライト（処遇改善対象として正常）
@@ -428,7 +438,7 @@ _payroll_tab_labels.extend([
 ])
 if PAYROLL_CAN_EDIT:
     _payroll_tab_labels.append("処遇改善")
-_payroll_tab_labels.append("残業管理")
+_payroll_tab_labels.extend(["残業管理", "残業対象者"])
 tabs = dict(zip(_payroll_tab_labels, st.tabs(_payroll_tab_labels)))
 
 
@@ -2528,3 +2538,182 @@ with tabs["残業管理"]:
                     dept_agg.set_index('部署')[['残業時間合計(h)']],
                     height=320,
                 )
+
+
+# ============================================================
+# ⑨ 残業対象者
+# ============================================================
+with tabs["残業対象者"]:
+    st.markdown(
+        "残業が発生している職員を、残業時間の多い順に表示します。"
+        "所属が空欄または無所属の職員は **「のじぎく」** として集計します。"
+    )
+
+    if not _cached_fiscal_years():
+        st.info("給与データがまだありません。")
+    else:
+        c1, c2, c3 = st.columns([1.5, 1.5, 1.5])
+        with c1:
+            corp_id_ot_target, corp_label_ot_target = _corp_selector(
+                'ot_target_corp',
+            )
+        with c2:
+            fys_ot_target = _cached_fiscal_years(corp_id=corp_id_ot_target)
+            fy_ot_target = None
+            if fys_ot_target:
+                fy_options_ot_target = {
+                    f"{fy}年度": fy for fy in fys_ot_target
+                }
+                fy_label_ot_target = st.selectbox(
+                    "年度（対象月ベース）",
+                    list(fy_options_ot_target.keys()),
+                    key='ot_target_fy',
+                )
+                fy_ot_target = fy_options_ot_target[fy_label_ot_target]
+            else:
+                st.warning("該当法人にデータがありません")
+
+        if fy_ot_target is not None:
+            target_months_ot_target = db.payroll_fiscal_year_months(
+                fy_ot_target,
+            )
+            with c3:
+                month_options_ot_target = {
+                    '年度合計': None,
+                    **{month: month for month in target_months_ot_target},
+                }
+                month_label_ot_target = st.selectbox(
+                    "対象期間",
+                    list(month_options_ot_target.keys()),
+                    key='ot_target_month',
+                )
+                month_ot_target = month_options_ot_target[
+                    month_label_ot_target
+                ]
+
+            records_ot_target = db.list_payroll_records_in_target_range(
+                corp_id=corp_id_ot_target,
+                start_target_ym=(
+                    month_ot_target or target_months_ot_target[0]
+                ),
+                end_target_ym=(
+                    month_ot_target or target_months_ot_target[-1]
+                ),
+                pay_type='給与',
+            )
+            records_ot_target = _filter_allowed_records(records_ot_target)
+
+            rows_ot_target = []
+            for record in records_ot_target:
+                overtime = db.collect_overtime_for_record(record)
+                rows_ot_target.append({
+                    '対象月': db.payroll_target_ym(
+                        record['year_month'], '給与',
+                    ),
+                    '法人': record['corp_name'],
+                    '社員番号': record['emp_code'],
+                    '氏名': record['emp_name'],
+                    '所属': _overtime_department_label(
+                        record.get('department'),
+                    ),
+                    '雇用区分': record['employment_type'] or '未設定',
+                    '普通残業(h)': overtime['普通残業時間'],
+                    '深夜残業(h)': overtime['深夜残業時間'],
+                    '休出残業(h)': overtime['休出残業時間'],
+                    '早出残業(h)': overtime['早出残業時間'],
+                    '残業時間合計(h)': overtime[
+                        '残業時間合計(法定外のみ)'
+                    ],
+                })
+
+            if not rows_ot_target:
+                st.warning("対象データがありません")
+            else:
+                df_ot_target = pd.DataFrame(rows_ot_target)
+                employee_keys_ot_target = [
+                    '法人', '社員番号', '氏名', '雇用区分',
+                ]
+                time_cols_ot_target = [
+                    '普通残業(h)', '深夜残業(h)', '休出残業(h)',
+                    '早出残業(h)', '残業時間合計(h)',
+                ]
+                # 対象期間内の最新月に登録された所属を一覧へ表示する。
+                employees_ot_target = (
+                    df_ot_target.sort_values('対象月')
+                    .groupby(employee_keys_ot_target, as_index=False)
+                    .agg({
+                        '所属': 'last',
+                        **{column: 'sum' for column in time_cols_ot_target},
+                    })
+                )
+                employees_ot_target = employees_ot_target[
+                    employees_ot_target['残業時間合計(h)'] > 0
+                ].sort_values(
+                    '残業時間合計(h)', ascending=False,
+                ).reset_index(drop=True)
+                employees_ot_target[time_cols_ot_target] = (
+                    employees_ot_target[time_cols_ot_target].round(2)
+                )
+                employees_ot_target.insert(
+                    0, '順位', range(1, len(employees_ot_target) + 1),
+                )
+                employees_ot_target = employees_ot_target[[
+                    '順位', '所属', '氏名', '法人', '社員番号', '雇用区分',
+                    *time_cols_ot_target,
+                ]]
+
+                period_caption_ot_target = (
+                    month_ot_target or f'{fy_ot_target}年度'
+                )
+                st.caption(
+                    f"{period_caption_ot_target}の残業対象者: "
+                    f"**{len(employees_ot_target)}名**"
+                )
+
+                if employees_ot_target.empty:
+                    st.info("残業が発生している職員はいません。")
+                else:
+                    styler_ot_target = (
+                        employees_ot_target.style
+                        .map(_color_corp, subset=['法人'])
+                        .map(_color_emp_type, subset=['雇用区分'])
+                        .format({
+                            column: '{:.2f}'
+                            for column in time_cols_ot_target
+                        })
+                        .set_properties(
+                            subset=['残業時間合計(h)'],
+                            **{
+                                'background-color': '#fef3c7',
+                                'font-weight': '700',
+                            },
+                        )
+                    )
+                    st.dataframe(
+                        styler_ot_target,
+                        width='stretch',
+                        hide_index=True,
+                        height=600,
+                    )
+
+                    csv_ot_target = employees_ot_target.to_csv(
+                        index=False,
+                    ).encode('utf-8-sig')
+                    label_safe_ot_target = (
+                        corp_label_ot_target
+                        .replace('🔀 ', '')
+                        .replace('🟢 ', '')
+                        .replace('🔵 ', '')
+                    )
+                    period_file_ot_target = (
+                        month_ot_target or f'{fy_ot_target}年度'
+                    )
+                    st.download_button(
+                        "💾 残業対象者 CSV",
+                        csv_ot_target,
+                        file_name=(
+                            f"残業対象者_{period_file_ot_target}_"
+                            f"{label_safe_ot_target}.csv"
+                        ),
+                        mime='text/csv',
+                    )
