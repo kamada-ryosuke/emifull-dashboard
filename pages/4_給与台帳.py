@@ -19,6 +19,7 @@ import streamlit as st
 import pandas as pd
 
 from lib import db, payroll_parser as pp, styling, auth
+from lib.payroll_excel import build_overtime_targets_excel
 
 styling.inject_global_css()
 auth.require_login()
@@ -2545,7 +2546,7 @@ with tabs["残業管理"]:
 # ============================================================
 with tabs["残業対象者"]:
     st.markdown(
-        "残業が発生している職員を、残業時間の多い順に表示します。"
+        "申請残業が発生している職員を、時間の多い順に表示します。"
         "所属が空欄または無所属の職員は **「のじぎく」** として集計します。"
     )
 
@@ -2616,12 +2617,7 @@ with tabs["残業対象者"]:
                     '所属': _overtime_department_label(
                         record.get('department'),
                     ),
-                    '雇用区分': record['employment_type'] or '未設定',
-                    '普通残業(h)': overtime['普通残業時間'],
-                    '深夜残業(h)': overtime['深夜残業時間'],
-                    '休出残業(h)': overtime['休出残業時間'],
-                    '早出残業(h)': overtime['早出残業時間'],
-                    '残業時間合計(h)': overtime[
+                    '申請残業(h)': overtime[
                         '残業時間合計(法定外のみ)'
                     ],
                 })
@@ -2631,11 +2627,7 @@ with tabs["残業対象者"]:
             else:
                 df_ot_target = pd.DataFrame(rows_ot_target)
                 employee_keys_ot_target = [
-                    '法人', '社員番号', '氏名', '雇用区分',
-                ]
-                time_cols_ot_target = [
-                    '普通残業(h)', '深夜残業(h)', '休出残業(h)',
-                    '早出残業(h)', '残業時間合計(h)',
+                    '法人', '社員番号', '氏名',
                 ]
                 # 対象期間内の最新月に登録された所属を一覧へ表示する。
                 employees_ot_target = (
@@ -2643,23 +2635,22 @@ with tabs["残業対象者"]:
                     .groupby(employee_keys_ot_target, as_index=False)
                     .agg({
                         '所属': 'last',
-                        **{column: 'sum' for column in time_cols_ot_target},
+                        '申請残業(h)': 'sum',
                     })
                 )
                 employees_ot_target = employees_ot_target[
-                    employees_ot_target['残業時間合計(h)'] > 0
+                    employees_ot_target['申請残業(h)'] > 0
                 ].sort_values(
-                    '残業時間合計(h)', ascending=False,
+                    '申請残業(h)', ascending=False,
                 ).reset_index(drop=True)
-                employees_ot_target[time_cols_ot_target] = (
-                    employees_ot_target[time_cols_ot_target].round(2)
+                employees_ot_target['申請残業(h)'] = (
+                    employees_ot_target['申請残業(h)'].round(2)
                 )
                 employees_ot_target.insert(
                     0, '順位', range(1, len(employees_ot_target) + 1),
                 )
                 employees_ot_target = employees_ot_target[[
-                    '順位', '所属', '氏名', '法人', '社員番号', '雇用区分',
-                    *time_cols_ot_target,
+                    '順位', '所属', '氏名', '申請残業(h)',
                 ]]
 
                 period_caption_ot_target = (
@@ -2673,20 +2664,21 @@ with tabs["残業対象者"]:
                 if employees_ot_target.empty:
                     st.info("残業が発生している職員はいません。")
                 else:
+                    def _color_application_overtime(value):
+                        if value >= 45:
+                            return 'background-color:#fecaca; color:#991b1b; font-weight:700'
+                        if value >= 30:
+                            return 'background-color:#fed7aa; color:#9a3412; font-weight:700'
+                        if value >= 20:
+                            return 'background-color:#fef3c7; color:#92400e; font-weight:700'
+                        return 'background-color:#dcfce7; color:#166534; font-weight:700'
+
                     styler_ot_target = (
                         employees_ot_target.style
-                        .map(_color_corp, subset=['法人'])
-                        .map(_color_emp_type, subset=['雇用区分'])
-                        .format({
-                            column: '{:.2f}'
-                            for column in time_cols_ot_target
-                        })
-                        .set_properties(
-                            subset=['残業時間合計(h)'],
-                            **{
-                                'background-color': '#fef3c7',
-                                'font-weight': '700',
-                            },
+                        .format({'申請残業(h)': '{:.2f}'})
+                        .map(
+                            _color_application_overtime,
+                            subset=['申請残業(h)'],
                         )
                     )
                     st.dataframe(
@@ -2696,9 +2688,6 @@ with tabs["残業対象者"]:
                         height=600,
                     )
 
-                    csv_ot_target = employees_ot_target.to_csv(
-                        index=False,
-                    ).encode('utf-8-sig')
                     label_safe_ot_target = (
                         corp_label_ot_target
                         .replace('🔀 ', '')
@@ -2708,12 +2697,20 @@ with tabs["残業対象者"]:
                     period_file_ot_target = (
                         month_ot_target or f'{fy_ot_target}年度'
                     )
+                    excel_ot_target = build_overtime_targets_excel(
+                        employees_ot_target,
+                        period_label=period_file_ot_target,
+                        corporation_label=label_safe_ot_target,
+                    )
                     st.download_button(
-                        "💾 残業対象者 CSV",
-                        csv_ot_target,
+                        "📥 色付きExcelをダウンロード",
+                        excel_ot_target,
                         file_name=(
                             f"残業対象者_{period_file_ot_target}_"
-                            f"{label_safe_ot_target}.csv"
+                            f"{label_safe_ot_target}.xlsx"
                         ),
-                        mime='text/csv',
+                        mime=(
+                            'application/vnd.openxmlformats-officedocument.'
+                            'spreadsheetml.sheet'
+                        ),
                     )
