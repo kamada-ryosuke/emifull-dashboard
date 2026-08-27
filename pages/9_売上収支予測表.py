@@ -10,6 +10,11 @@ import pandas as pd
 import streamlit as st
 
 from lib import auth, db, styling
+from lib.revenue_forecast_excel import (
+    AREA_TOTAL_LABELS,
+    build_revenue_forecast_xlsx,
+    prepare_revenue_forecast_detail_df,
+)
 from lib.revenue_forecast_access import facility_forecast_profile
 
 
@@ -380,7 +385,9 @@ def _build_forecast_facilities():
                 if _normalize_name(sub.get("display_name") or sub.get("excel_name"))
                 == _normalize_name("のじぎく加古川")
             ]
-            # 同じ損益グループの他3事業を混ぜず、のじぎく稲美列だけを採用する。
+            # 同じ損益グループには「こすもす稲美」「だがし屋キューブ」
+            # 「大西キッチン」も含まれるが、売上収支予測表の
+            # 「のじぎく稲美」には同施設の列だけを使用する。
             inami_subs = [
                 sub for sub in group_subs
                 if _normalize_name(sub.get("display_name") or sub.get("excel_name"))
@@ -557,6 +564,40 @@ def _has_any(index_set, ym, subunit_ids):
     return any((ym, sid) in index_set for sid in subunit_ids)
 
 
+def _revenue_basis_for_month(facility, ym, revenue_index,
+                             pl_production_index, has_revenue,
+                             has_pl_production,
+                             receipt_production_by_subunit,
+                             monthly_production_index):
+    """売上単価・販管費予測の採用判定に使う対象売上を返す。"""
+    gross_revenue = _sum_by_subunits(revenue_index, ym, facility["subunit_ids"])
+    has_month_revenue = _has_any(has_revenue, ym, facility["subunit_ids"])
+    production_revenue = 0
+    excludes_production = (
+        _normalize_name(facility.get("label"))
+        in PRODUCTION_REVENUE_EXCLUDED_FACILITIES
+    )
+    if excludes_production:
+        monthly_key = (facility["key"], ym)
+        if _has_any(has_pl_production, ym, facility["subunit_ids"]):
+            production_revenue = _sum_by_subunits(
+                pl_production_index, ym, facility["subunit_ids"]
+            )
+        elif monthly_key in monthly_production_index:
+            production_revenue = monthly_production_index[monthly_key]
+        else:
+            production_revenue = sum(
+                receipt_production_by_subunit.get((ym, sid), 0)
+                for sid in facility["subunit_ids"]
+            )
+    return {
+        "gross_revenue": gross_revenue,
+        "production_revenue": production_revenue,
+        "revenue": max(0, gross_revenue - production_revenue),
+        "has_revenue": has_month_revenue,
+    }
+
+
 def _build_usage_indexes(usage_rows, receipt_rows):
     usage_by_name = defaultdict(int)
     for row in usage_rows:
@@ -631,25 +672,16 @@ def _unit_price_basis(facility, target_ym, available_yms, revenue_index,
 
     basis_rows = []
     excluded_rows = []
-    excludes_production = _normalize_name(facility.get("label")) in PRODUCTION_REVENUE_EXCLUDED_FACILITIES
     for ym in candidate_yms:
-        gross_revenue = _sum_by_subunits(revenue_index, ym, facility["subunit_ids"])
-        has_month_revenue = _has_any(has_revenue, ym, facility["subunit_ids"])
-        production_revenue = 0
-        if excludes_production:
-            monthly_key = (facility["key"], ym)
-            if _has_any(has_pl_production, ym, facility["subunit_ids"]):
-                production_revenue = _sum_by_subunits(
-                    pl_production_index, ym, facility["subunit_ids"]
-                )
-            elif monthly_key in monthly_production_index:
-                production_revenue = monthly_production_index[monthly_key]
-            else:
-                production_revenue = sum(
-                    receipt_production_by_subunit.get((ym, sid), 0)
-                    for sid in facility["subunit_ids"]
-                )
-        revenue = max(0, gross_revenue - production_revenue)
+        revenue_basis = _revenue_basis_for_month(
+            facility, ym, revenue_index, pl_production_index,
+            has_revenue, has_pl_production,
+            receipt_production_by_subunit, monthly_production_index,
+        )
+        gross_revenue = revenue_basis["gross_revenue"]
+        production_revenue = revenue_basis["production_revenue"]
+        revenue = revenue_basis["revenue"]
+        has_month_revenue = revenue_basis["has_revenue"]
         has_usable_revenue = has_month_revenue and revenue > 0
         usage, source = _usage_for_facility_month(
             facility, ym, usage_by_name, receipt_by_subunit, forecast_usage_index
@@ -711,23 +743,56 @@ def _unit_price_basis(facility, target_ym, available_yms, revenue_index,
     }
 
 
-def _sga_basis(facility, target_ym, sga_index, has_sga):
+def _sga_basis(facility, target_ym, sga_index, has_sga,
+               revenue_index, pl_production_index, has_revenue,
+               has_pl_production, receipt_production_by_subunit,
+               monthly_production_index):
     candidate_yms = [_ym_shift(target_ym, -offset) for offset in range(6, 0, -1)]
     rows = []
     values = []
     for ym in candidate_yms:
-        if _has_any(has_sga, ym, facility["subunit_ids"]):
-            amount = _sum_by_subunits(sga_index, ym, facility["subunit_ids"])
-            rows.append({"ym": ym, "amount": amount, "status": "採用"})
+        has_month_sga = _has_any(has_sga, ym, facility["subunit_ids"])
+        amount = (
+            _sum_by_subunits(sga_index, ym, facility["subunit_ids"])
+            if has_month_sga else None
+        )
+        revenue_basis = _revenue_basis_for_month(
+            facility, ym, revenue_index, pl_production_index,
+            has_revenue, has_pl_production,
+            receipt_production_by_subunit, monthly_production_index,
+        )
+        revenue = revenue_basis["revenue"]
+        has_usable_revenue = revenue_basis["has_revenue"] and revenue > 0
+        has_usable_sga = has_month_sga and amount is not None and amount > 0
+        if has_usable_revenue and has_usable_sga:
+            rows.append({
+                "ym": ym, "revenue": revenue,
+                "amount": amount, "status": "採用",
+            })
             values.append(amount)
+        elif not has_usable_revenue and has_usable_sga:
+            rows.append({
+                "ym": ym, "revenue": revenue if revenue_basis["has_revenue"] else None,
+                "amount": amount, "status": "除外: 売上なし",
+            })
+        elif has_usable_revenue:
+            rows.append({
+                "ym": ym, "revenue": revenue,
+                "amount": amount, "status": "除外: 販管費なし",
+            })
         else:
-            rows.append({"ym": ym, "amount": None, "status": "損益データなし"})
+            rows.append({
+                "ym": ym,
+                "revenue": revenue if revenue_basis["has_revenue"] else None,
+                "amount": amount,
+                "status": "除外: 売上・販管費なし",
+            })
     if not values:
         return {"forecast": None, "rows": rows, "source_label": "未算出", "months_count": 0}
     return {
         "forecast": sum(values) / len(values),
         "rows": rows,
-        "source_label": f"直近6カ月平均（採用{len(values)}カ月）",
+        "source_label": f"直近6カ月内の売上・販管費あり月平均（採用{len(values)}カ月）",
         "months_count": len(values),
     }
 
@@ -818,7 +883,12 @@ def _forecast_summary(facility, target_ym, days, daily_by_date, today, available
         receipt_production_by_subunit, monthly_production_index,
         forecast_usage_index,
     )
-    sga = _sga_basis(facility, target_ym, sga_index, has_sga)
+    sga = _sga_basis(
+        facility, target_ym, sga_index, has_sga,
+        revenue_index, pl_production_index, has_revenue,
+        has_pl_production, receipt_production_by_subunit,
+        monthly_production_index,
+    )
     unit_price = unit["unit_price"]
     sga_forecast = sga["forecast"]
 
@@ -1259,12 +1329,13 @@ def _detail_basis_tables(summary):
         st.markdown("#### 販管費予測の根拠")
         sga = summary["sga"]
         if sga["forecast"] is None:
-            st.warning("販管費予測に使用できる過去データがありません。損益データの取込状況を確認してください。")
+            st.warning("売上と販管費が両方ある過去月がないため、販管費予測を算出できません。損益データの取込状況を確認してください。")
         else:
             st.caption(f"{sga.get('source_label', '直近6カ月平均')} ／ 採用平均: {_fmt_k_yen(sga['forecast'])}")
         rows = [
             {
                 "参照年月": r["ym"],
+                "売上(千円)": None if r.get("revenue") is None else _yen_to_thousand(r["revenue"]),
                 "販管費(千円)": None if r["amount"] is None else _yen_to_thousand(r["amount"]),
                 "状態": r["status"],
             }
@@ -1799,7 +1870,7 @@ def _overview_total_item(label, value, note="", css=""):
     )
 
 
-def _render_all_facilities(summaries):
+def _render_all_facilities(summaries, target_ym):
     st.markdown("### 全施設一覧")
     rows = [_summary_to_row(summary) for summary in summaries]
     df = pd.DataFrame(rows)
@@ -1863,7 +1934,9 @@ def _render_all_facilities(summaries):
 
     def row_style(row):
         styles = [""] * len(row)
-        if "赤字予測" in str(row.get("状態")):
+        if str(row.get("施設名") or "") in AREA_TOTAL_LABELS:
+            styles = ["background-color:#d9eaf7;font-weight:700"] * len(row)
+        elif "赤字予測" in str(row.get("状態")):
             styles = ["background-color:#fff1f2"] * len(row)
         elif "実績未入力" in str(row.get("状態")):
             styles = ["background-color:#fff7ed"] * len(row)
@@ -1871,9 +1944,21 @@ def _render_all_facilities(summaries):
 
     formatters = {col: "{:,.0f}" for col in amount_cols}
     formatters.update({col: "{:.1f}%" for col in pct_cols})
+    detail_df = prepare_revenue_forecast_detail_df(pd.DataFrame(rows))
+    excel_bytes = build_revenue_forecast_xlsx(detail_df, target_ym)
+    st.download_button(
+        "色付きExcelをダウンロード",
+        data=excel_bytes,
+        file_name=f"売上収支予測_全施設_{target_ym}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        type="primary",
+        use_container_width=True,
+        key=f"forecast_overview_excel_{target_ym}",
+    )
+    st.caption("指定した施設順・エリア合計付きのExcelをダウンロードできます。")
     with st.expander("詳細テーブルを開く", expanded=False):
         st.dataframe(
-            df.style.apply(row_style, axis=1).format(formatters, na_rep="－"),
+            detail_df.style.apply(row_style, axis=1).format(formatters, na_rep="－"),
             width="stretch",
             hide_index=True,
             height=520,
@@ -3396,7 +3481,7 @@ summaries = [
 ]
 
 if view_mode == "全施設一覧":
-    _render_all_facilities(summaries)
+    _render_all_facilities(summaries, target_ym)
 else:
     selected_facility = selected_facility or facilities[0]
     summary = next(s for s in summaries if s["facility"]["key"] == selected_facility["key"])
