@@ -10,10 +10,12 @@ import html
 import os
 import re
 import zipfile
+from datetime import date
 from collections import defaultdict
 import streamlit as st
 import pandas as pd
 from lib import db, styling, auth, pl_parser, journal_parser
+from lib.pl_annual_export import build_annual_pl_xlsx
 
 
 # =============================================================
@@ -1295,8 +1297,8 @@ def _reports_csv_bytes(rows):
 # =============================================================
 # タブ
 # =============================================================
-tab_summary, tab_ratio, tab_yoy, tab_meeting, tab_report, tab_sga_trend, tab_usage_unit = st.tabs([
-    "📊 サマリ", "🔍 構成比", "📅 比較", "🏛️ 業績会議", "📝 報告書提出", "📈 販管費推移", "💴 利用単価",
+tab_summary, tab_ratio, tab_yoy, tab_meeting, tab_report, tab_sga_trend, tab_usage_unit, tab_annual_export = st.tabs([
+    "📊 サマリ", "🔍 構成比", "📅 比較", "🏛️ 業績会議", "📝 報告書提出", "📈 販管費推移", "💴 利用単価", "📥 年度PL出力",
 ])
 
 
@@ -4461,6 +4463,87 @@ with tab_usage_unit:
                 st.success(f"{unit_ym} の利用単価入力を保存しました（{saved_count}施設）。")
                 _clear_pl_caches()
                 st.rerun()
+
+
+# =============================================================
+# TAB 8: 年度PL出力（4月～翌3月）
+# =============================================================
+with tab_annual_export:
+    st.markdown("##### 年度PL出力 — 施設別・法人別の月次損益")
+    st.caption(
+        "2023年度以降の月次PLをExcelで出力します。"
+        "1ファイル内に法人合算タブと各施設タブがあり、"
+        "各タブの右端に年度合計を表示します。"
+    )
+
+    data_fiscal_years = [
+        db.pl_fiscal_year_of(ym, start_month=db.PL_FISCAL_START_MONTH_OPS)
+        for ym in existing_yms
+        if ym >= '2023-04'
+    ]
+    today = date.today()
+    current_fiscal_year = today.year if today.month >= 4 else today.year - 1
+    latest_fiscal_year = max([current_fiscal_year, *data_fiscal_years, 2023])
+    fiscal_year_options = list(range(2023, latest_fiscal_year + 1))
+    selected_fiscal_year = st.selectbox(
+        "出力する年度",
+        fiscal_year_options,
+        index=len(fiscal_year_options) - 1,
+        format_func=lambda year: f"{year}年度（{year}年4月～{year + 1}年3月）",
+        key='pl_annual_export_fy',
+    )
+
+    annual_months = db.pl_fiscal_year_months(
+        selected_fiscal_year,
+        start_month=db.PL_FISCAL_START_MONTH_OPS,
+    )
+    imported_annual_months = [ym for ym in annual_months if ym in existing_yms]
+    st.info(
+        f"{selected_fiscal_year}年度: "
+        f"{annual_months[0]} ～ {annual_months[-1]} ／ "
+        f"取込済み {len(imported_annual_months)}/12か月"
+    )
+
+    annual_sheet_specs = []
+    if medical_subunit_ids:
+        annual_sheet_specs.append({
+            'label': '医療法人社団EMIFULL合算',
+            'subunit_ids': medical_subunit_ids,
+        })
+    if npo_subunit_ids:
+        annual_sheet_specs.append({
+            'label': '特定非営利活動法人EMIFULL合算',
+            'subunit_ids': npo_subunit_ids,
+        })
+    annual_sheet_specs.extend(
+        {
+            'label': facility['name'],
+            'subunit_ids': _facility_subunit_ids(facility),
+        }
+        for facility in REPORT_FACILITIES
+        if _facility_subunit_ids(facility)
+    )
+
+    annual_entries = db.fetch_pl_entries(year_months=annual_months)
+    annual_xlsx = build_annual_pl_xlsx(
+        selected_fiscal_year,
+        annual_entries,
+        db.list_pl_accounts(),
+        annual_sheet_specs,
+        db.PL_CATEGORY_LABELS,
+    )
+    st.download_button(
+        f"⬇️ {selected_fiscal_year}年度PLをExcelでダウンロード",
+        data=annual_xlsx,
+        file_name=f"{selected_fiscal_year}年度_施設別・法人別PL.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        type='primary',
+        key=f'pl_annual_export_download_{selected_fiscal_year}',
+    )
+    st.caption(
+        "Excelの各タブは「区分 / 勘定科目 / 4月～翌3月 / 年度合計」で構成されます。"
+        "空欄の月は未取込です。"
+    )
 
 # =============================================================
 # 削除（管理者用 / フッタ）
