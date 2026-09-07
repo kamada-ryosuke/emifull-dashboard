@@ -282,6 +282,15 @@ if _is_admin:
         help="普段の閲覧を軽くするため、必要な時だけ開きます。",
     )
 
+@st.cache_resource(show_spinner=False)
+def _ensure_import_masters_once():
+    db.ensure_pl_import_masters()
+    _c_list_pl_accounts.clear()
+    return True
+
+if show_import_tools:
+    _ensure_import_masters_once()
+
 # =============================================================
 # 取込セクション
 # =============================================================
@@ -305,7 +314,7 @@ if show_import_tools:
         default_idx = ym_options.index("2024-06") if "2024-06" in ym_options else 0
         fiscal_start_ym = st.selectbox(
             "期首年月", ym_options, index=default_idx,
-            help="第5期(2024/6開始)なら 2024-06。第6期なら 2025-06。",
+            help="資料の対象期間の最初の年月を選択してください。2025年6月〜2026年5月なら 2025-06。",
         )
     with c2:
         fiscal_label = st.text_input(

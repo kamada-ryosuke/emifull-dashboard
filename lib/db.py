@@ -2511,6 +2511,16 @@ def init_pl_schema():
 
 # === 損益マスタ参照 ===
 
+def ensure_pl_import_masters():
+    """既存クラウドDBへ不足する取込科目だけ追加。既存設定は変更しない。"""
+    with get_conn() as conn:
+        for name, category, is_total, order in PL_ACCOUNTS_SEED:
+            conn.execute("""
+                INSERT INTO pl_accounts (name, category, is_total, display_order)
+                VALUES (?, ?, ?, ?) ON CONFLICT(name) DO NOTHING
+            """, (name, category, is_total, order))
+
+
 def list_pl_groups(active_only=True):
     sql = "SELECT * FROM pl_groups"
     if active_only:
@@ -2937,6 +2947,26 @@ def replace_pl_entries(year_month, subunit_id, entries):
     entries: [(account_id, amount), ...]
     None や 0 も含めて投入する（ただし None は 0 として扱う）。"""
     with get_conn() as conn:
+        # 月単位の置換と同じトランザクション内で、変更前の全科目を保存する。
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS pl_entry_backups (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                subunit_id INTEGER NOT NULL,
+                year_month TEXT NOT NULL,
+                entries_json TEXT NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        previous = [dict(row) for row in conn.execute(
+            "SELECT account_id, amount FROM pl_entries WHERE year_month = ? AND subunit_id = ? ORDER BY account_id",
+            (year_month, subunit_id),
+        ).fetchall()]
+        if previous:
+            import json
+            conn.execute(
+                "INSERT INTO pl_entry_backups (subunit_id, year_month, entries_json) VALUES (?, ?, ?)",
+                (subunit_id, year_month, json.dumps(previous)),
+            )
         conn.execute(
             "DELETE FROM pl_entries WHERE year_month = ? AND subunit_id = ?",
             (year_month, subunit_id)
