@@ -2231,16 +2231,18 @@ with tabs["残業管理"]:
                 # 年度順（4月→翌3月）で表示
                 agg_o = agg_o.sort_values('対象月').reset_index(drop=True)
                 # 合計行（先頭）
-                total_row_o = {'対象月': '合計', '残業発生 人数': '-'}
+                total_row_o = {'対象月': '合計', '残業発生 人数': pd.NA}
                 for c in time_cols + money_cols_ot:
                     total_row_o[c] = float(agg_o[c].sum())
                 agg_with_total = pd.concat(
                     [pd.DataFrame([total_row_o]), agg_o], ignore_index=True
                 )
+                agg_with_total['残業発生 人数'] = agg_with_total['残業発生 人数'].astype('Int64')
 
                 fmt_ot = {c: '{:.2f}' for c in time_cols}
                 fmt_ot.update({c: '{:,.0f}' for c in money_cols_ot})
-                styler = agg_with_total.style.format(fmt_ot)
+                fmt_ot['残業発生 人数'] = '{:,.0f}'
+                styler = agg_with_total.style.format(fmt_ot, na_rep='-')
                 styler = styler.set_properties(
                     subset=['残業時間合計(h)'],
                     **{'background-color': '#fef3c7', 'font-weight': '700'},
