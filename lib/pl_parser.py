@@ -414,7 +414,7 @@ def build_subunit_lookup(subunits) -> dict[str, str]:
     return lookup
 
 
-def import_parse_result_to_db(parse_result: ParseResult, db_module) -> dict:
+def import_parse_result_to_db(parse_result: ParseResult, db_module, progress=None) -> dict:
     """ParseResult を DB に書き込む。
     戻り値: {'sheets': N, 'subunits': N, 'entries': N, 'year_months': [...], 'errors': [...]}
     """
@@ -439,6 +439,8 @@ def import_parse_result_to_db(parse_result: ParseResult, db_module) -> dict:
     if summary['errors']:
         return summary
 
+    if progress:
+        progress(0, len(seen_scopes), '部門・科目マスタを確認中')
     # 名前 → ID 解決を一度キャッシュ
     accounts = {a['name']: a['id'] for a in db_module.list_pl_accounts()}
     subunits = {s['excel_name']: s['id'] for s in db_module.list_pl_subunits()}
@@ -478,9 +480,15 @@ def import_parse_result_to_db(parse_result: ParseResult, db_module) -> dict:
                     continue
                 seen_by_acc[acc_id] = amount
             entries_resolved = list(seen_by_acc.items())
+            if progress:
+                progress(summary['subunits'], len(seen_scopes),
+                         f'{sr.year_month} / {excel_name} を保存中')
             n = db_module.replace_pl_entries(sr.year_month, sub_id, entries_resolved)
             summary['subunits'] += 1
             summary['entries'] += n
+            if progress:
+                progress(summary['subunits'], len(seen_scopes),
+                         f'{sr.year_month} / {excel_name} 保存完了')
 
     summary['year_months'] = sorted(yms_seen)
     return summary

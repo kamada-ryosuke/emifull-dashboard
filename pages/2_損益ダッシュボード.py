@@ -18,6 +18,16 @@ from lib import db, styling, auth, pl_parser, journal_parser
 from lib.pl_annual_export import build_annual_pl_xlsx
 
 
+def _run_pl_import(parsed):
+    progress_bar = st.progress(0, text='取込準備中')
+
+    def report(done, total, message):
+        progress_bar.progress(done / max(total, 1), text=f'{done}/{total}部門月: {message}')
+        print(f'PL import progress {done}/{total}: {message}', flush=True)
+
+    return pl_parser.import_parse_result_to_db(parsed, db, progress=report)
+
+
 # =============================================================
 # 読み取り専用DBアクセスのキャッシュ層
 #   クラウドDB(Turso)への往復回数を減らして表示を高速化する。
@@ -417,7 +427,7 @@ if show_import_tools:
             if confirmed and chosen_sheets:
                 filtered = pl_parser.ParseResult(fiscal_start_ym=fiscal_start_ym)
                 filtered.sheets = chosen_sheets
-                summary = pl_parser.import_parse_result_to_db(filtered, db)
+                summary = _run_pl_import(filtered)
                 if summary['errors']:
                     for error in summary['errors']:
                         st.error(error)
@@ -477,7 +487,7 @@ if show_import_tools:
             st.warning(error)
         if st.button('月次推移CSVを取込実行', key='pl_monthly_import',
                      disabled=bool(errors) or not combined.sheets):
-            summary = pl_parser.import_parse_result_to_db(combined, db)
+            summary = _run_pl_import(combined)
             if summary['errors']:
                 for error in summary['errors']:
                     st.error(error)
@@ -3556,9 +3566,10 @@ with tab_meeting:
             return styles
 
         fmt_dict = {col: _fmt for col in df_section.columns if col != ('', '部門')}
-        styled_section = (
-            display_df.style.apply(_style_row, axis=1).format(fmt_dict, na_rep='－')
-        )
+        # 表示用の列型を文字列に揃える。集計とExcel出力は数値のdf_sectionを使う。
+        for col, formatter in fmt_dict.items():
+            display_df[col] = display_df[col].map(formatter)
+        styled_section = display_df.style.apply(_style_row, axis=1)
         row_count = len(df_section)
         height = min(38 * (row_count + 2) + 5, 900)
 
@@ -4152,7 +4163,7 @@ with tab_meeting:
         for i, col in enumerate(row.index):
             if col == ('科目', ''):
                 continue
-            v = row[col]
+            v = df_full_pl.at[row.name, col]
             if v is None or pd.isna(v):
                 continue
             try:
@@ -4164,9 +4175,10 @@ with tab_meeting:
         return styles
 
     fmt_full = {col: _fmt for col in df_full_pl.columns if col != ('科目', '')}
-    styled_full_pl = (
-        df_full_pl.style.apply(_style_full_pl, axis=1).format(fmt_full, na_rep='－')
-    )
+    display_full_pl = df_full_pl.copy()
+    for col, formatter in fmt_full.items():
+        display_full_pl[col] = display_full_pl[col].map(formatter)
+    styled_full_pl = display_full_pl.style.apply(_style_full_pl, axis=1)
 
     # 高さは行数 × 35 (上限1000)
     h = min(35 * (len(df_full_pl) + 3) + 10, 1000)
