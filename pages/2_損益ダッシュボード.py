@@ -352,6 +352,21 @@ if show_import_tools:
                     )
                     chosen_sheets = [sheet_options[chosen_label]]
 
+            # 決算版と通常版の同月シートを暗黙に上書きしない。
+            unresolved_months = False
+            if not upload_mode.startswith("B"):
+                for ym in sorted({sheet.year_month for sheet in valid_sheets}):
+                    candidates = [sheet for sheet in valid_sheets if sheet.year_month == ym]
+                    if len(candidates) > 1:
+                        selected = st.selectbox(
+                            f"{ym} は複数シートがあります。取込む1シートを選択してください",
+                            [sheet.sheet_name for sheet in candidates], index=None,
+                            key=f'pl_duplicate_sheet_{ym}',
+                        )
+                        unresolved_months = unresolved_months or selected is None
+                        chosen_sheets = [sheet for sheet in chosen_sheets
+                            if sheet.year_month != ym or sheet.sheet_name == selected]
+
             st.markdown("##### 解析結果プレビュー")
             preview_rows = []
             for sr in chosen_sheets:
@@ -381,17 +396,22 @@ if show_import_tools:
             if unparsed_cells_all:
                 st.error(
                     f"🚨 数値として読めなかったセルが {len(unparsed_cells_all)} 件あり、"
-                    "0円として扱われます。元のExcelを確認してから取込んでください。"
+                    "取込は停止します。元のExcelを修正して再度読み込んでください。"
                 )
                 with st.expander("数値化できなかったセルの一覧"):
                     for c in unparsed_cells_all[:100]:
                         st.text(c)
 
-            confirmed = st.button("🚀 この内容で取込を実行", type='primary', key='pl_import_run')
+            confirmed = st.button("🚀 この内容で取込を実行", type='primary', key='pl_import_run',
+                disabled=unresolved_months or bool(unknown_rows) or bool(unparsed_cells_all))
             if confirmed and chosen_sheets:
                 filtered = pl_parser.ParseResult(fiscal_start_ym=fiscal_start_ym)
                 filtered.sheets = chosen_sheets
                 summary = pl_parser.import_parse_result_to_db(filtered, db)
+                if summary['errors']:
+                    for error in summary['errors']:
+                        st.error(error)
+                    st.stop()
                 _clear_pl_caches()
                 db.record_pl_import(
                     filename=uploaded.name, fiscal_label=fiscal_label,
@@ -409,6 +429,56 @@ if show_import_tools:
                         for e in summary['errors']:
                             st.text(e)
                 st.rerun()
+
+# 月次推移CSVは、列が部門ではなく年月。ファイルごとに部門を明示する。
+if show_import_tools:
+  with st.expander("📥 月次推移CSV取込（1部門・複数月）", expanded=False):
+    st.caption("ファイル名が同じでも部門が異なる場合があります。取込先を必ず選択してください。期間累計は月別金額の照合に使い、加算しません。")
+    monthly_files = st.file_uploader("月次推移CSV", type=['csv'],
+        accept_multiple_files=True, key='pl_monthly_csv')
+    if monthly_files:
+        lookup = pl_parser.build_subunit_lookup(_c_list_pl_subunits())
+        accounts = [a['name'] for a in _c_list_pl_accounts()]
+        combined = pl_parser.ParseResult(fiscal_start_ym='(月次CSV)')
+        errors = []
+        previews = []
+        for i, uploaded in enumerate(monthly_files):
+            destination = st.selectbox(f"{uploaded.name} の取込先部門",
+                ['選択してください'] + sorted(set(lookup.values())),
+                key=f'pl_monthly_destination_{i}_{uploaded.name}')
+            parsed = pl_parser.parse_pl_monthly_csv(io.BytesIO(uploaded.getvalue()),
+                uploaded.name, lookup, accounts, destination)
+            if parsed.error:
+                errors.append(f'{uploaded.name}: {parsed.error}')
+            for sr in parsed.sheets:
+                combined.sheets.append(sr)
+                previews.append({'ファイル': uploaded.name, '部門': destination,
+                    '年月': sr.year_month, '科目数': sum(map(len, sr.entries.values())),
+                    '未登録科目': ', '.join(sr.unknown_account_rows),
+                    '金額エラー': len(sr.unparsed_cells)})
+                if sr.unknown_account_rows or sr.unparsed_cells:
+                    errors.append(f'{uploaded.name}/{sr.year_month}: 未登録科目または金額エラーがあります')
+        scopes = [(sr.year_month, name) for sr in combined.sheets for name in sr.entries]
+        if len(scopes) != len(set(scopes)):
+            errors.append('同じ年月・部門のデータが重複しています。重複ファイルを除くか取込先部門を修正してください。')
+        if previews:
+            st.dataframe(pd.DataFrame(previews), hide_index=True, width='stretch')
+        for error in dict.fromkeys(errors):
+            st.warning(error)
+        if st.button('月次推移CSVを取込実行', key='pl_monthly_import',
+                     disabled=bool(errors) or not combined.sheets):
+            summary = pl_parser.import_parse_result_to_db(combined, db)
+            if summary['errors']:
+                for error in summary['errors']:
+                    st.error(error)
+            else:
+                db.record_pl_import(filename=', '.join(f.name for f in monthly_files),
+                    fiscal_label='月次CSV', fiscal_start_ym=min(summary['year_months']),
+                    sheet_count=summary['sheets'], entry_count=summary['entries'],
+                    year_months_list=summary['year_months'])
+                _clear_pl_caches()
+                st.success(f"取込完了: {summary['subunits']}部門月 / {summary['entries']}件")
+
 
 # =============================================================
 # 旧形式 CSV取込（試算表：損益計算書）
@@ -467,7 +537,7 @@ if show_import_tools:
         if unparsed_all:
             st.error(
                 f"🚨 数値として読めなかったセルが {len(unparsed_all)} 件あり、"
-                "0円として扱われます。元のCSVを確認してから取込んでください。"
+                "取込は停止します。元のCSVを修正して再度読み込んでください。"
             )
             with st.expander("数値化できなかったセルの一覧"):
                 for c in unparsed_all[:100]:
@@ -484,10 +554,15 @@ if show_import_tools:
         valid_csv = [sr for sr in csv_results if sr.year_month and sr.entries]
         st.write(f"取込対象: **{len(valid_csv)}** ファイル（{len(csv_uploaded) - len(valid_csv)} はスキップ）")
 
-        if valid_csv and st.button("🚀 CSVを取込実行", type='primary', key='pl_csv_import_run'):
+        if valid_csv and st.button("🚀 CSVを取込実行", type='primary', key='pl_csv_import_run',
+                disabled=bool(unk_rows_all) or bool(unparsed_all)):
             filtered = pl_parser.ParseResult(fiscal_start_ym='(CSV)')
             filtered.sheets = valid_csv
             summary = pl_parser.import_parse_result_to_db(filtered, db)
+            if summary['errors']:
+                for error in summary['errors']:
+                    st.error(error)
+                st.stop()
             _clear_pl_caches()
             db.record_pl_import(
                 filename=f"CSV×{len(valid_csv)}件: " + ', '.join(s.sheet_name[:30] for s in valid_csv[:3]) + ('...' if len(valid_csv) > 3 else ''),

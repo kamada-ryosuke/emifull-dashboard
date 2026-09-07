@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import csv
 import io
+import math
 import re
 import unicodedata
 from dataclasses import dataclass, field
@@ -39,7 +40,7 @@ def parse_amount(value) -> tuple[int, bool]:
     if value is None or value == '':
         return 0, True
     if isinstance(value, (int, float)):
-        return int(round(float(value))), True
+        return (int(round(value)), True) if math.isfinite(value) else (0, False)
     s = unicodedata.normalize('NFKC', str(value)).strip()
     if s in ('', '-', '−'):
         return 0, True
@@ -53,7 +54,7 @@ def parse_amount(value) -> tuple[int, bool]:
     s = s.replace(',', '').replace(' ', '').replace('円', '')
     try:
         amount = int(round(float(s)))
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, OverflowError):
         return 0, False
     return -amount if negative else amount, True
 
@@ -208,7 +209,7 @@ def _build_account_row_map(ws, header_row: int, known_account_names: set[str]) -
             continue
         if v in known_account_names:
             row_map[v] = r
-        else:
+        elif any(ws.cell(r, c).value not in (None, '') for c in range(2, ws.max_column + 1)):
             unknown.append(v)
     return row_map, unknown
 
@@ -384,7 +385,8 @@ def parse_pl_csv(
         if not account_name:
             continue
         if account_name not in known_accounts_set:
-            unknown_rows.append(account_name)
+            if any(c < len(r) and r[c].strip() for c in col_map.values()):
+                unknown_rows.append(account_name)
             continue
         for excel_name, c_idx in col_map.items():
             if c_idx >= len(r):
@@ -422,9 +424,34 @@ def import_parse_result_to_db(parse_result: ParseResult, db_module) -> dict:
         summary['errors'].append(parse_result.error)
         return summary
 
+    # 破壊的な月別置換の前に全件検証。同月・同部門の暗黙の上書きを防ぐ。
+    seen_scopes = set()
+    for sr in parse_result.sheets:
+        if sr.skipped_reason or sr.year_month is None or not sr.entries:
+            continue
+        if sr.unparsed_cells or sr.unknown_account_rows:
+            summary['errors'].append(f"{sr.sheet_name}: 未解決の科目または金額があります")
+        for name in sr.entries:
+            scope = (sr.year_month, name)
+            if scope in seen_scopes:
+                summary['errors'].append(f"{sr.year_month}/{name}: 取込対象が重複しています。シートを1つ選択してください")
+            seen_scopes.add(scope)
+    if summary['errors']:
+        return summary
+
     # 名前 → ID 解決を一度キャッシュ
     accounts = {a['name']: a['id'] for a in db_module.list_pl_accounts()}
     subunits = {s['excel_name']: s['id'] for s in db_module.list_pl_subunits()}
+
+    for sr in parse_result.sheets:
+        for name, pairs in sr.entries.items():
+            if name not in subunits:
+                summary['errors'].append(f'サブ部門マスタに無い: {name}')
+            for account, amount in pairs:
+                if account not in accounts:
+                    summary['errors'].append(f'科目マスタに無い: {account}')
+    if summary['errors']:
+        return summary
 
     yms_seen = set()
     for sr in parse_result.sheets:
@@ -457,3 +484,86 @@ def import_parse_result_to_db(parse_result: ParseResult, db_module) -> dict:
 
     summary['year_months'] = sorted(yms_seen)
     return summary
+
+
+def parse_pl_monthly_csv(file_or_path, filename, subunit_lookup, known_accounts,
+                         subunit_name=None) -> ParseResult:
+    """月次推移CSV。部門はタイトルから推測せず、利用者が明示する。"""
+    result = ParseResult(fiscal_start_ym='(月次CSV)')
+    canonical = _resolve_subunit(subunit_name, subunit_lookup)
+    if canonical is None:
+        result.error = '月次推移CSVの取込先部門を選択してください'
+        return result
+    try:
+        if hasattr(file_or_path, 'read'):
+            raw = file_or_path.read()
+        else:
+            with open(file_or_path, 'rb') as source:
+                raw = source.read()
+        if isinstance(raw, bytes):
+            try:
+                text = raw.decode('utf-8-sig')
+            except UnicodeDecodeError:
+                text = raw.decode('cp932')
+        else:
+            text = raw
+        rows = list(csv.reader(io.StringIO(text)))
+    except (OSError, UnicodeError, csv.Error) as exc:
+        result.error = f'CSV読み込みエラー: {exc}'
+        return result
+    header_idx = None
+    for i, row in enumerate(rows[:10]):
+        month_cols = [(c, v.strip()) for c, v in enumerate(row)
+                      if re.fullmatch(r'\d{4}-(?:0[1-9]|1[0-2])', v.strip())]
+        if month_cols:
+            header_idx = i
+            break
+    if header_idx is None:
+        result.error = '月次推移の年月ヘッダが見つかりません'
+        return result
+    months = [ym for _, ym in month_cols]
+    if len(months) != len(set(months)):
+        result.error = '年月列が重複しています'
+        return result
+    first_month_col = month_cols[0][0]
+    total_cols = [i for i, v in enumerate(rows[header_idx]) if v.strip() == '期間累計']
+    known = set(known_accounts)
+    sheets = {ym: SheetParseResult(sheet_name=filename, year_month=ym,
+              matched_subunits=[canonical], entries={canonical: []}) for ym in months}
+    values_by_account = {}
+    for row_no, row in enumerate(rows[header_idx + 1:], header_idx + 2):
+        # インデント付きCSVも、金額列より前の最後の非空セルを科目名として読む。
+        labels = [v.strip() for v in row[:first_month_col] if v.strip()]
+        if not labels:
+            continue
+        name = labels[-1]
+        cells = [row[c].strip() if c < len(row) else '' for c, _ in month_cols]
+        if not any(cells):
+            continue  # セクション見出し
+        if name not in known:
+            for sr in sheets.values():
+                sr.unknown_account_rows.append(name)
+            continue
+        amounts = []
+        for (col, ym), cell in zip(month_cols, cells):
+            amount, ok = parse_amount(cell)
+            if not ok or col >= len(row) or cell == '':
+                sheets[ym].unparsed_cells.append(f'{row_no}行/{name}: {cell!r}')
+            amounts.append(amount)
+        if name in values_by_account:
+            if values_by_account[name] != amounts:
+                result.error = f'{name}: 同名科目の金額が異なります（{row_no}行）'
+                return result
+            continue  # 法人税等の合計・明細が同額の場合は一度だけ保存
+        values_by_account[name] = amounts
+        for col in total_cols:
+            total, ok = parse_amount(row[col] if col < len(row) else None)
+            if col >= len(row) or not ok or total != sum(amounts):
+                result.error = f'{name}: 月別金額と期間累計が一致しません（{row_no}行）'
+                return result
+        for ym, amount in zip(months, amounts):
+            sheets[ym].entries[canonical].append((name, amount))
+    if not values_by_account:
+        result.error = '取込可能な金額データがありません'
+    result.sheets = list(sheets.values())
+    return result
