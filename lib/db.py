@@ -1826,6 +1826,12 @@ PL_ACCOUNTS_SEED = [
     ('賞与引当金繰入', 'sga', 0, 102),
     ('給食費', 'sga', 0, 103),
     ('印刷製本費', 'sga', 0, 104),
+    ('地代家賃', 'sga', 0, 105),
+    ('他勘定振替（販管費）', 'sga', 0, 106),
+    ('貸倒繰入額(販)', 'sga', 0, 107),
+    # 特別利益の内訳。合計とは別カテゴリにして二重集計を防ぐ。
+    ('固定資産売却益', 'special_gain_detail', 0, 91),
+    ('売上原価', 'cogs_summary', 1, 16),
 ]
 
 # カテゴリの表示用ラベル
@@ -1844,6 +1850,8 @@ PL_CATEGORY_LABELS = {
     'non_op_exp': '営業外費用',
     'ordinary_profit': '経常損益',
     'special_gain': '特別利益',
+    'special_gain_detail': '特別利益内訳',
+    'cogs_summary': '売上原価合計',
     'special_loss': '特別損失',
     'pretax_income': '税引前損益',
     'tax': '法人税等',
