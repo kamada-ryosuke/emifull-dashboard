@@ -286,6 +286,7 @@ if _is_admin:
 def _ensure_import_masters_once():
     db.ensure_pl_import_masters()
     _c_list_pl_accounts.clear()
+    _c_list_pl_subunits.clear()
     return True
 
 if show_import_tools:
@@ -979,6 +980,7 @@ EXCLUDED_ROWS = [
 NPO_REPORT_STRUCTURE = [
     ("高砂", [
         ("のじぎく高砂", ["のじぎく高砂"]),
+        ("高砂カフェ", ["高砂カフェ"]),
     ]),
     ("稲美", [
         ("のじぎく稲美",    ["のじぎく稲美", "キッチン"]),  # 大西キッチンを合算

@@ -1708,7 +1708,8 @@ PL_GROUPS_SEED = [
      [("NOAH（加古川）", "NOAH（加古川）")], None),
     # === NPO法人EMIFULL (旧: NPO法人のじぎく高砂、2026/1改称) ===
     ("011", "のじぎく高砂",
-     [("のじぎく高砂", "のじぎく高砂")], "NPO"),
+     [("のじぎく高砂", "のじぎく高砂"),
+      ("高砂カフェ", "高砂カフェ")], "NPO"),
     ("012", "のじぎく稲美",
      [("のじぎく稲美", "のじぎく稲美"),
       ("のじぎく加古川", "のじぎく加古川"),
@@ -2519,6 +2520,12 @@ def ensure_pl_import_masters():
                 INSERT INTO pl_accounts (name, category, is_total, display_order)
                 VALUES (?, ?, ?, ?) ON CONFLICT(name) DO NOTHING
             """, (name, category, is_total, order))
+        # 高砂カフェは就労部門とは別の損益として保持する。
+        conn.execute("""
+            INSERT INTO pl_subunits (group_id, excel_name, display_name, display_order)
+            SELECT id, '高砂カフェ', '高砂カフェ', 1 FROM pl_groups WHERE code = '011'
+            ON CONFLICT(excel_name) DO NOTHING
+        """)
 
 
 def list_pl_groups(active_only=True):
@@ -2973,10 +2980,14 @@ def replace_pl_entries(year_month, subunit_id, entries):
         )
         rows = [(subunit_id, acc_id, year_month, int(amount or 0))
                 for acc_id, amount in entries]
-        conn.executemany("""
-            INSERT INTO pl_entries (subunit_id, account_id, year_month, amount)
-            VALUES (?, ?, ?, ?)
-        """, rows)
+        # リモートDBで科目ごとに往復しないよう、変数上限内でまとめて挿入する。
+        for offset in range(0, len(rows), 200):
+            batch = rows[offset:offset + 200]
+            placeholders = ", ".join(["(?, ?, ?, ?)"] * len(batch))
+            conn.execute(
+                "INSERT INTO pl_entries (subunit_id, account_id, year_month, amount) VALUES " + placeholders,
+                tuple(value for row in batch for value in row),
+            )
         return len(rows)
 
 

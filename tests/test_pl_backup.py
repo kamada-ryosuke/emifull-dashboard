@@ -45,3 +45,17 @@ class PLBackupTests(unittest.TestCase):
         self.assertEqual(db.fetch_pl_entries()[0]['amount'], 123)
         with db.get_conn() as conn:
             self.assertEqual(conn.execute('SELECT COUNT(*) FROM pl_entry_backups').fetchone()[0], 0)
+
+    def test_large_batch_and_failure_roll_back_whole_month(self):
+        sid = db.list_pl_subunits()[0]['id']
+        with db.get_conn() as conn:
+            for i in range(205):
+                conn.execute("INSERT INTO pl_accounts (name, category, display_order) VALUES (?, ?, 999)", (f'test-{i}', 'sga'))
+        aids = [a['id'] for a in db.list_pl_accounts() if a['name'].startswith('test-')]
+        values = [(aid, i - 100) for i, aid in enumerate(aids)]
+        db.replace_pl_entries('2025-06', sid, values)
+        self.assertEqual({r['account_id']: r['amount'] for r in db.fetch_pl_entries()}, dict(values))
+        import sqlite3
+        with self.assertRaises(sqlite3.IntegrityError):
+            db.replace_pl_entries('2025-06', sid, values + [(-1, 500)])
+        self.assertEqual({r['account_id']: r['amount'] for r in db.fetch_pl_entries()}, dict(values))

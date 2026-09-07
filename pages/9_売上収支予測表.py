@@ -1,4 +1,4 @@
-"""売上収支予測表 - 日別利用人数から月次の売上・利益着地を予測する。"""
+﻿"""売上収支予測表 - 日別利用人数から月次の売上・利益着地を予測する。"""
 import calendar
 import html
 import math
@@ -378,6 +378,12 @@ def _build_forecast_facilities():
         if not group_subs:
             continue
         if group.get("code") == "010":
+            continue
+        if group.get("code") == "011":
+            # 利用回数に基づく就労部門の予測にカフェの売上・費用を混ぜない。
+            group_subs = [sub for sub in group_subs if sub.get("excel_name") == "のじぎく高砂"]
+            if group_subs:
+                rows.append(_facility_row_from_subunits(group, "のじぎく高砂", group_subs))
             continue
         if group.get("code") == "012":
             kakogawa_subs = [
